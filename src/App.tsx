@@ -11,7 +11,6 @@ import {
   Home,
   LayoutDashboard,
   ShoppingBag,
-  Truck,
   UtensilsCrossed,
 } from 'lucide-react';
 import { CartItem, OrderRecord } from './types.ts';
@@ -20,7 +19,7 @@ import { CustomerStore } from './components/CustomerStore.tsx';
 import { OrderTrackingView } from './components/OrderTrackingView.tsx';
 import { DeliveryPartnerView } from './components/DeliveryPartnerView.tsx';
 import { AdminPortal } from './components/AdminPortal.tsx';
-import { OfflineIndicator, PWAInstallButton } from './components/PWAInstallBanner.tsx';
+import { OfflineIndicator } from './components/PWAInstallBanner.tsx';
 
 type AppView = 'customer' | 'tracking' | 'rider' | 'admin';
 
@@ -39,24 +38,32 @@ export default function App() {
     busyMode: false,
   });
 
-  // Sync URL path if user navigates directly to /track/<token> or /rider/<token>
+  // Sync URL path if user navigates directly to /track/<token>, /rider/<token>, or /admin
   useEffect(() => {
-    const path = window.location.pathname;
-    if (path.startsWith('/track/')) {
-      const tok = path.replace('/track/', '').trim();
-      if (tok) {
-        setTrackingToken(tok);
-        setActiveView('tracking');
-      }
-    } else if (path.startsWith('/rider/')) {
-      const rTok = path.replace('/rider/', '').trim();
-      if (rTok) {
-        setRiderToken(rTok);
+    const syncFromUrl = () => {
+      const path = window.location.pathname;
+      if (path.startsWith('/track/')) {
+        const tok = path.replace('/track/', '').trim();
+        if (tok) {
+          setTrackingToken(tok);
+          setActiveView('tracking');
+        }
+      } else if (path.startsWith('/rider')) {
+        const rTok = path.replace('/rider/', '').replace('/rider', '').trim();
+        if (rTok) {
+          setRiderToken(rTok);
+        }
         setActiveView('rider');
+      } else if (path.startsWith('/admin')) {
+        setActiveView('admin');
+      } else {
+        setActiveView('customer');
       }
-    } else if (path.startsWith('/admin')) {
-      setActiveView('admin');
-    }
+    };
+
+    syncFromUrl();
+    window.addEventListener('popstate', syncFromUrl);
+    return () => window.removeEventListener('popstate', syncFromUrl);
   }, []);
 
   // Initialize Socket.io real-time connection on same origin (Port 3000)
@@ -77,14 +84,20 @@ export default function App() {
 
   const totalCartItems = cart.reduce((sum, item) => sum + item.quantity, 0);
 
-  const handleOpenTracking = (token: string) => {
-    setTrackingToken(token);
-    setActiveView('tracking');
+  const navigateView = (view: AppView, customPath?: string) => {
+    setActiveView(view);
     try {
-      window.history.pushState({}, '', `/track/${token}`);
+      if (customPath) {
+        window.history.pushState({}, '', customPath);
+      }
     } catch {
       // Ignore history push errors in sandboxed iframes
     }
+  };
+
+  const handleOpenTracking = (token: string) => {
+    setTrackingToken(token);
+    navigateView('tracking', `/track/${token}`);
   };
 
   const handleReorder = (order: OrderRecord) => {
@@ -100,139 +113,175 @@ export default function App() {
       quantity: it.quantity,
     }));
     setCart(restored);
-    setActiveView('customer');
+    navigateView('customer', '/');
     setCartDrawerOpen(true);
   };
 
-  return (
-    <div className="min-h-[100dvh] w-full max-w-full overflow-x-hidden flex flex-col bg-[#FAF8F5] text-stone-900 pb-20 md:pb-8">
-      {/* 2. STICKY 56px (h-14) SINGLE-ROW HEADER */}
-      <header className="sticky top-0 z-30 h-14 bg-white/95 backdrop-blur-md border-b border-stone-200 px-3 sm:px-6 flex items-center justify-between gap-3">
-        {/* Left: Small Logo + Shop Name (18px semi-bold, truncate) + Delivery Time & Open/Closed below */}
-        <a
-          href="/"
-          onClick={(e) => {
-            e.preventDefault();
-            setActiveView('customer');
+  // ===========================================================================
+  // DEDICATED RIDER LAYOUT (/rider/<token>) — Link-only access, zero customer nav
+  // ===========================================================================
+  if (activeView === 'rider') {
+    return (
+      <div className="admin-ops-theme min-h-[100dvh] w-full max-w-[100vw] overflow-x-clip flex flex-col bg-[#F4F5F7] text-[#111827]">
+        <DeliveryPartnerView initialToken={riderToken} />
+        <OfflineIndicator />
+      </div>
+    );
+  }
+
+  // ===========================================================================
+  // DEDICATED ADMIN LAYOUT (/admin) — Separate operations layout, zero customer nav
+  // ===========================================================================
+  if (activeView === 'admin') {
+    return (
+      <div className="admin-ops-theme min-h-[100dvh] w-full max-w-[100vw] overflow-x-clip flex flex-col bg-[#F4F5F7] dark:bg-slate-950 text-[#111827] dark:text-slate-100">
+        <AdminPortal
+          socket={socket}
+          onRefreshStorefront={() => setStorefrontRefreshKey((k) => k + 1)}
+          onOpenRiderPortal={(tok) => {
+            setRiderToken(tok);
+            navigateView('rider', `/rider/${tok}`);
+          }}
+          onBackToStorefront={() => {
             setCustomerSubTab('home');
-            try {
-              window.history.pushState({}, '', '/');
-            } catch {
-              // Ignore
-            }
+            navigateView('customer', '/');
           }}
-          className="flex items-center gap-2.5 min-w-0 flex-1"
-        >
-          <div className="w-9 h-9 rounded-xl bg-stone-900 text-amber-400 flex items-center justify-center shrink-0">
-            <Flame className="w-5 h-5" />
-          </div>
-          <div className="min-w-0 flex-1">
-            <span className="block text-[18px] leading-tight font-semibold text-stone-900 truncate">
-              {headerMeta.shopName}
-            </span>
-            <span className="block text-[11px] leading-tight text-stone-500 truncate">
-              25–30 mins ·{' '}
-              <strong
-                className={
-                  headerMeta.isOpen && !headerMeta.busyMode
-                    ? 'text-emerald-700 font-semibold'
-                    : 'text-red-600 font-semibold'
-                }
-              >
-                {headerMeta.isOpen
-                  ? headerMeta.busyMode
-                    ? 'Busy mode'
-                    : 'Open now'
-                  : 'Closed'}
-              </strong>
-            </span>
-          </div>
-        </a>
+        />
+        <OfflineIndicator />
+      </div>
+    );
+  }
 
-        {/* Desktop Navigation Links */}
-        <nav className="hidden md:flex items-center gap-5 text-sm font-medium text-stone-600 shrink-0">
-          <button
-            type="button"
-            onClick={() => {
-              setActiveView('customer');
+  // ===========================================================================
+  // CUSTOMER STOREFRONT & ORDER TRACKING LAYOUT
+  // ===========================================================================
+  return (
+    <div className="min-h-[100dvh] w-full max-w-[100vw] overflow-x-clip flex flex-col bg-[#FAF8F5] text-stone-900 pb-16 md:pb-6">
+      {/* STICKY CUSTOMER HEADER — Full shop name visible, never cut off */}
+      <header className="sticky top-0 left-0 right-0 z-30 w-full max-w-[100vw] bg-white/95 backdrop-blur-md border-b border-stone-200 overflow-x-clip">
+        <div className="w-full max-w-[480px] md:max-w-[1200px] mx-auto px-4 min-h-[56px] py-1.5 flex items-center justify-between gap-2">
+          <a
+            href="/"
+            onClick={(e) => {
+              e.preventDefault();
               setCustomerSubTab('home');
+              navigateView('customer', '/');
             }}
-            className={`hover:text-stone-950 whitespace-nowrap cursor-pointer ${
-              activeView === 'customer' && customerSubTab === 'home'
-                ? 'text-stone-950 font-semibold underline underline-offset-4 decoration-amber-700'
-                : ''
-            }`}
+            className="flex items-center gap-2 min-w-0 flex-1"
           >
-            Home
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setActiveView('customer');
-              setCustomerSubTab('orders');
-            }}
-            className={`hover:text-stone-950 whitespace-nowrap cursor-pointer ${
-              activeView === 'customer' && customerSubTab === 'orders'
-                ? 'text-stone-950 font-semibold underline underline-offset-4 decoration-amber-700'
-                : ''
-            }`}
-          >
-            Orders
-          </button>
-          <button
-            type="button"
-            onClick={() => handleOpenTracking(trackingToken)}
-            className={`hover:text-stone-950 whitespace-nowrap cursor-pointer ${
-              activeView === 'tracking'
-                ? 'text-stone-950 font-semibold underline underline-offset-4 decoration-amber-700'
-                : ''
-            }`}
-          >
-            Track
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveView('rider')}
-            className={`hover:text-stone-950 whitespace-nowrap cursor-pointer ${
-              activeView === 'rider'
-                ? 'text-stone-950 font-semibold underline underline-offset-4 decoration-amber-700'
-                : ''
-            }`}
-          >
-            Rider
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveView('admin')}
-            className={`hover:text-stone-950 whitespace-nowrap cursor-pointer ${
-              activeView === 'admin'
-                ? 'text-stone-950 font-semibold underline underline-offset-4 decoration-amber-700'
-                : ''
-            }`}
-          >
-            Admin
-          </button>
-        </nav>
+            <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-stone-900 text-amber-400 flex items-center justify-center shrink-0">
+              <Flame className="w-4 h-4 sm:w-5 sm:h-5" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <span className="block text-[14px] sm:text-[17px] leading-snug font-bold text-stone-900 break-words">
+                {headerMeta.shopName}
+              </span>
+              <span className="block text-[11px] leading-tight text-stone-500 break-words">
+                25–30 mins ·{' '}
+                <strong
+                  className={
+                    headerMeta.isOpen && !headerMeta.busyMode
+                      ? 'text-emerald-700 font-semibold'
+                      : 'text-red-600 font-semibold'
+                  }
+                >
+                  {headerMeta.isOpen
+                    ? headerMeta.busyMode
+                      ? 'Busy mode'
+                      : 'Open now'
+                    : 'Closed'}
+                </strong>
+              </span>
+            </div>
+          </a>
 
-        {/* Right: Cart Icon Button with Item-Count Badge (always fully visible) */}
-        <button
-          type="button"
-          onClick={() => {
-            setActiveView('customer');
-            setCartDrawerOpen(true);
-          }}
-          aria-label="Open shopping bag"
-          className="relative min-w-[44px] min-h-[44px] px-3 rounded-xl bg-stone-900 hover:bg-amber-800 text-white flex items-center justify-center gap-1.5 shrink-0 transition-colors cursor-pointer"
-        >
-          <ShoppingBag className="w-4 h-4 text-amber-400 shrink-0" />
-          <span className="text-xs font-mono font-bold tabular-nums whitespace-nowrap">
-            {totalCartItems}
-          </span>
-        </button>
+          {/* Desktop Navigation Links (Only 4 Customer Tabs: Home, Menu, Orders, Cart) */}
+          <nav className="hidden md:flex items-center gap-5 text-sm font-medium text-stone-600 shrink-0">
+            <button
+              type="button"
+              onClick={() => {
+                setCustomerSubTab('home');
+                navigateView('customer', '/');
+              }}
+              className={`hover:text-stone-950 whitespace-nowrap cursor-pointer ${
+                activeView === 'customer' && customerSubTab === 'home'
+                  ? 'text-stone-950 font-semibold underline underline-offset-4 decoration-amber-700'
+                  : ''
+              }`}
+            >
+              Home
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setCustomerSubTab('menu');
+                navigateView('customer', '/');
+              }}
+              className={`hover:text-stone-950 whitespace-nowrap cursor-pointer ${
+                activeView === 'customer' && customerSubTab === 'menu'
+                  ? 'text-stone-950 font-semibold underline underline-offset-4 decoration-amber-700'
+                  : ''
+              }`}
+            >
+              Menu
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setCustomerSubTab('orders');
+                navigateView('customer', '/');
+              }}
+              className={`hover:text-stone-950 whitespace-nowrap cursor-pointer ${
+                activeView === 'customer' && customerSubTab === 'orders'
+                  ? 'text-stone-950 font-semibold underline underline-offset-4 decoration-amber-700'
+                  : ''
+              }`}
+            >
+              Orders
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                navigateView('customer', '/');
+                setCartDrawerOpen(true);
+              }}
+              className="hover:text-stone-950 whitespace-nowrap cursor-pointer"
+            >
+              Cart ({totalCartItems})
+            </button>
+          </nav>
+
+          {/* Right: Admin Portal Quick Switch + Cart Bag Button */}
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => navigateView('admin', '/admin')}
+              aria-label="Admin Portal"
+              title="Admin Portal"
+              className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl border border-stone-200 bg-stone-50 hover:bg-stone-100 text-stone-700 flex items-center justify-center shrink-0 cursor-pointer"
+            >
+              <LayoutDashboard className="w-4 h-4 shrink-0" />
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                navigateView('customer', '/');
+                setCartDrawerOpen(true);
+              }}
+              aria-label="Open shopping bag"
+              className="relative min-h-[38px] sm:min-h-[42px] px-2.5 sm:px-3 rounded-xl bg-stone-900 hover:bg-amber-800 text-white flex items-center justify-center gap-1.5 shrink-0 transition-colors cursor-pointer"
+            >
+              <ShoppingBag className="w-4 h-4 text-amber-400 shrink-0" />
+              <span className="text-xs font-mono font-bold tabular-nums whitespace-nowrap">
+                {totalCartItems}
+              </span>
+            </button>
+          </div>
+        </div>
       </header>
 
       {/* Main Content Area */}
-      <main className="flex-1 w-full max-w-full overflow-x-hidden">
+      <main className="flex-1 w-full max-w-[100vw] overflow-x-clip min-w-0">
         {activeView === 'customer' && (
           <CustomerStore
             key={storefrontRefreshKey}
@@ -252,101 +301,84 @@ export default function App() {
             trackingToken={trackingToken}
             socket={socket}
             onBackToStore={() => {
-              setActiveView('customer');
               setCustomerSubTab('home');
-              try {
-                window.history.pushState({}, '', '/');
-              } catch {
-                // Ignore
-              }
+              navigateView('customer', '/');
             }}
             onReorder={handleReorder}
           />
         )}
-
-        {activeView === 'rider' && <DeliveryPartnerView initialToken={riderToken} />}
-
-        {activeView === 'admin' && (
-          <AdminPortal
-            socket={socket}
-            onRefreshStorefront={() => setStorefrontRefreshKey((k) => k + 1)}
-            onOpenRiderPortal={(tok) => {
-              setRiderToken(tok);
-              setActiveView('rider');
-            }}
-          />
-        )}
       </main>
 
-      {/* Dismissible One-Time PWA Install Banner */}
-      <PWAInstallButton />
+      {/* Customer Mobile Bottom Navigation Bar — ONLY 4 tabs: Home, Menu, Orders, Cart */}
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 w-full max-w-[100vw] z-40 bg-white/95 backdrop-blur-md border-t border-stone-200 overflow-x-clip">
+        <div className="w-full max-w-[480px] mx-auto grid grid-cols-4 items-center min-h-[56px] pb-safe">
+          <button
+            type="button"
+            onClick={() => {
+              setCustomerSubTab('home');
+              navigateView('customer', '/');
+            }}
+            className={`flex flex-col items-center justify-center min-h-[48px] text-[11px] font-medium whitespace-nowrap cursor-pointer min-w-0 ${
+              activeView === 'customer' && customerSubTab === 'home'
+                ? 'text-amber-800 font-semibold'
+                : 'text-stone-500'
+            }`}
+          >
+            <Home className="w-4 h-4 shrink-0" />
+            <span className="mt-0.5 truncate">Home</span>
+          </button>
 
-      {/* Mobile Bottom Navigation Bar with env(safe-area-inset-bottom) */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-stone-200 grid grid-cols-5 items-center min-h-[56px] pb-safe">
-        <button
-          type="button"
-          onClick={() => {
-            setActiveView('customer');
-            setCustomerSubTab('home');
-          }}
-          className={`flex flex-col items-center justify-center min-h-[48px] text-[11px] font-medium whitespace-nowrap cursor-pointer ${
-            activeView === 'customer' && customerSubTab === 'home'
-              ? 'text-amber-800 font-semibold'
-              : 'text-stone-500'
-          }`}
-        >
-          <Home className="w-4 h-4 shrink-0" />
-          <span className="mt-0.5 truncate">Home</span>
-        </button>
+          <button
+            type="button"
+            onClick={() => {
+              setCustomerSubTab('menu');
+              navigateView('customer', '/');
+            }}
+            className={`flex flex-col items-center justify-center min-h-[48px] text-[11px] font-medium whitespace-nowrap cursor-pointer min-w-0 ${
+              activeView === 'customer' && customerSubTab === 'menu'
+                ? 'text-amber-800 font-semibold'
+                : 'text-stone-500'
+            }`}
+          >
+            <UtensilsCrossed className="w-4 h-4 shrink-0" />
+            <span className="mt-0.5 truncate">Menu</span>
+          </button>
 
-        <button
-          type="button"
-          onClick={() => {
-            setActiveView('customer');
-            setCustomerSubTab('orders');
-          }}
-          className={`flex flex-col items-center justify-center min-h-[48px] text-[11px] font-medium whitespace-nowrap cursor-pointer ${
-            activeView === 'customer' && customerSubTab === 'orders'
-              ? 'text-amber-800 font-semibold'
-              : 'text-stone-500'
-          }`}
-        >
-          <Clock className="w-4 h-4 shrink-0" />
-          <span className="mt-0.5 truncate">Orders</span>
-        </button>
+          <button
+            type="button"
+            onClick={() => {
+              setCustomerSubTab('orders');
+              navigateView('customer', '/');
+            }}
+            className={`flex flex-col items-center justify-center min-h-[48px] text-[11px] font-medium whitespace-nowrap cursor-pointer min-w-0 ${
+              activeView === 'customer' && customerSubTab === 'orders'
+                ? 'text-amber-800 font-semibold'
+                : 'text-stone-500'
+            }`}
+          >
+            <Clock className="w-4 h-4 shrink-0" />
+            <span className="mt-0.5 truncate">Orders</span>
+          </button>
 
-        <button
-          type="button"
-          onClick={() => handleOpenTracking(trackingToken)}
-          className={`flex flex-col items-center justify-center min-h-[48px] text-[11px] font-medium whitespace-nowrap cursor-pointer ${
-            activeView === 'tracking' ? 'text-amber-800 font-semibold' : 'text-stone-500'
-          }`}
-        >
-          <UtensilsCrossed className="w-4 h-4 shrink-0" />
-          <span className="mt-0.5 truncate">Track</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setActiveView('rider')}
-          className={`flex flex-col items-center justify-center min-h-[48px] text-[11px] font-medium whitespace-nowrap cursor-pointer ${
-            activeView === 'rider' ? 'text-amber-800 font-semibold' : 'text-stone-500'
-          }`}
-        >
-          <Truck className="w-4 h-4 shrink-0" />
-          <span className="mt-0.5 truncate">Rider</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setActiveView('admin')}
-          className={`flex flex-col items-center justify-center min-h-[48px] text-[11px] font-medium whitespace-nowrap cursor-pointer ${
-            activeView === 'admin' ? 'text-amber-800 font-semibold' : 'text-stone-500'
-          }`}
-        >
-          <LayoutDashboard className="w-4 h-4 shrink-0" />
-          <span className="mt-0.5 truncate">Admin</span>
-        </button>
+          <button
+            type="button"
+            onClick={() => {
+              navigateView('customer', '/');
+              setCartDrawerOpen(true);
+            }}
+            className="flex flex-col items-center justify-center min-h-[48px] text-[11px] font-medium whitespace-nowrap cursor-pointer text-stone-500 min-w-0"
+          >
+            <div className="relative">
+              <ShoppingBag className="w-4 h-4 shrink-0" />
+              {totalCartItems > 0 && (
+                <span className="absolute -top-1.5 -right-2.5 px-1 rounded-full bg-amber-700 text-white text-[9px] font-bold tabular-nums">
+                  {totalCartItems}
+                </span>
+              )}
+            </div>
+            <span className="mt-0.5 truncate">Cart</span>
+          </button>
+        </div>
       </nav>
 
       <OfflineIndicator />

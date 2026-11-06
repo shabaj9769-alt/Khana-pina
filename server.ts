@@ -475,6 +475,54 @@ function getInitialDatabaseState(): DatabaseState {
     },
     orders: [
       {
+        id: 'ord_sample_new',
+        orderNumber: 'AAN-1045',
+        trackingToken: 'trk_new_demo_884a1b2c3d4e',
+        deliveryOtp: '3912',
+        customerName: 'Aarav Deshmukh',
+        customerPhone: '9820445566',
+        customerIp: '127.0.0.1',
+        deliveryAddress: 'B-1204, Sea Breeze Towers, Carter Road, Bandra West, Mumbai 400050',
+        deliveryLat: 19.0622,
+        deliveryLng: 72.8235,
+        distanceKm: 1.38,
+        orderNotes: 'Extra spicy burani raita on the side, do not ring doorbell loudly.',
+        scheduledFor: null,
+        status: 'PLACED',
+        paymentMethod: 'COD',
+        paymentStatus: 'PENDING',
+        itemTotal: 770,
+        deliveryFee: 25,
+        gstAmount: 39,
+        discountAmount: 0,
+        couponCode: null,
+        grandTotal: 834,
+        deliveryBoyId: 'rider_1',
+        deliveryBoyName: 'Ramesh Pawar',
+        deliveryBoyPhone: '9876501234',
+        placedAt: new Date(Date.now() - 28 * 1000).toISOString(),
+        items: [
+          {
+            menuItemId: 'item_lucknowi_biryani',
+            itemName: 'Lucknowi Zafrani Gosht Dum Biryani',
+            variantName: 'Single Handi (650ml · Serves 1)',
+            addons: [{ id: 'add_burani', name: 'Extra Smoked Garlic Burani Raita', price: 55 }],
+            unitPrice: 500,
+            quantity: 1,
+            lineTotal: 500,
+          },
+          {
+            menuItemId: 'item_gulab_jamun',
+            itemName: 'Warm Saffron & Pistachio Khoya Gulab Jamun',
+            variantName: 'Box of 4 Pieces',
+            addons: [],
+            unitPrice: 270,
+            quantity: 1,
+            lineTotal: 270,
+          },
+        ],
+      },
+      {
         id: 'ord_sample_live',
         orderNumber: 'AAN-1042',
         trackingToken: 'trk_live_demo_991a7b3c4d5e6f',
@@ -612,7 +660,7 @@ function getInitialDatabaseState(): DatabaseState {
         name: 'Ramesh Pawar',
         phone: '9876501234',
         isActive: true,
-        activeOrders: 1,
+        activeOrders: 2,
         accessToken: 'rider_token_ramesh_01',
       },
       {
@@ -677,18 +725,27 @@ function getInitialDatabaseState(): DatabaseState {
 }
 
 function loadDatabase(): DatabaseState {
+  const initial = getInitialDatabaseState();
   try {
     if (fs.existsSync(DATA_FILE)) {
       const raw = fs.readFileSync(DATA_FILE, 'utf8');
       const parsed = JSON.parse(raw) as DatabaseState;
       if (parsed && parsed.menuItems && parsed.settings) {
+        const existingNew = parsed.orders.find((o) => o.id === 'ord_sample_new');
+        if (!existingNew) {
+          parsed.orders.unshift(initial.orders[0]);
+        } else if (existingNew.status === 'PLACED' || existingNew.status === 'CANCELLED') {
+          existingNew.status = 'PLACED';
+          existingNew.cancelReason = undefined;
+          existingNew.cancelledAt = undefined;
+          existingNew.placedAt = new Date(Date.now() - 28 * 1000).toISOString();
+        }
         return parsed;
       }
     }
   } catch (e) {
     console.error('Error loading store.json, using default seed:', e);
   }
-  const initial = getInitialDatabaseState();
   saveDatabase(initial);
   return initial;
 }

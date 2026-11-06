@@ -138,7 +138,7 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
 
   if (loading) {
     return (
-      <div className="w-full max-w-4xl mx-auto px-3 sm:px-6 py-6">
+      <div className="w-full max-w-[480px] md:max-w-[1200px] mx-auto px-4 py-6 overflow-x-clip min-w-0">
         <div className="rounded-2xl border border-stone-200 bg-white p-5 space-y-4">
           <div className="h-6 w-40 bg-stone-200 rounded animate-pulse" />
           <div className="h-28 w-full bg-stone-100 rounded-xl animate-pulse" />
@@ -149,7 +149,7 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
 
   if (error || !order) {
     return (
-      <div className="w-full max-w-md mx-auto px-3 py-12 text-center">
+      <div className="w-full max-w-[480px] mx-auto px-4 py-12 text-center overflow-x-clip min-w-0">
         <div className="rounded-2xl border border-stone-200 bg-white p-6">
           <XCircle className="w-10 h-10 text-red-600 mx-auto mb-3" />
           <h2 className="text-lg font-semibold text-stone-900">Tracking Link Not Found</h2>
@@ -170,7 +170,7 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
   const isCancelledOrRejected = order.status === 'CANCELLED' || order.status === 'REJECTED';
 
   return (
-    <div className="w-full max-w-4xl mx-auto px-3 sm:px-6 py-4 space-y-5">
+    <div className="w-full max-w-[480px] md:max-w-[1200px] mx-auto px-4 py-4 space-y-5 overflow-x-clip min-w-0">
       {/* Top Action Bar */}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <button

@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
 
 @layer base {
   *,
@@ -9,12 +10,22 @@
 
   html,
   body {
+    width: 100%;
     max-width: 100%;
+    margin: 0;
+    padding: 0;
     overflow-x: hidden;
     font-family: var(--font-sans);
     background-color: #FAF8F5;
     color: #1C1917;
     -webkit-tap-highlight-color: transparent;
+  }
+
+  #root,
+  main {
+    width: 100%;
+    max-width: 100vw;
+    overflow-x: clip;
   }
 
   img {
@@ -27,6 +38,7 @@
     --font-display: 'Fraunces', Georgia, serif;
     --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
     --font-mono: 'JetBrains Mono', monospace;
+    --font-ops: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   }
 
   h1,
@@ -40,6 +52,22 @@
     font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
   }
+}
+
+/* Operations Dashboard Theme (Admin & Rider): Inter ONLY, zero serif, zero monospace */
+.admin-ops-theme,
+.admin-ops-theme h1,
+.admin-ops-theme h2,
+.admin-ops-theme h3,
+.admin-ops-theme h4,
+.admin-ops-theme .font-display,
+.admin-ops-theme .font-mono,
+.admin-ops-theme .tabular-nums {
+  font-family: var(--font-ops) !important;
+}
+
+.admin-ops-theme .tabular-nums {
+  font-variant-numeric: tabular-nums;
 }
 
 .no-scrollbar::-webkit-scrollbar {
