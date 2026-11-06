@@ -1,86 +1,50 @@
 # Aangan Artisanal Kitchen — Direct Food Delivery Web App (PWA)
 
-Full-stack single-shop food delivery web application with a **Guest-First Customer Storefront (No Login, No OTP)** and a comprehensive **Multi-Role Admin & Home Page Manager**.
+Full-stack single-shop food delivery web application with a **Guest-First Customer Storefront (No Login, No Signup)** and a hardened **Multi-Role Admin, Kitchen & Rider Console**.
 
 ---
 
-## Architecture & Folder Structure
+## Architecture & Persistence
 
-```text
-├── db/
-│   └── schema.sql                # Complete PostgreSQL DDL for all 19 tables
-├── public/
-│   ├── icon.svg                  # Brand PWA vector icon
-│   ├── pwa-192x192.png           # PWA 192x192 home screen icon
-│   ├── pwa-512x512.png           # PWA 512x512 splash screen icon
-│   ├── pwa-maskable-512x512.png  # Android maskable icon with safe zone padding
-│   └── apple-touch-icon.png      # iOS Safari 180x180 touch icon
-├── server.ts                     # Express + Socket.io + Razorpay HMAC & Webhook + Cron engine
-├── src/
-│   ├── assets/images/            # High-resolution culinary studio photography
-│   ├── auth/
-│   │   └── guestAuthLayer.ts     # Pluggable customer auth layer (Guest now, OTP-ready later)
-│   ├── components/
-│   │   ├── PWAInstallBanner.tsx  # Native beforeinstallprompt + iOS Safari install guide
-│   │   ├── CustomerStore.tsx     # Guest storefront, Home sections, Menu, Cart, Checkout
-│   │   ├── OrderTrackingView.tsx # Secret /track/<token> live Socket.io tracker + PDF Invoice + OTP
-│   │   ├── DeliveryPartnerView.tsx # Delivery partner portal to verify doorstep OTP
-│   │   └── AdminPortal.tsx       # RBAC Admin Panel + Home Page Manager + KOT Thermal Print
-│   ├── types.ts                  # Shared TypeScript interfaces across Frontend & Backend
-│   ├── App.tsx                   # Top-level router & real-time Socket.io provider
-│   └── main.tsx                  # React 19 entry point
-├── .env.example                  # Required environment variables template
-└── vite.config.ts                # Vite + Tailwind v4 + VitePWA Service Worker config
-```
+- **PostgreSQL + Atomic JSON Fallback**:
+  - When `DATABASE_URL` is configured, `server.ts` connects to PostgreSQL via `pg.Pool`, automatically initializes `db/schema.sql`, and persists state to PostgreSQL.
+  - When `DATABASE_URL` is not configured, `server.ts` persists to `data/store.json` using **atomic temp-file writes** (`store.json.tmp` → `fs.renameSync` + `store.json.bak` automatic backup) serialized through an in-process **async write mutex (`withWriteLock`)** so order numbers, item stock, and coupon usage counters are race-condition safe.
 
 ---
 
-## Key Features Implemented
+## Security & Authentication Highlights
 
-### 1. Customer Panel (Guest Mode, Zero Friction)
-- **No Login / No OTP Required**: Customers browse, filter (Veg/Non-Veg, Categories, Search), customize variants (Half/Full/Handi) and add-ons, and order directly.
-- **Browser Persistence (`localStorage`)**: Cart items, favourite dishes, last-used guest profile (name, 10-digit phone, pinned coordinates, address), and device order tokens (`my_recent_order_tokens`) persist automatically.
-- **Pluggable Auth Layer (`src/auth/guestAuthLayer.ts`)**: Clean interface (`CustomerIdentityProvider`) so Phone OTP login can be enabled later without rewriting checkout or order APIs.
-- **Server-Side Haversine Delivery Zone Validation**: Calculates exact great-circle distance in kilometers between the shop's coordinates and customer pin. Enforces radius check and distance-based delivery fee slabs on both checkout preview and order creation.
+### 1. Payment Pipeline (`RAZORPAY_MODE=demo|live`)
+- `POST /api/payments/create-test-signature` is disabled in production and whenever `RAZORPAY_MODE !== 'demo'`.
+- In `live` mode, the storefront launches the real Razorpay Checkout (`checkout.js`) and verifies signatures via `POST /api/payments/verify` and `POST /api/payments/webhook`.
+- In `demo` mode, a visible **`DEMO PAYMENT`** badge is shown in the customer checkout UI.
 
-### 2. Guest Abuse Protection
-- **Per-Phone & Per-IP Rate Limiting**: Configurable hourly order limits (`max_orders_per_hour_phone`, `max_orders_per_hour_ip`).
-- **Turnstile / Captcha Verification**: Interactive security challenge token validated by the backend on every order placement.
-- **Cash on Delivery (COD) Guardrails**: Max order value for COD, max active COD orders per phone number (1–2), admin toggle to disable COD globally, and optional **"Online Payment Only for First Order"** rule for new phone numbers.
-- **Phone & IP Blocklist**: Instant blocking from the Admin Customers or Security tab.
-- **Doorstep Delivery OTP**: Unique 4-digit OTP generated per order, displayed on the customer's secret `/track/<token>` page, and required by the assigned delivery partner to mark the order `DELIVERED`.
+### 2. Hardened Admin Authentication & RBAC
+- **No Prefilled Credentials**: Login fields start empty; demo role presets appear only when `NODE_ENV !== 'production'` and `DEMO_MODE=true`.
+- **Startup Secret Check**: Server refuses to start in production if `ADMIN_JWT_SECRET` is missing or set to the default placeholder.
+- **Scrypt Password Hashing**: Per-user 16-byte random salt with `crypto.scryptSync`. Seeded accounts automatically migrate and require a password change on first login (`mustChangePassword`).
+- **Short-Lived JWT + Refresh Cookie & Revocation**: 15-minute HS256 access token + 7-day refresh token sent as `HttpOnly; SameSite=Strict` cookies (with `Secure` in production), backed by per-user `tokenVersion` and `adminSessions` tracking for instant single-session or all-device revocation (`POST /api/admin/logout`, `POST /api/admin/users/:id/logout-all`).
+- **Brute-Force Lockout**: Max 5 failed login attempts per email or IP within 15 minutes triggers a 15-minute lockout and records an `ADMIN_LOGIN_FAILED` entry in the Audit Log.
+- **Owner TOTP 2FA**: RFC 6238 Authenticator 2FA setup, verification, and enforcement for the `owner` role.
 
-### 3. Double-Verified Payment Pipeline (Razorpay + Webhook + Cron)
-1. **Backend Cart Calculation**: Server recalculates item base prices, variants, add-ons, coupon rules, distance slab fee, and GST from authoritative database state (never trusts client totals).
-2. **Order Creation (`PENDING`)**: Creates a Razorpay order (`order_...`) and stores the order in `PENDING` state.
-3. **Server HMAC-SHA256 Verification (`POST /api/payments/verify`)**: Verifies `razorpay_order_id + "|" + razorpay_payment_id` using `RAZORPAY_KEY_SECRET`.
-4. **Idempotent Webhook Verification (`POST /api/payments/webhook`)**: Verifies `x-razorpay-signature` against `RAZORPAY_WEBHOOK_SECRET` for `payment.captured` and `payment.failed` events (source of truth, deduplicated by `webhook_event_id`).
-5. **Gateway Payment Fetch & Amount Match**: Confirms captured amount in paise matches authoritative order grand total before marking `PAID` and broadcasting to Admin via Socket.io.
-6. **Stale Payment Cron & Instant Refunds**: Background job checks stale `PENDING` online orders and auto-cancels/refunds; Admin can trigger full or partial refunds via Razorpay Refunds API.
+### 3. Authenticated Socket.io Rooms & Strict CORS
+- `join:admin` verifies a valid admin JWT and active `tokenVersion`.
+- `join:rider` verifies an active, non-expired rider token.
+- `join:tracking` verifies an exact order `trackingToken`.
+- CORS is restricted to the application's own origin (`ALLOWED_ORIGIN`).
 
-### 4. Admin Panel & Home Page Manager
-- **Role-Based Access Control (RBAC)**:
-  - **Owner**: `owner@aangan.in` / `admin123` (Full access: settings, refunds, menu, home manager, audit logs)
-  - **Manager**: `manager@aangan.in` / `manager123` (Orders, menu, coupons, home manager, delivery partners)
-  - **Staff**: `staff@aangan.in` / `staff123` (Live orders, status updates, KOT thermal slip printing)
-- **Home Page Manager**:
-  - Manage promotional banners (image, deep link to item/category/coupon, date range, visibility, order).
-  - Reorder, rename, toggle visibility, set max item count, and set time-of-day schedules (e.g., `07:00 - 11:00`) for home sections (`Featured Items`, `Bestsellers` manual or auto-by-sales, `Today's Special`, `New Arrivals`, `Combo/Offers`, `Categories Strip`, or custom sections).
-  - Out-of-stock items are automatically excluded from the cached `/api/home` payload, and the server cache invalidates immediately on any admin update.
+### 4. Guest-Side Abuse Protection
+- **Express Rate Limiting**: Global `/api/*` rate limiter plus strict per-route limiters on `/api/orders`, `/api/checkout/preview`, `/api/track/*`, and `/api/rider/*`.
+- **Cloudflare Turnstile**: Real server-side verification against `https://challenges.cloudflare.com/turnstile/v0/siteverify` when `TURNSTILE_SECRET_KEY` is configured.
+- **Optional COD Phone OTP**: Toggle `"Require phone OTP for COD orders"` in **Settings → Order Rules** while keeping customers 100% guest-only.
+- **Zod Input Validation**: Strict schema validation and field whitelisting on `PUT /api/admin/settings` and order/admin endpoints.
 
----
-
-## Deployment Steps
-
-1. **Environment Configuration**: Copy `.env.example` to `.env` and set `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET`, and `ADMIN_JWT_SECRET`.
-2. **Database Setup**: Run `psql -f db/schema.sql` against your PostgreSQL instance.
-3. **Build Frontend Assets**:
-   ```bash
-   npm install
-   npm run build
-   ```
-4. **Start Production Server**:
-   ```bash
-   npm start
-   ```
-   The Express + Socket.io server listens on port `3000`, serving the compiled PWA and `/api/*` endpoints.
+### 5. Grouped 8-Section Admin Panel
+1. **Orders** — Live board (`New` / `Preparing` / `Ready` / `Out for delivery` / `Completed` / `Cancelled`), KOT print, rider assignment, and shared Refund modal.
+2. **Menu** — `Items` (with read-only `"Appears in:"` chips sourced from Home Page Manager), `Categories`, `Variants & Add-ons`, and `Quick Stock`.
+3. **Storefront** — `Home Page Manager` (single source of truth for featured collections), `Hero Banners`, and `Appearance & Theme`.
+4. **Customers** — `Customers & Order History`, `Blocklist`, and `Reviews & Complaints`.
+5. **Marketing** — `Coupons` and `Broadcast` (labeled `"Not connected"` and disabled unless `WHATSAPP_CLOUD_API_TOKEN` or `MSG91_AUTH_KEY` is configured).
+6. **Delivery** — Unified `Zone & Fee Slabs` (single Save button) and `Riders` (with Regenerate/Revoke token & daily rotating PIN).
+7. **Finance** — `Payments`, `Refunds` (Owner only), and `Reports & GST Summary` (with CSV export).
+8. **Settings** — `Shop Info & Hours`, `Order Rules`, `Team & Roles` (Owner only), `Security & 2FA`, and `Audit Log` (Owner only).

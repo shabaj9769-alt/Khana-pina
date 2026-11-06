@@ -46,6 +46,9 @@ interface HomePayload {
   allMenuItems: MenuItem[];
   coupons: Coupon[];
   razorpayKeyId: string;
+  razorpayMode?: 'demo' | 'live';
+  demoMode?: boolean;
+  turnstileSiteKey?: string | null;
 }
 
 interface CustomerStoreProps {
@@ -140,7 +143,16 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
   const [couponInput, setCouponInput] = useState('');
   const [appliedCouponCode, setAppliedCouponCode] = useState<string | null>(null);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('RAZORPAY');
-  const [captchaVerified, setCaptchaVerified] = useState(true);
+  const [turnstileToken, setTurnstileToken] = useState<string>('');
+
+  // Optional COD Phone OTP state (only used when settings.requirePhoneOtpForCod is enabled)
+  const [codOtpRequested, setCodOtpRequested] = useState(false);
+  const [codOtpSessionId, setCodOtpSessionId] = useState('');
+  const [codOtpCode, setCodOtpCode] = useState('');
+  const [codOtpVerified, setCodOtpVerified] = useState(false);
+  const [codOtpVerifiedToken, setCodOtpVerifiedToken] = useState('');
+  const [codOtpDemoHint, setCodOtpDemoHint] = useState<string | null>(null);
+  const [codOtpBusy, setCodOtpBusy] = useState(false);
 
   // Server-validated bill & Haversine preview
   const [billPreview, setBillPreview] = useState<CheckoutPreviewResponse | null>(null);
@@ -153,6 +165,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
     razorpayOrderId: string;
     amountPaise: number;
     keyId: string;
+    mode?: 'demo' | 'live';
   } | null>(null);
   const [verifyingPayment, setVerifyingPayment] = useState(false);
 
@@ -244,9 +257,16 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
   // Load "My Recent Orders" from localStorage tokens
   const loadRecentOrders = async () => {
     const tokens = guestAuthLayer.getRecentOrderTokens();
-    const mergedTokens = Array.from(
-      new Set([...tokens, 'trk_live_demo_991a7b3c4d5e6f', 'trk_delivered_demo_772b9c1a'])
-    );
+    const mergedTokens =
+      tokens.length > 0
+        ? tokens
+        : homeData?.demoMode
+        ? ['trk_live_demo_991a7b3c4d5e6f', 'trk_delivered_demo_772b9c1a']
+        : [];
+    if (mergedTokens.length === 0) {
+      setRecentOrders([]);
+      return;
+    }
     try {
       setLoadingRecent(true);
       const res = await fetch('/api/orders/by-tokens', {
@@ -267,7 +287,35 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
     if (activeSubTab === 'orders') {
       loadRecentOrders();
     }
-  }, [activeSubTab]);
+  }, [activeSubTab, homeData?.demoMode]);
+
+  // Reset COD OTP state if phone number changes
+  useEffect(() => {
+    setCodOtpRequested(false);
+    setCodOtpVerified(false);
+    setCodOtpCode('');
+    setCodOtpDemoHint(null);
+  }, [guestPhone]);
+
+  // Load Cloudflare Turnstile script when siteKey is configured
+  useEffect(() => {
+    const siteKey = homeData?.turnstileSiteKey;
+    if (!siteKey || !cartDrawerOpen) return;
+
+    (window as unknown as Record<string, unknown>).onAanganTurnstileSuccess = (token: string) => {
+      setTurnstileToken(token);
+    };
+
+    const existing = document.getElementById('cf-turnstile-script');
+    if (!existing) {
+      const script = document.createElement('script');
+      script.id = 'cf-turnstile-script';
+      script.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js';
+      script.async = true;
+      script.defer = true;
+      document.head.appendChild(script);
+    }
+  }, [homeData?.turnstileSiteKey, cartDrawerOpen]);
 
   // Live Haversine distance check for the slim address bar
   const liveAddressDistance = useMemo(() => {
@@ -374,12 +422,111 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
     setTimeout(() => setCopiedCoupon(null), 2200);
   };
 
+  const handleRequestCodOtp = async () => {
+    setCheckoutError(null);
+    const digits = guestPhone.replace(/\D/g, '').slice(-10);
+    if (!/^[6-9]\d{9}$/.test(digits)) {
+      setCheckoutError('Enter a valid 10-digit Indian mobile number before requesting COD OTP.');
+      return;
+    }
+    setCodOtpBusy(true);
+    try {
+      const res = await guestAuthLayer.requestPhoneOtp(digits);
+      setCodOtpSessionId(res.sessionId);
+      setCodOtpRequested(true);
+      if (res.demoOtp) {
+        setCodOtpDemoHint(res.demoOtp);
+      }
+    } catch (err) {
+      setCheckoutError(err instanceof Error ? err.message : 'Could not send OTP.');
+    } finally {
+      setCodOtpBusy(false);
+    }
+  };
+
+  const handleVerifyCodOtp = async () => {
+    setCheckoutError(null);
+    if (codOtpCode.trim().length !== 4) {
+      setCheckoutError('Please enter the 4-digit OTP code.');
+      return;
+    }
+    setCodOtpBusy(true);
+    try {
+      const res = await guestAuthLayer.verifyPhoneOtp(codOtpSessionId, codOtpCode.trim());
+      setCodOtpVerifiedToken(res.verifiedToken);
+      setCodOtpVerified(true);
+    } catch (err) {
+      setCheckoutError(err instanceof Error ? err.message : 'Incorrect OTP code.');
+    } finally {
+      setCodOtpBusy(false);
+    }
+  };
+
+  const launchLiveRazorpayCheckout = (checkoutData: {
+    order: OrderRecord;
+    razorpayOrderId: string;
+    amountPaise: number;
+    keyId: string;
+  }) => {
+    const RazorpayCtor = (window as unknown as { Razorpay?: new (opts: Record<string, unknown>) => { open: () => void } }).Razorpay;
+    if (!RazorpayCtor) {
+      setCheckoutError('Razorpay Checkout SDK could not be loaded. Please check your connection.');
+      return;
+    }
+    const rzp = new RazorpayCtor({
+      key: checkoutData.keyId,
+      amount: checkoutData.amountPaise,
+      currency: 'INR',
+      name: homeData?.settings.shopName || 'Aangan Artisanal Kitchen',
+      description: `Order ${checkoutData.order.orderNumber}`,
+      order_id: checkoutData.razorpayOrderId,
+      prefill: {
+        name: guestName,
+        contact: guestPhone,
+      },
+      handler: async (response: {
+        razorpay_order_id: string;
+        razorpay_payment_id: string;
+        razorpay_signature: string;
+      }) => {
+        setVerifyingPayment(true);
+        try {
+          const verifyRes = await fetch('/api/payments/verify', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              orderId: checkoutData.order.id,
+              razorpayOrderId: response.razorpay_order_id,
+              razorpayPaymentId: response.razorpay_payment_id,
+              razorpaySignature: response.razorpay_signature,
+            }),
+          });
+          if (verifyRes.ok) {
+            setCart([]);
+            setCartDrawerOpen(false);
+            onOpenTracking(checkoutData.order.trackingToken);
+          } else {
+            setCheckoutError('Payment signature verification failed. Please contact support.');
+          }
+        } finally {
+          setVerifyingPayment(false);
+        }
+      },
+    });
+    rzp.open();
+  };
+
   const handlePlaceOrder = async (e: React.FormEvent) => {
     e.preventDefault();
     setCheckoutError(null);
 
-    if (!captchaVerified) {
-      setCheckoutError('Please check the security verification box.');
+    if (homeData?.turnstileSiteKey && !turnstileToken) {
+      setCheckoutError('Please complete the Cloudflare Turnstile security verification.');
+      return;
+    }
+
+    if (paymentMethod === 'COD' && billPreview?.requirePhoneOtpForCod && !codOtpVerified) {
+      setCheckoutError('Please verify your mobile number via OTP for Cash on Delivery.');
       return;
     }
 
@@ -398,7 +545,8 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
           scheduledFor: isScheduled && scheduledFor ? scheduledFor : null,
           paymentMethod,
           couponCode: appliedCouponCode,
-          captchaToken: captchaVerified ? 'turnstile_verified_token_2026' : '',
+          captchaToken: turnstileToken || 'demo_bypass_turnstile',
+          codOtpVerifiedToken: codOtpVerifiedToken || undefined,
           items: cart.map((c) => ({
             menuItemId: c.menuItemId,
             variantId: c.variantId,
@@ -422,12 +570,23 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
         setCartDrawerOpen(false);
         onOpenTracking(createdOrder.trackingToken);
       } else if (data.razorpayCheckout) {
-        setPendingRazorpayModal({
-          order: createdOrder,
-          razorpayOrderId: data.razorpayCheckout.razorpayOrderId,
-          amountPaise: data.razorpayCheckout.amountPaise,
-          keyId: data.razorpayCheckout.keyId,
-        });
+        const mode = data.razorpayCheckout.mode || homeData?.razorpayMode || 'demo';
+        if (mode === 'live') {
+          launchLiveRazorpayCheckout({
+            order: createdOrder,
+            razorpayOrderId: data.razorpayCheckout.razorpayOrderId,
+            amountPaise: data.razorpayCheckout.amountPaise,
+            keyId: data.razorpayCheckout.keyId,
+          });
+        } else {
+          setPendingRazorpayModal({
+            order: createdOrder,
+            razorpayOrderId: data.razorpayCheckout.razorpayOrderId,
+            amountPaise: data.razorpayCheckout.amountPaise,
+            keyId: data.razorpayCheckout.keyId,
+            mode,
+          });
+        }
       }
     } catch {
       setCheckoutError('Network error while placing order. Please try again.');
@@ -1716,7 +1875,14 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
 
                 {/* 4. Payment Method */}
                 <div className="rounded-2xl border border-stone-200 p-3.5 space-y-2.5">
-                  <h3 className="text-xs font-semibold text-stone-900">Payment Method</h3>
+                  <div className="flex items-center justify-between gap-2">
+                    <h3 className="text-xs font-semibold text-stone-900">Payment Method</h3>
+                    {homeData.razorpayMode !== 'live' && (
+                      <span className="px-2 py-0.5 rounded-md bg-amber-100 border border-amber-300 text-amber-900 text-[10px] font-bold tracking-wide uppercase">
+                        DEMO PAYMENT
+                      </span>
+                    )}
+                  </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                     <label
                       className={`p-3 rounded-xl border cursor-pointer flex items-start gap-2 ${
@@ -1736,7 +1902,11 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                         <p className="font-semibold text-stone-900 truncate">
                           Razorpay Online (UPI / Card)
                         </p>
-                        <p className="text-stone-500">Instant confirmation</p>
+                        <p className="text-stone-500">
+                          {homeData.razorpayMode === 'live'
+                            ? 'Live Razorpay Checkout'
+                            : 'Demo Payment Sandbox'}
+                        </p>
                       </div>
                     </label>
 
@@ -1770,17 +1940,81 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                     </label>
                   </div>
 
-                  <label className="flex items-center gap-2 p-2.5 rounded-xl border border-stone-200 bg-stone-50 cursor-pointer text-xs">
-                    <input
-                      type="checkbox"
-                      checked={captchaVerified}
-                      onChange={(e) => setCaptchaVerified(e.target.checked)}
-                      className="w-4 h-4 accent-emerald-700 shrink-0"
-                    />
-                    <span className="truncate font-medium text-stone-800">
-                      Verify you are human (Turnstile Protected)
-                    </span>
-                  </label>
+                  {/* Optional COD Phone OTP block when admin setting is enabled */}
+                  {paymentMethod === 'COD' && billPreview?.requirePhoneOtpForCod && (
+                    <div className="rounded-xl border border-amber-200 bg-amber-50/70 p-3 space-y-2 text-xs">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-semibold text-stone-900">
+                          Phone OTP Verification (Required for COD)
+                        </span>
+                        {codOtpVerified && (
+                          <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-semibold text-[11px]">
+                            ✓ Verified
+                          </span>
+                        )}
+                      </div>
+                      {!codOtpVerified && (
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            disabled={codOtpBusy}
+                            onClick={handleRequestCodOtp}
+                            className="px-3 py-1.5 rounded-lg bg-stone-900 text-white font-semibold text-xs cursor-pointer disabled:opacity-50"
+                          >
+                            {codOtpRequested ? 'Resend OTP' : 'Send OTP'}
+                          </button>
+                          {codOtpRequested && (
+                            <>
+                              <input
+                                type="text"
+                                inputMode="numeric"
+                                maxLength={4}
+                                value={codOtpCode}
+                                onChange={(e) =>
+                                  setCodOtpCode(e.target.value.replace(/\D/g, '').slice(0, 4))
+                                }
+                                placeholder="4-digit OTP"
+                                className="w-28 px-2.5 py-1.5 rounded-lg border border-stone-300 bg-white text-xs font-mono"
+                              />
+                              <button
+                                type="button"
+                                disabled={codOtpBusy}
+                                onClick={handleVerifyCodOtp}
+                                className="px-3 py-1.5 rounded-lg bg-emerald-700 text-white font-semibold text-xs cursor-pointer disabled:opacity-50"
+                              >
+                                Verify
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      )}
+                      {codOtpDemoHint && !codOtpVerified && (
+                        <p className="text-[11px] font-mono text-amber-800">
+                          Demo OTP Code: <strong>{codOtpDemoHint}</strong>
+                        </p>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Cloudflare Turnstile Widget or Demo Mode Note */}
+                  {homeData.turnstileSiteKey ? (
+                    <div className="p-2.5 rounded-xl border border-stone-200 bg-stone-50">
+                      <div
+                        className="cf-turnstile"
+                        data-sitekey={homeData.turnstileSiteKey}
+                        data-callback="onAanganTurnstileSuccess"
+                      />
+                    </div>
+                  ) : (
+                    <div className="flex items-center justify-between gap-2 p-2.5 rounded-xl border border-stone-200 bg-stone-50 text-[11px] text-stone-600">
+                      <span className="truncate font-medium">
+                        Cloudflare Turnstile protection active
+                      </span>
+                      <span className="px-2 py-0.5 rounded bg-stone-200 text-stone-700 font-mono text-[10px] shrink-0">
+                        Demo Mode: Bypassed
+                      </span>
+                    </div>
+                  )}
                 </div>
 
                 {/* 5. Bill Breakdown */}
@@ -1845,10 +2079,15 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
           <div className="w-full max-w-md rounded-t-3xl sm:rounded-2xl bg-white border border-stone-200 shadow-2xl overflow-hidden pb-safe">
             <div className="bg-stone-900 text-white p-4 flex items-center justify-between gap-2">
               <div className="min-w-0">
-                <p className="text-[11px] font-mono text-amber-400 truncate">
-                  RAZORPAY TEST MODE · DOUBLE VERIFICATION
-                </p>
-                <h3 className="text-base font-semibold truncate">{settings.shopName}</h3>
+                <div className="flex items-center gap-2">
+                  <span className="px-2 py-0.5 rounded bg-amber-400 text-stone-950 text-[10px] font-bold uppercase tracking-wider">
+                    DEMO PAYMENT
+                  </span>
+                  <p className="text-[11px] font-mono text-amber-400 truncate">
+                    DOUBLE VERIFICATION SANDBOX
+                  </p>
+                </div>
+                <h3 className="text-base font-semibold truncate mt-0.5">{settings.shopName}</h3>
               </div>
               <span className="text-lg font-mono font-bold text-amber-400 shrink-0">
                 ₹{(pendingRazorpayModal.amountPaise / 100).toFixed(0)}

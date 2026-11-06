@@ -9,7 +9,6 @@ import {
   Clock,
   Flame,
   Home,
-  LayoutDashboard,
   ShoppingBag,
   UtensilsCrossed,
 } from 'lucide-react';
@@ -27,8 +26,9 @@ export default function App() {
   const [socket, setSocket] = useState<Socket | null>(null);
   const [activeView, setActiveView] = useState<AppView>('customer');
   const [customerSubTab, setCustomerSubTab] = useState<'home' | 'menu' | 'orders'>('home');
-  const [trackingToken, setTrackingToken] = useState<string>('trk_live_demo_991a7b3c4d5e6f');
-  const [riderToken, setRiderToken] = useState<string>('rider_token_ramesh_01');
+  // 1.5 No hardcoded default tracking token; set only via /track/<token> or order action
+  const [trackingToken, setTrackingToken] = useState<string>('');
+  const [riderToken, setRiderToken] = useState<string>('');
   const [cart, setCart] = useState<CartItem[]>(() => guestAuthLayer.getCart());
   const [cartDrawerOpen, setCartDrawerOpen] = useState(false);
   const [storefrontRefreshKey, setStorefrontRefreshKey] = useState(0);
@@ -44,15 +44,11 @@ export default function App() {
       const path = window.location.pathname;
       if (path.startsWith('/track/')) {
         const tok = path.replace('/track/', '').trim();
-        if (tok) {
-          setTrackingToken(tok);
-          setActiveView('tracking');
-        }
+        setTrackingToken(tok);
+        setActiveView('tracking');
       } else if (path.startsWith('/rider')) {
         const rTok = path.replace('/rider/', '').replace('/rider', '').trim();
-        if (rTok) {
-          setRiderToken(rTok);
-        }
+        setRiderToken(rTok);
         setActiveView('rider');
       } else if (path.startsWith('/admin')) {
         setActiveView('admin');
@@ -66,10 +62,11 @@ export default function App() {
     return () => window.removeEventListener('popstate', syncFromUrl);
   }, []);
 
-  // Initialize Socket.io real-time connection on same origin (Port 3000)
+  // Initialize Socket.io real-time connection on same origin (Port 3000) with credentials
   useEffect(() => {
     const sock = io(window.location.origin, {
       transports: ['websocket', 'polling'],
+      withCredentials: true,
     });
     setSocket(sock);
     return () => {
@@ -153,11 +150,11 @@ export default function App() {
   }
 
   // ===========================================================================
-  // CUSTOMER STOREFRONT & ORDER TRACKING LAYOUT
+  // CUSTOMER STOREFRONT & ORDER TRACKING LAYOUT (Guest-Only, Zero Admin Link)
   // ===========================================================================
   return (
     <div className="min-h-[100dvh] w-full max-w-[100vw] overflow-x-clip flex flex-col bg-[#FAF8F5] text-stone-900 pb-16 md:pb-6">
-      {/* STICKY CUSTOMER HEADER — Full shop name visible, never cut off */}
+      {/* STICKY CUSTOMER HEADER — Full shop name visible, no Admin button */}
       <header className="sticky top-0 left-0 right-0 z-30 w-full max-w-[100vw] bg-white/95 backdrop-blur-md border-b border-stone-200 overflow-x-clip">
         <div className="w-full max-w-[480px] md:max-w-[1200px] mx-auto px-4 min-h-[56px] py-1.5 flex items-center justify-between gap-2">
           <a
@@ -251,17 +248,8 @@ export default function App() {
             </button>
           </nav>
 
-          {/* Right: Admin Portal Quick Switch + Cart Bag Button */}
+          {/* Right: Cart Bag Button Only (Admin button removed per Phase 2.8) */}
           <div className="flex items-center gap-1.5 shrink-0">
-            <button
-              type="button"
-              onClick={() => navigateView('admin', '/admin')}
-              aria-label="Admin Portal"
-              title="Admin Portal"
-              className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl border border-stone-200 bg-stone-50 hover:bg-stone-100 text-stone-700 flex items-center justify-center shrink-0 cursor-pointer"
-            >
-              <LayoutDashboard className="w-4 h-4 shrink-0" />
-            </button>
             <button
               type="button"
               onClick={() => {

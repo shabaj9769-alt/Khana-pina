@@ -29,6 +29,7 @@ const STATUS_STEPS: { key: OrderStatus; label: string; desc: string }[] = [
   { key: 'PLACED', label: 'Placed', desc: 'Received by kitchen' },
   { key: 'ACCEPTED', label: 'Accepted', desc: 'Chef confirmed prep' },
   { key: 'PREPARING', label: 'Preparing', desc: 'Slow-cooking on hearth' },
+  { key: 'READY', label: 'Ready', desc: 'Packed & awaiting rider' },
   { key: 'OUT_FOR_DELIVERY', label: 'On the Way', desc: 'Rider dispatched' },
   { key: 'DELIVERED', label: 'Delivered', desc: 'Verified by OTP' },
 ];
@@ -244,7 +245,7 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
             )}
           </div>
         ) : (
-          <div className="flex sm:grid sm:grid-cols-5 gap-2.5 overflow-x-auto no-scrollbar snap-x pb-1">
+          <div className="flex sm:grid sm:grid-cols-6 gap-2.5 overflow-x-auto no-scrollbar snap-x pb-1">
             {STATUS_STEPS.map((step, idx) => {
               const isCompleted = idx <= currentStepIndex;
               const isCurrent = idx === currentStepIndex;

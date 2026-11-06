@@ -30,6 +30,8 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
   const [activeToken, setActiveToken] = useState(initialToken || DEMO_RIDERS[0].token);
   const [riderName, setRiderName] = useState('Ramesh Pawar');
   const [riderPhone, setRiderPhone] = useState('9876501234');
+  const [dailyPin, setDailyPin] = useState<string | undefined>(undefined);
+  const [authError, setAuthError] = useState<string | null>(null);
   const [isOnline, setIsOnline] = useState(true);
   const [riderTab, setRiderTab] = useState<'active' | 'completed'>('active');
   const [orders, setOrders] = useState<OrderRecord[]>([]);
@@ -46,14 +48,24 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
   };
 
   const fetchRiderOrders = async (token: string) => {
+    if (!token) {
+      setAuthError('Missing rider link token. Open the link shared by the kitchen manager.');
+      setLoading(false);
+      return;
+    }
     try {
       setLoading(true);
+      setAuthError(null);
       const res = await fetch(`/api/rider/${encodeURIComponent(token)}`);
       const data = await res.json();
       if (res.ok && data.rider) {
         setRiderName(data.rider.name);
         setRiderPhone(data.rider.phone);
+        setDailyPin(data.rider.dailyPin);
         setOrders(data.orders || []);
+      } else {
+        setAuthError(data.error || 'Invalid, revoked, or expired rider link.');
+        setOrders([]);
       }
     } finally {
       setLoading(false);
@@ -171,7 +183,7 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
                 Hi, {firstName}
               </h1>
               <p className="text-[12px] text-[#6B7280] truncate tabular-nums">
-                +91 {riderPhone} · Link-only rider portal
+                +91 {riderPhone} {dailyPin ? `· Daily PIN: ${dailyPin}` : '· Link-only rider portal'}
               </p>
             </div>
           </div>
@@ -215,26 +227,35 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
 
       {/* Main Content Container (480px centered wrapper, 16px page padding, 12px gap between cards) */}
       <main className="w-full max-w-[480px] mx-auto px-4 py-4 space-y-3 min-w-0 overflow-x-clip">
-        {/* Rider Switcher Pill Strip (compact, wraps safely) */}
-        <div className="flex flex-wrap items-center justify-between gap-2 bg-white rounded-[12px] p-3 shadow-[0_1px_3px_rgba(0,0,0,0.08)] border border-gray-100">
-          <span className="text-[12px] font-medium text-[#6B7280]">Active Rider Link:</span>
-          <div className="flex flex-wrap items-center gap-1.5 min-w-0">
-            {DEMO_RIDERS.map((r) => (
-              <button
-                key={r.token}
-                type="button"
-                onClick={() => setActiveToken(r.token)}
-                className={`min-h-[36px] px-3 rounded-[8px] text-[12px] font-semibold whitespace-nowrap transition-colors duration-200 cursor-pointer ${
-                  activeToken === r.token
-                    ? 'bg-[#D9480F] text-white'
-                    : 'bg-gray-100 text-[#111827] hover:bg-gray-200'
-                }`}
-              >
-                {r.name}
-              </button>
-            ))}
+        {authError && (
+          <div className="bg-red-50 border border-red-200 text-red-900 rounded-[12px] p-4 text-[13px] font-medium space-y-1">
+            <p className="font-bold">Rider Link Access Error</p>
+            <p>{authError}</p>
           </div>
-        </div>
+        )}
+
+        {/* Rider Switcher Pill Strip (only shown when no fixed token or in demo preview) */}
+        {!initialToken && (
+          <div className="flex flex-wrap items-center justify-between gap-2 bg-white rounded-[12px] p-3 shadow-[0_1px_3px_rgba(0,0,0,0.08)] border border-gray-100">
+            <span className="text-[12px] font-medium text-[#6B7280]">Demo Rider Link:</span>
+            <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+              {DEMO_RIDERS.map((r) => (
+                <button
+                  key={r.token}
+                  type="button"
+                  onClick={() => setActiveToken(r.token)}
+                  className={`min-h-[36px] px-3 rounded-[8px] text-[12px] font-semibold whitespace-nowrap transition-colors duration-200 cursor-pointer ${
+                    activeToken === r.token
+                      ? 'bg-[#D9480F] text-white'
+                      : 'bg-gray-100 text-[#111827] hover:bg-gray-200'
+                  }`}
+                >
+                  {r.name}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Daily Summary Card: Deliveries Done & Cash Collected */}
         <section className="grid grid-cols-2 gap-3 min-w-0">

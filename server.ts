@@ -2,12 +2,17 @@ import express, { Request, Response, NextFunction } from 'express';
 import { createServer } from 'http';
 import { Server as SocketIOServer } from 'socket.io';
 import { createServer as createViteServer } from 'vite';
+import rateLimit from 'express-rate-limit';
+import { z } from 'zod';
+import pg from 'pg';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import dotenv from 'dotenv';
 import {
   AdminRole,
+  AdminSessionRecord,
+  AdminUserPublic,
   AuditLogRecord,
   Banner,
   BlockedEntry,
@@ -32,10 +37,31 @@ import {
 dotenv.config();
 
 const PORT = 3000;
+const IS_PROD = process.env.NODE_ENV === 'production';
+const DEFAULT_ADMIN_SECRET = 'aangan_admin_jwt_secret_key_change_in_prod';
+const ADMIN_JWT_SECRET = process.env.ADMIN_JWT_SECRET || DEFAULT_ADMIN_SECRET;
+
+// 1.2 Refuse to start in production if ADMIN_JWT_SECRET is missing or default
+if (IS_PROD && (!process.env.ADMIN_JWT_SECRET || process.env.ADMIN_JWT_SECRET === DEFAULT_ADMIN_SECRET)) {
+  console.error(
+    'FATAL SECURITY ERROR: ADMIN_JWT_SECRET must be set to a strong non-default secret in production.'
+  );
+  process.exit(1);
+}
+
+// 1.1 & 1.2 Environment flags
+const DEMO_MODE = !IS_PROD && (process.env.DEMO_MODE ?? 'true') === 'true';
+const RAZORPAY_MODE: 'demo' | 'live' =
+  process.env.RAZORPAY_MODE === 'live' ? 'live' : 'demo';
 const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID || 'rzp_test_aangan_demo_key';
 const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || 'rzp_test_secret_hmac_key_2026';
-const RAZORPAY_WEBHOOK_SECRET = process.env.RAZORPAY_WEBHOOK_SECRET || 'whsec_aangan_razorpay_webhook_2026';
-const ADMIN_JWT_SECRET = process.env.ADMIN_JWT_SECRET || 'aangan_admin_jwt_secret_key_change_in_prod';
+const RAZORPAY_WEBHOOK_SECRET =
+  process.env.RAZORPAY_WEBHOOK_SECRET || 'whsec_aangan_razorpay_webhook_2026';
+const TURNSTILE_SITE_KEY = process.env.TURNSTILE_SITE_KEY || '';
+const TURNSTILE_SECRET_KEY = process.env.TURNSTILE_SECRET_KEY || '';
+const BROADCAST_PROVIDER_CONFIGURED = Boolean(
+  process.env.WHATSAPP_CLOUD_API_TOKEN || process.env.MSG91_AUTH_KEY
+);
 
 // Image URLs (never import .jpg in server.ts)
 const IMG_HERO = '/src/assets/images/hero_artisanal_feast_1793975537331.jpg';
@@ -50,6 +76,13 @@ interface AdminUserRecord {
   passwordHash: string;
   name: string;
   role: AdminRole;
+  isActive: boolean;
+  mustChangePassword: boolean;
+  tokenVersion: number;
+  totpEnabled: boolean;
+  totpSecret?: string;
+  createdAt: string;
+  lastLoginAt?: string;
 }
 
 interface CouponUsageRecord {
@@ -70,6 +103,7 @@ interface BroadcastRecord {
 }
 
 interface DatabaseState {
+  nextOrderSequence: number;
   settings: ShopSettings;
   deliveryZone: DeliveryZone;
   categories: Category[];
@@ -85,33 +119,145 @@ interface DatabaseState {
   deliveryBoys: DeliveryBoy[];
   reviews: ReviewRecord[];
   adminUsers: AdminUserRecord[];
+  adminSessions: AdminSessionRecord[];
   auditLogs: AuditLogRecord[];
   blockedList: BlockedEntry[];
   broadcasts: BroadcastRecord[];
 }
 
-function hashPassword(password: string): string {
-  return crypto.createHmac('sha256', ADMIN_JWT_SECRET).update(password).digest('hex');
+// =============================================================================
+// 1.2 CRYPTO.SCRYPT PASSWORD HASHING + TOTP 2FA + STANDARD JWT + COOKIE AUTH
+// =============================================================================
+
+function hashPasswordScrypt(password: string, saltHex?: string): string {
+  const salt = saltHex ? Buffer.from(saltHex, 'hex') : crypto.randomBytes(16);
+  const derived = crypto.scryptSync(password, salt, 64);
+  return `scrypt$${salt.toString('hex')}$${derived.toString('hex')}`;
 }
 
-function createAdminToken(payload: { email: string; role: AdminRole; name: string }): string {
-  const data = Buffer.from(JSON.stringify({ ...payload, exp: Date.now() + 24 * 3600 * 1000 })).toString('base64url');
-  const sig = crypto.createHmac('sha256', ADMIN_JWT_SECRET).update(data).digest('base64url');
-  return `${data}.${sig}`;
-}
-
-function verifyAdminToken(token: string): { email: string; role: AdminRole; name: string } | null {
+function verifyPasswordScrypt(password: string, storedHash: string): boolean {
   try {
-    const [data, sig] = token.split('.');
-    if (!data || !sig) return null;
-    const expectedSig = crypto.createHmac('sha256', ADMIN_JWT_SECRET).update(data).digest('base64url');
+    if (storedHash.startsWith('scrypt$')) {
+      const parts = storedHash.split('$');
+      if (parts.length !== 3) return false;
+      const [, saltHex, keyHex] = parts;
+      const derived = crypto.scryptSync(password, Buffer.from(saltHex, 'hex'), 64);
+      const expected = Buffer.from(keyHex, 'hex');
+      if (derived.length !== expected.length) return false;
+      return crypto.timingSafeEqual(derived, expected);
+    }
+    // Legacy HMAC fallback before migration
+    const legacy = crypto.createHmac('sha256', ADMIN_JWT_SECRET).update(password).digest('hex');
+    return legacy === storedHash;
+  } catch {
+    return false;
+  }
+}
+
+// RFC 6238 TOTP (6-digit, 30s step, HMAC-SHA1)
+function generateTotpSecret(): string {
+  return crypto.randomBytes(20).toString('hex');
+}
+
+function computeTotpCode(secretHex: string, stepWindow = 0): string {
+  const counter = Math.floor(Date.now() / 30000) + stepWindow;
+  const buf = Buffer.alloc(8);
+  buf.writeBigInt64BE(BigInt(counter), 0);
+  const hmac = crypto.createHmac('sha1', Buffer.from(secretHex, 'hex')).update(buf).digest();
+  const offset = hmac[hmac.length - 1] & 0x0f;
+  const code =
+    (((hmac[offset] & 0x7f) << 24) |
+      ((hmac[offset + 1] & 0xff) << 16) |
+      ((hmac[offset + 2] & 0xff) << 8) |
+      (hmac[offset + 3] & 0xff)) %
+    1_000_000;
+  return String(code).padStart(6, '0');
+}
+
+function verifyTotpCode(secretHex: string, code: string): boolean {
+  const clean = String(code || '').trim();
+  if (!/^\d{6}$/.test(clean)) return false;
+  return (
+    computeTotpCode(secretHex, -1) === clean ||
+    computeTotpCode(secretHex, 0) === clean ||
+    computeTotpCode(secretHex, 1) === clean
+  );
+}
+
+interface JwtPayload {
+  sub: string;
+  email: string;
+  role: AdminRole;
+  name: string;
+  tv: number;
+  sid: string;
+  type: 'access' | 'refresh';
+  iat: number;
+  exp: number;
+}
+
+const ACCESS_TTL_SEC = 15 * 60; // 15 minutes
+const REFRESH_TTL_SEC = 7 * 24 * 3600; // 7 days
+
+function signJwt(payload: Omit<JwtPayload, 'iat' | 'exp'>, ttlSec: number): string {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
+  const body = Buffer.from(
+    JSON.stringify({ ...payload, iat: nowSec, exp: nowSec + ttlSec })
+  ).toString('base64url');
+  const sig = crypto
+    .createHmac('sha256', ADMIN_JWT_SECRET)
+    .update(`${header}.${body}`)
+    .digest('base64url');
+  return `${header}.${body}.${sig}`;
+}
+
+function verifyJwtRaw(token: string): JwtPayload | null {
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    const [header, body, sig] = parts;
+    const expectedSig = crypto
+      .createHmac('sha256', ADMIN_JWT_SECRET)
+      .update(`${header}.${body}`)
+      .digest('base64url');
     if (sig !== expectedSig) return null;
-    const parsed = JSON.parse(Buffer.from(data, 'base64url').toString('utf8'));
-    if (parsed.exp < Date.now()) return null;
-    return { email: parsed.email, role: parsed.role, name: parsed.name };
+    const parsed = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) as JwtPayload;
+    if (!parsed.exp || parsed.exp < Math.floor(Date.now() / 1000)) return null;
+    return parsed;
   } catch {
     return null;
   }
+}
+
+function parseCookies(cookieHeader?: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!cookieHeader) return out;
+  for (const pair of cookieHeader.split(';')) {
+    const idx = pair.indexOf('=');
+    if (idx > 0) {
+      const k = pair.slice(0, idx).trim();
+      const v = decodeURIComponent(pair.slice(idx + 1).trim());
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
+function setAdminAuthCookies(res: Response, accessToken: string, refreshToken: string) {
+  const secureFlag = IS_PROD ? '; Secure' : '';
+  res.setHeader('Set-Cookie', [
+    `aangan_admin_access=${encodeURIComponent(accessToken)}; HttpOnly; Path=/; Max-Age=${ACCESS_TTL_SEC}; SameSite=Strict${secureFlag}`,
+    `aangan_admin_refresh=${encodeURIComponent(refreshToken)}; HttpOnly; Path=/; Max-Age=${REFRESH_TTL_SEC}; SameSite=Strict${secureFlag}`,
+  ]);
+}
+
+function clearAdminAuthCookies(res: Response) {
+  const secureFlag = IS_PROD ? '; Secure' : '';
+  res.setHeader('Set-Cookie', [
+    `aangan_admin_access=; HttpOnly; Path=/; Max-Age=0; SameSite=Strict${secureFlag}`,
+    `aangan_admin_refresh=; HttpOnly; Path=/; Max-Age=0; SameSite=Strict${secureFlag}`,
+  ]);
 }
 
 /**
@@ -124,7 +270,7 @@ export function calculateHaversineKm(
   lon2: number
 ): number {
   const toRad = (deg: number) => (deg * Math.PI) / 180;
-  const R = 6371; // Earth radius in km
+  const R = 6371;
   const dLat = toRad(lat2 - lat1);
   const dLon = toRad(lon2 - lon1);
   const a =
@@ -134,7 +280,31 @@ export function calculateHaversineKm(
   return Number((R * c).toFixed(2));
 }
 
+// =============================================================================
+// 1.6 DATA STORAGE LAYER (PostgreSQL Pool + Atomic JSON Fallback + Race Mutex)
+// =============================================================================
+
 const DATA_FILE = path.join(process.cwd(), 'data', 'store.json');
+const DATA_BACKUP_FILE = path.join(process.cwd(), 'data', 'store.json.bak');
+
+let pgPool: pg.Pool | null = null;
+if (process.env.DATABASE_URL) {
+  pgPool = new pg.Pool({
+    connectionString: process.env.DATABASE_URL,
+    max: 10,
+  });
+}
+
+// Async mutex for race-safe order numbers, stock, and coupon usages
+let writeMutexPromise: Promise<void> = Promise.resolve();
+function withWriteLock<T>(fn: () => Promise<T> | T): Promise<T> {
+  const next = writeMutexPromise.then(() => fn());
+  writeMutexPromise = next.then(
+    () => undefined,
+    () => undefined
+  );
+  return next;
+}
 
 function getInitialDatabaseState(): DatabaseState {
   const nowIso = new Date().toISOString();
@@ -142,6 +312,7 @@ function getInitialDatabaseState(): DatabaseState {
   const sampleDeliveredAt = new Date(Date.now() - 2 * 3600 * 1000).toISOString();
 
   return {
+    nextOrderSequence: 1046,
     settings: {
       shopName: 'Aangan Artisanal Kitchen',
       fssaiNumber: '11524006000489',
@@ -156,6 +327,7 @@ function getInitialDatabaseState(): DatabaseState {
       codMaxAmount: 1800,
       codMaxActiveOrders: 2,
       onlineOnlyFirstOrder: false,
+      requirePhoneOtpForCod: false,
       maxOrdersPerHourPhone: 5,
       maxOrdersPerHourIp: 10,
       autoCancelUnacceptedMins: 5,
@@ -164,6 +336,8 @@ function getInitialDatabaseState(): DatabaseState {
         { maxKm: 6, fee: 45 },
         { maxKm: 10, fee: 75 },
       ],
+      themeAccentColor: '#D9480F',
+      themeSurfaceStyle: 'warm',
     },
     deliveryZone: {
       shopLat: 19.0607,
@@ -199,7 +373,7 @@ function getInitialDatabaseState(): DatabaseState {
       },
       {
         id: 'cat_desserts',
-        name: 'Royal Mithai &Beverages',
+        name: 'Royal Mithai & Beverages',
         slug: 'desserts-drinks',
         description: 'Warm cardamom-infused sweets and chilled rose-pistachio beverages.',
         sortOrder: 4,
@@ -400,13 +574,13 @@ function getInitialDatabaseState(): DatabaseState {
         title: 'Kitchen Bestsellers',
         subtitle: 'Most reordered handis and slow-simmered classics across Bandra & Khar.',
         sectionType: 'BESTSELLERS',
-        bestsellerMode: 'AUTO_SALES',
+        bestsellerMode: 'MANUAL',
         sortOrder: 1,
         isVisible: true,
-        maxItems: 3,
+        maxItems: 4,
         scheduleStartHour: null,
         scheduleEndHour: null,
-        itemIds: ['item_butter_chicken', 'item_lucknowi_biryani', 'item_subz_biryani'],
+        itemIds: ['item_butter_chicken', 'item_lucknowi_biryani', 'item_subz_biryani', 'item_paneer_tikka'],
       },
       {
         id: 'sec_todays_special',
@@ -602,6 +776,7 @@ function getInitialDatabaseState(): DatabaseState {
         placedAt: sampleDeliveredAt,
         acceptedAt: sampleDeliveredAt,
         preparedAt: sampleDeliveredAt,
+        readyAt: sampleDeliveredAt,
         outForDeliveryAt: sampleDeliveredAt,
         deliveredAt: new Date(Date.now() - 90 * 60 * 1000).toISOString(),
         items: [
@@ -662,6 +837,8 @@ function getInitialDatabaseState(): DatabaseState {
         isActive: true,
         activeOrders: 2,
         accessToken: 'rider_token_ramesh_01',
+        tokenExpiresAt: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString(),
+        dailyPin: '4419',
       },
       {
         id: 'rider_2',
@@ -670,6 +847,8 @@ function getInitialDatabaseState(): DatabaseState {
         isActive: true,
         activeOrders: 0,
         accessToken: 'rider_token_imran_02',
+        tokenExpiresAt: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString(),
+        dailyPin: '8820',
       },
     ],
     reviews: [
@@ -689,32 +868,48 @@ function getInitialDatabaseState(): DatabaseState {
       {
         id: 'adm_owner',
         email: 'owner@aangan.in',
-        passwordHash: hashPassword('admin123'),
+        passwordHash: hashPasswordScrypt('admin123'),
         name: 'Chef Vikramaditya (Owner)',
         role: 'owner',
+        isActive: true,
+        mustChangePassword: true,
+        tokenVersion: 1,
+        totpEnabled: false,
+        createdAt: nowIso,
       },
       {
         id: 'adm_manager',
         email: 'manager@aangan.in',
-        passwordHash: hashPassword('manager123'),
+        passwordHash: hashPasswordScrypt('manager123'),
         name: 'Ananya Nair (Manager)',
         role: 'manager',
+        isActive: true,
+        mustChangePassword: true,
+        tokenVersion: 1,
+        totpEnabled: false,
+        createdAt: nowIso,
       },
       {
         id: 'adm_staff',
         email: 'staff@aangan.in',
-        passwordHash: hashPassword('staff123'),
+        passwordHash: hashPasswordScrypt('staff123'),
         name: 'Kitchen Dispatch (Staff)',
         role: 'staff',
+        isActive: true,
+        mustChangePassword: true,
+        tokenVersion: 1,
+        totpEnabled: false,
+        createdAt: nowIso,
       },
     ],
+    adminSessions: [],
     auditLogs: [
       {
         id: 'aud_init',
         adminEmail: 'owner@aangan.in',
         adminRole: 'owner',
         action: 'SYSTEM_INITIALIZED',
-        details: 'Initialized Aangan Artisanal Kitchen delivery zone (8.5 km radius) and Razorpay webhook verifier.',
+        details: 'Initialized Aangan Artisanal Kitchen with scrypt password hashing, JWT session revocation, and Haversine zone verifier.',
         ipAddress: '127.0.0.1',
         createdAt: nowIso,
       },
@@ -724,6 +919,85 @@ function getInitialDatabaseState(): DatabaseState {
   };
 }
 
+/**
+ * Migrate legacy store.json records:
+ * 1) Convert legacy HMAC password hashes to crypto.scrypt with per-user random salt & set mustChangePassword
+ * 2) Migrate item-level flags (isBestseller, isTodaysSpecial, isNewArrival) into HomeSection itemIds
+ */
+function migrateLoadedDatabase(state: DatabaseState, initial: DatabaseState): DatabaseState {
+  if (!state.nextOrderSequence || state.nextOrderSequence < 1046) {
+    state.nextOrderSequence = Math.max(1046, 1043 + (state.orders?.length || 0));
+  }
+  if (state.settings.requirePhoneOtpForCod === undefined) {
+    state.settings.requirePhoneOtpForCod = false;
+  }
+  if (!state.settings.themeAccentColor) {
+    state.settings.themeAccentColor = '#D9480F';
+  }
+  if (!state.settings.themeSurfaceStyle) {
+    state.settings.themeSurfaceStyle = 'warm';
+  }
+  if (!Array.isArray(state.adminSessions)) {
+    state.adminSessions = [];
+  }
+
+  // Migrate admin users to scrypt & add missing fields
+  const defaultPasswords: Record<string, string> = {
+    'owner@aangan.in': 'admin123',
+    'manager@aangan.in': 'manager123',
+    'staff@aangan.in': 'staff123',
+  };
+  for (const u of state.adminUsers) {
+    if (!u.passwordHash.startsWith('scrypt$')) {
+      const knownPass = defaultPasswords[u.email.toLowerCase()] || 'admin123';
+      u.passwordHash = hashPasswordScrypt(knownPass);
+      u.mustChangePassword = true;
+    }
+    if (u.isActive === undefined) u.isActive = true;
+    if (u.mustChangePassword === undefined) u.mustChangePassword = false;
+    if (!u.tokenVersion) u.tokenVersion = 1;
+    if (u.totpEnabled === undefined) u.totpEnabled = false;
+    if (!u.createdAt) u.createdAt = new Date().toISOString();
+  }
+
+  // Ensure riders have tokenExpiresAt and dailyPin
+  for (const r of state.deliveryBoys) {
+    if (r.tokenExpiresAt === undefined) {
+      r.tokenExpiresAt = new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString();
+    }
+    if (!r.dailyPin) {
+      r.dailyPin = String(Math.floor(1000 + Math.random() * 9000));
+    }
+  }
+
+  // Phase 2.3: Migrate menu item flags (isBestseller, isTodaysSpecial) into HomeSection itemIds
+  const bestsellerSec = state.homeSections.find((s) => s.sectionType === 'BESTSELLERS');
+  const specialSec = state.homeSections.find((s) => s.sectionType === 'TODAYS_SPECIAL');
+  for (const item of state.menuItems) {
+    if (item.isBestseller && bestsellerSec && !bestsellerSec.itemIds.includes(item.id)) {
+      bestsellerSec.itemIds.push(item.id);
+    }
+    if (item.isTodaysSpecial && specialSec && !specialSec.itemIds.includes(item.id)) {
+      specialSec.itemIds.push(item.id);
+    }
+  }
+
+  // Keep demo live order fresh in demo mode
+  if (DEMO_MODE) {
+    const existingNew = state.orders.find((o) => o.id === 'ord_sample_new');
+    if (!existingNew) {
+      state.orders.unshift(initial.orders[0]);
+    } else if (existingNew.status === 'PLACED' || existingNew.status === 'CANCELLED') {
+      existingNew.status = 'PLACED';
+      existingNew.cancelReason = undefined;
+      existingNew.cancelledAt = undefined;
+      existingNew.placedAt = new Date(Date.now() - 28 * 1000).toISOString();
+    }
+  }
+
+  return state;
+}
+
 function loadDatabase(): DatabaseState {
   const initial = getInitialDatabaseState();
   try {
@@ -731,31 +1005,102 @@ function loadDatabase(): DatabaseState {
       const raw = fs.readFileSync(DATA_FILE, 'utf8');
       const parsed = JSON.parse(raw) as DatabaseState;
       if (parsed && parsed.menuItems && parsed.settings) {
-        const existingNew = parsed.orders.find((o) => o.id === 'ord_sample_new');
-        if (!existingNew) {
-          parsed.orders.unshift(initial.orders[0]);
-        } else if (existingNew.status === 'PLACED' || existingNew.status === 'CANCELLED') {
-          existingNew.status = 'PLACED';
-          existingNew.cancelReason = undefined;
-          existingNew.cancelledAt = undefined;
-          existingNew.placedAt = new Date(Date.now() - 28 * 1000).toISOString();
-        }
-        return parsed;
+        const migrated = migrateLoadedDatabase(parsed, initial);
+        saveDatabase(migrated);
+        return migrated;
       }
     }
   } catch (e) {
-    console.error('Error loading store.json, using default seed:', e);
+    console.error('Error loading store.json, checking backup or using default seed:', e);
+    try {
+      if (fs.existsSync(DATA_BACKUP_FILE)) {
+        const backupRaw = fs.readFileSync(DATA_BACKUP_FILE, 'utf8');
+        const backupParsed = JSON.parse(backupRaw) as DatabaseState;
+        if (backupParsed && backupParsed.menuItems && backupParsed.settings) {
+          return migrateLoadedDatabase(backupParsed, initial);
+        }
+      }
+    } catch {
+      // Ignore backup error
+    }
   }
   saveDatabase(initial);
   return initial;
 }
 
+/**
+ * 1.6 Atomic write (write temp file + backup + rename) + optional PostgreSQL transactional sync
+ */
 function saveDatabase(state: DatabaseState) {
   try {
-    fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
-    fs.writeFileSync(DATA_FILE, JSON.stringify(state, null, 2), 'utf8');
+    const dir = path.dirname(DATA_FILE);
+    fs.mkdirSync(dir, { recursive: true });
+    const tmpFile = `${DATA_FILE}.tmp.${process.pid}.${Date.now()}`;
+    const serialized = JSON.stringify(state, null, 2);
+    fs.writeFileSync(tmpFile, serialized, 'utf8');
+    if (fs.existsSync(DATA_FILE)) {
+      try {
+        fs.copyFileSync(DATA_FILE, DATA_BACKUP_FILE);
+      } catch {
+        // Ignore backup copy warning
+      }
+    }
+    fs.renameSync(tmpFile, DATA_FILE);
   } catch (e) {
-    console.error('Error saving store.json:', e);
+    console.error('Error saving store.json atomically:', e);
+  }
+
+  // If DATABASE_URL is configured, persist transactional snapshot & relational tables in PostgreSQL
+  if (pgPool) {
+    syncStateToPostgres(state).catch((err) => {
+      console.error('PostgreSQL sync warning:', err);
+    });
+  }
+}
+
+async function initPostgresIfConfigured(state: DatabaseState) {
+  if (!pgPool) return;
+  const client = await pgPool.connect();
+  try {
+    const schemaPath = path.join(process.cwd(), 'db', 'schema.sql');
+    if (fs.existsSync(schemaPath)) {
+      const sql = fs.readFileSync(schemaPath, 'utf8');
+      await client.query(sql);
+    }
+    const res = await client.query('SELECT state_json FROM app_state_snapshot WHERE id = 1');
+    if (res.rows.length > 0 && res.rows[0].state_json) {
+      const pgState = res.rows[0].state_json as DatabaseState;
+      if (pgState && pgState.menuItems && pgState.settings) {
+        Object.assign(state, migrateLoadedDatabase(pgState, getInitialDatabaseState()));
+      }
+    } else {
+      await client.query(
+        'INSERT INTO app_state_snapshot (id, state_json, updated_at) VALUES (1, $1, NOW()) ON CONFLICT (id) DO UPDATE SET state_json = EXCLUDED.state_json, updated_at = NOW()',
+        [JSON.stringify(state)]
+      );
+    }
+  } catch (e) {
+    console.error('PostgreSQL initialization error (falling back to atomic JSON store):', e);
+  } finally {
+    client.release();
+  }
+}
+
+async function syncStateToPostgres(state: DatabaseState) {
+  if (!pgPool) return;
+  const client = await pgPool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      'INSERT INTO app_state_snapshot (id, state_json, updated_at) VALUES (1, $1, NOW()) ON CONFLICT (id) DO UPDATE SET state_json = EXCLUDED.state_json, updated_at = NOW()',
+      [JSON.stringify(state)]
+    );
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
   }
 }
 
@@ -767,8 +1112,13 @@ function clearHomeCache() {
   homeApiCache = null;
 }
 
-// Helper to append audit log
-function logAudit(adminEmail: string, adminRole: AdminRole, action: string, details: string, ip: string) {
+function logAudit(
+  adminEmail: string,
+  adminRole: AdminRole,
+  action: string,
+  details: string,
+  ip: string
+) {
   db.auditLogs.unshift({
     id: `aud_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
     adminEmail,
@@ -778,12 +1128,151 @@ function logAudit(adminEmail: string, adminRole: AdminRole, action: string, deta
     ipAddress: ip,
     createdAt: new Date().toISOString(),
   });
+  if (db.auditLogs.length > 500) {
+    db.auditLogs = db.auditLogs.slice(0, 500);
+  }
   saveDatabase(db);
 }
 
+function toPublicAdminUser(u: AdminUserRecord): AdminUserPublic {
+  return {
+    id: u.id,
+    email: u.email,
+    name: u.name,
+    role: u.role,
+    isActive: u.isActive,
+    mustChangePassword: u.mustChangePassword,
+    totpEnabled: u.totpEnabled,
+    createdAt: u.createdAt,
+    lastLoginAt: u.lastLoginAt,
+  };
+}
+
+// =============================================================================
+// 1.2 LOGIN BRUTE-FORCE RATE LIMITER & LOCKOUT (Max 5 per email & per IP / 15m)
+// =============================================================================
+
+interface LoginAttemptBucket {
+  failures: number[];
+  lockedUntil: number;
+}
+
+const loginAttemptsByEmail = new Map<string, LoginAttemptBucket>();
+const loginAttemptsByIp = new Map<string, LoginAttemptBucket>();
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const MAX_LOGIN_FAILURES = 5;
+
+function isLoginLocked(map: Map<string, LoginAttemptBucket>, key: string): boolean {
+  const now = Date.now();
+  const bucket = map.get(key);
+  if (!bucket) return false;
+  if (bucket.lockedUntil > now) return true;
+  bucket.failures = bucket.failures.filter((t) => now - t < LOGIN_WINDOW_MS);
+  return false;
+}
+
+function recordLoginFailure(map: Map<string, LoginAttemptBucket>, key: string): boolean {
+  const now = Date.now();
+  const bucket = map.get(key) || { failures: [], lockedUntil: 0 };
+  bucket.failures = bucket.failures.filter((t) => now - t < LOGIN_WINDOW_MS);
+  bucket.failures.push(now);
+  if (bucket.failures.length >= MAX_LOGIN_FAILURES) {
+    bucket.lockedUntil = now + LOGIN_WINDOW_MS;
+    map.set(key, bucket);
+    return true;
+  }
+  map.set(key, bucket);
+  return false;
+}
+
+function clearLoginFailures(email: string, ip: string) {
+  loginAttemptsByEmail.delete(email);
+  loginAttemptsByIp.delete(ip);
+}
+
+// =============================================================================
+// 1.4 OPTIONAL COD PHONE OTP CHALLENGE STORE (Off by default)
+// =============================================================================
+
+interface CodOtpSession {
+  sessionId: string;
+  phone: string;
+  otp: string;
+  expiresAt: number;
+  verifiedToken?: string;
+}
+const codOtpSessions = new Map<string, CodOtpSession>();
+
+// =============================================================================
+// 1.4 ZOD VALIDATION SCHEMAS
+// =============================================================================
+
+const DeliverySlabSchema = z.object({
+  maxKm: z.number().min(0.5).max(100),
+  fee: z.number().min(0).max(2000),
+});
+
+const ShopSettingsUpdateSchema = z
+  .object({
+    shopName: z.string().trim().min(2).max(120).optional(),
+    fssaiNumber: z.string().trim().min(4).max(32).optional(),
+    supportPhone: z.string().trim().min(6).max(24).optional(),
+    isOpen: z.boolean().optional(),
+    busyMode: z.boolean().optional(),
+    weeklyTimings: z.string().trim().max(150).optional(),
+    holidaysNote: z.string().trim().max(250).optional(),
+    minOrderAmount: z.number().min(0).max(10000).optional(),
+    gstPercent: z.number().min(0).max(28).optional(),
+    codEnabled: z.boolean().optional(),
+    codMaxAmount: z.number().min(0).max(50000).optional(),
+    codMaxActiveOrders: z.number().int().min(1).max(10).optional(),
+    onlineOnlyFirstOrder: z.boolean().optional(),
+    requirePhoneOtpForCod: z.boolean().optional(),
+    maxOrdersPerHourPhone: z.number().int().min(1).max(100).optional(),
+    maxOrdersPerHourIp: z.number().int().min(1).max(200).optional(),
+    autoCancelUnacceptedMins: z.number().int().min(1).max(60).optional(),
+    deliverySlabs: z.array(DeliverySlabSchema).min(1).max(10).optional(),
+    themeAccentColor: z.string().trim().max(32).optional(),
+    themeSurfaceStyle: z.enum(['warm', 'clean', 'minimal']).optional(),
+  })
+  .strict();
+
+const DeliveryZoneUpdateSchema = z
+  .object({
+    shopLat: z.number().min(-90).max(90).optional(),
+    shopLng: z.number().min(-180).max(180).optional(),
+    shopAddress: z.string().trim().min(5).max(300).optional(),
+    radiusKm: z.number().min(0.5).max(50).optional(),
+    zoneEnabled: z.boolean().optional(),
+  })
+  .strict();
+
+const OrderPlacementSchema = z.object({
+  customerName: z.string().trim().min(2).max(120),
+  customerPhone: z.string().trim().regex(/^[6-9]\d{9}$/, 'Valid 10-digit Indian mobile number required'),
+  deliveryAddress: z.string().trim().min(8).max(400),
+  deliveryLat: z.number().min(-90).max(90),
+  deliveryLng: z.number().min(-180).max(180),
+  orderNotes: z.string().max(300).optional().default(''),
+  scheduledFor: z.string().nullable().optional(),
+  paymentMethod: z.enum(['RAZORPAY', 'COD']),
+  couponCode: z.string().nullable().optional(),
+  captchaToken: z.string().optional(),
+  codOtpToken: z.string().optional(),
+  items: z
+    .array(
+      z.object({
+        menuItemId: z.string().min(1),
+        variantId: z.string().optional(),
+        addonIds: z.array(z.string()).optional(),
+        quantity: z.number().int().min(1).max(25),
+      })
+    )
+    .min(1),
+});
+
 /**
  * Authoritative Server-Side Cart & Bill Calculation
- * Never trusts client-supplied prices or totals.
  */
 function calculateAuthoritativeBill(params: {
   items: { menuItemId: string; variantId?: string; addonIds?: string[]; quantity: number }[];
@@ -803,7 +1292,6 @@ function calculateAuthoritativeBill(params: {
 
   const withinZone = !db.deliveryZone.zoneEnabled || distanceKm <= db.deliveryZone.radiusKm;
 
-  // Authoritative item total
   let itemTotal = 0;
   const resolvedItems: OrderItemRecord[] = [];
 
@@ -822,8 +1310,9 @@ function calculateAuthoritativeBill(params: {
         variantName = foundVar.name;
       }
     } else if (menuItem.variants.length > 0) {
-      unitPrice = menuItem.variants[0].price;
-      variantName = menuItem.variants[0].name;
+      const firstInStock = menuItem.variants.find((v) => v.inStock) || menuItem.variants[0];
+      unitPrice = firstInStock.price;
+      variantName = firstInStock.name;
     }
 
     const chosenAddons: { id: string; name: string; price: number }[] = [];
@@ -850,7 +1339,6 @@ function calculateAuthoritativeBill(params: {
     });
   }
 
-  // Distance-based delivery fee slab
   const sortedSlabs = [...db.settings.deliverySlabs].sort((a, b) => a.maxKm - b.maxKm);
   let deliveryFee = sortedSlabs.length > 0 ? sortedSlabs[sortedSlabs.length - 1].fee : 40;
   for (const slab of sortedSlabs) {
@@ -861,7 +1349,6 @@ function calculateAuthoritativeBill(params: {
   }
   if (itemTotal === 0) deliveryFee = 0;
 
-  // Validate coupon
   let discountAmount = 0;
   let appliedCoupon: string | null = null;
   let couponMessage: string | undefined;
@@ -907,7 +1394,6 @@ function calculateAuthoritativeBill(params: {
   const gstAmount = Math.round((taxableAmount * db.settings.gstPercent) / 100);
   const grandTotal = taxableAmount + gstAmount + deliveryFee;
 
-  // Evaluate COD eligibility
   let codAllowed = db.settings.codEnabled;
   let codDisallowedReason: string | undefined;
 
@@ -947,28 +1433,67 @@ function calculateAuthoritativeBill(params: {
     grandTotal,
     codAllowed,
     codDisallowedReason,
+    requirePhoneOtpForCod: db.settings.requirePhoneOtpForCod,
     minOrderMet: itemTotal >= db.settings.minOrderAmount,
     minOrderAmount: db.settings.minOrderAmount,
     resolvedItems,
   };
 }
 
-// Express Auth Request wrapper
+// =============================================================================
+// ADMIN SESSION & TOKEN VERIFICATION (Checks tokenVersion & active session)
+// =============================================================================
+
+interface VerifiedAdminContext {
+  userId: string;
+  email: string;
+  role: AdminRole;
+  name: string;
+  sessionId: string;
+  mustChangePassword: boolean;
+}
+
+function authenticateAdminFromTokenOrCookie(
+  rawToken?: string,
+  cookieHeader?: string
+): VerifiedAdminContext | null {
+  const cookies = parseCookies(cookieHeader);
+  const candidate = rawToken || cookies['aangan_admin_access'];
+  if (!candidate) return null;
+
+  const payload = verifyJwtRaw(candidate);
+  if (!payload || payload.type !== 'access') return null;
+
+  const user = db.adminUsers.find((u) => u.id === payload.sub && u.isActive);
+  if (!user) return null;
+  if (user.tokenVersion !== payload.tv) return null;
+
+  const session = db.adminSessions.find((s) => s.id === payload.sid && !s.revoked);
+  if (!session) return null;
+
+  session.lastSeenAt = new Date().toISOString();
+  return {
+    userId: user.id,
+    email: user.email,
+    role: user.role,
+    name: user.name,
+    sessionId: session.id,
+    mustChangePassword: user.mustChangePassword,
+  };
+}
+
 interface AdminAuthRequest extends Request {
-  admin?: { email: string; role: AdminRole; name: string };
+  admin?: VerifiedAdminContext;
 }
 
 function requireAdmin(allowedRoles?: AdminRole[]) {
   return (req: AdminAuthRequest, res: Response, next: NextFunction) => {
     const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      res.status(401).json({ error: 'Admin authentication required' });
-      return;
-    }
-    const token = authHeader.slice(7);
-    const verified = verifyAdminToken(token);
+    const bearer = authHeader && authHeader.startsWith('Bearer ') ? authHeader.slice(7) : undefined;
+    const verified = authenticateAdminFromTokenOrCookie(bearer, req.headers.cookie);
+
     if (!verified) {
-      res.status(401).json({ error: 'Invalid or expired admin session' });
+      res.status(401).json({ error: 'Admin authentication required or session expired' });
       return;
     }
     if (allowedRoles && !allowedRoles.includes(verified.role)) {
@@ -980,16 +1505,69 @@ function requireAdmin(allowedRoles?: AdminRole[]) {
   };
 }
 
+async function verifyTurnstileToken(token: string, remoteIp: string): Promise<boolean> {
+  if (!TURNSTILE_SECRET_KEY) {
+    // In demo/dev without secret key configured, allow demo bypass
+    return DEMO_MODE || !IS_PROD;
+  }
+  try {
+    const formData = new URLSearchParams();
+    formData.append('secret', TURNSTILE_SECRET_KEY);
+    formData.append('response', token);
+    formData.append('remoteip', remoteIp);
+
+    const resp = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
+      method: 'POST',
+      body: formData,
+    });
+    const data = (await resp.json()) as { success?: boolean };
+    return Boolean(data.success);
+  } catch (e) {
+    console.error('Turnstile verification error:', e);
+    return false;
+  }
+}
+
 async function startServer() {
+  await initPostgresIfConfigured(db);
+
   const app = express();
+  // 1.4 Trust proxy properly so req.ip cannot be spoofed via raw headers
+  app.set('trust proxy', process.env.TRUST_PROXY ? Number(process.env.TRUST_PROXY) || 1 : 1);
+
   const httpServer = createServer(app);
+
+  // 1.3 Restrict Socket.io CORS to the app's own origin (no wildcard '*')
   const io = new SocketIOServer(httpServer, {
-    cors: { origin: '*' },
+    cors: {
+      origin: (origin, callback) => {
+        if (!origin) {
+          callback(null, true);
+          return;
+        }
+        const allowed = process.env.ALLOWED_ORIGIN;
+        if (allowed && origin === allowed) {
+          callback(null, true);
+          return;
+        }
+        // Allow same-origin requests on port 3000 or Cloud Run preview domain
+        if (
+          origin.includes('localhost:3000') ||
+          origin.includes('127.0.0.1:3000') ||
+          origin.endsWith('.run.app')
+        ) {
+          callback(null, true);
+          return;
+        }
+        callback(new Error('Origin not allowed by Socket.io CORS'));
+      },
+      credentials: true,
+    },
   });
 
   app.use(express.json({ limit: '5mb' }));
 
-  // Basic security headers (Helmet-style)
+  // Security headers
   app.use((_req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-XSS-Protection', '1; mode=block');
@@ -997,22 +1575,91 @@ async function startServer() {
     next();
   });
 
-  // Socket.io connection handler
+  // 1.4 Express Rate Limiters
+  const generalApiLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 300,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many requests from this IP, please try again shortly.' },
+  });
+  const strictOrderLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 25,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many order attempts from this IP, please wait 15 minutes.' },
+  });
+  const previewLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 120,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many checkout preview requests, please slow down.' },
+  });
+  const trackingAndRiderLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 120,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many tracking/rider requests from this IP.' },
+  });
+
+  app.use('/api', generalApiLimiter);
+
+  // ===========================================================================
+  // 1.3 AUTHENTICATED SOCKET.IO ROOM HANDLERS
+  // ===========================================================================
   io.on('connection', (socket) => {
+    // join:tracking requires an exact, valid trackingToken belonging to an existing order
     socket.on('join:tracking', (trackingToken: string) => {
-      if (typeof trackingToken === 'string' && trackingToken.length > 5) {
-        socket.join(`track:${trackingToken}`);
+      if (typeof trackingToken !== 'string' || trackingToken.length < 8) {
+        socket.emit('auth:error', { room: 'tracking', error: 'Invalid tracking token' });
+        return;
       }
+      const exists = db.orders.some((o) => o.trackingToken === trackingToken);
+      if (!exists) {
+        socket.emit('auth:error', { room: 'tracking', error: 'Tracking token not found' });
+        return;
+      }
+      socket.join(`track:${trackingToken}`);
     });
 
-    socket.on('join:admin', () => {
+    // join:admin requires a valid, non-revoked Admin session (from cookie or token payload)
+    socket.on('join:admin', (authPayload?: { token?: string } | string) => {
+      const tokenArg =
+        typeof authPayload === 'string'
+          ? authPayload
+          : authPayload?.token ||
+            (socket.handshake.auth as { token?: string } | undefined)?.token;
+      const verified = authenticateAdminFromTokenOrCookie(
+        tokenArg,
+        socket.handshake.headers.cookie
+      );
+      if (!verified) {
+        socket.emit('auth:error', { room: 'admin', error: 'Unauthorized admin socket join' });
+        return;
+      }
       socket.join('admin:live');
     });
 
+    // join:rider requires a valid, active, non-expired rider accessToken
     socket.on('join:rider', (riderToken: string) => {
-      if (typeof riderToken === 'string') {
-        socket.join(`rider:${riderToken}`);
+      if (typeof riderToken !== 'string' || riderToken.length < 6) {
+        socket.emit('auth:error', { room: 'rider', error: 'Invalid rider token' });
+        return;
       }
+      const rider = db.deliveryBoys.find(
+        (r) =>
+          r.isActive &&
+          r.accessToken === riderToken &&
+          (!r.tokenExpiresAt || new Date(r.tokenExpiresAt).getTime() > Date.now())
+      );
+      if (!rider) {
+        socket.emit('auth:error', { room: 'rider', error: 'Unauthorized or expired rider token' });
+        return;
+      }
+      socket.join(`rider:${riderToken}`);
     });
   });
 
@@ -1020,11 +1667,6 @@ async function startServer() {
   // PUBLIC CUSTOMER & HOME API ROUTES
   // ===========================================================================
 
-  /**
-   * GET /api/home
-   * Cached Home Page payload controlled by Admin Home Page Manager.
-   * Auto-hides out-of-stock items and respects time-of-day section schedules.
-   */
   app.get('/api/home', (_req, res) => {
     const now = new Date();
     const currentHour = now.getHours();
@@ -1043,9 +1685,9 @@ async function startServer() {
       .filter((c) => c.isActive)
       .sort((a, b) => a.sortOrder - b.sortOrder);
 
-    // Filter out-of-stock items from home sections automatically
-    const inStockHomeItems = db.menuItems.filter((m) => m.inStock && m.showOnHome);
+    const inStockItems = db.menuItems.filter((m) => m.inStock);
 
+    // Phase 2.3: Home Page Manager is the single source of truth for sections
     const resolvedSections = db.homeSections
       .filter((sec) => {
         if (!sec.isVisible) return false;
@@ -1066,20 +1708,12 @@ async function startServer() {
       .map((sec) => {
         let items: MenuItem[] = [];
         if (sec.sectionType === 'BESTSELLERS' && sec.bestsellerMode === 'AUTO_SALES') {
-          items = [...inStockHomeItems]
+          items = [...inStockItems]
             .sort((a, b) => b.salesCount - a.salesCount)
             .slice(0, sec.maxItems);
-        } else if (sec.sectionType === 'TODAYS_SPECIAL') {
-          const manual = sec.itemIds
-            .map((id) => inStockHomeItems.find((m) => m.id === id))
-            .filter((m): m is MenuItem => Boolean(m));
-          const flagged = inStockHomeItems.filter(
-            (m) => m.isTodaysSpecial && !manual.some((x) => x.id === m.id)
-          );
-          items = [...manual, ...flagged].slice(0, sec.maxItems);
         } else {
           items = sec.itemIds
-            .map((id) => inStockHomeItems.find((m) => m.id === id))
+            .map((id) => inStockItems.find((m) => m.id === id))
             .filter((m): m is MenuItem => Boolean(m))
             .slice(0, sec.maxItems);
         }
@@ -1099,6 +1733,9 @@ async function startServer() {
       allMenuItems: db.menuItems,
       coupons: db.coupons.filter((c) => c.isActive),
       razorpayKeyId: RAZORPAY_KEY_ID,
+      razorpayMode: RAZORPAY_MODE,
+      demoMode: DEMO_MODE,
+      turnstileSiteKey: TURNSTILE_SITE_KEY || null,
       cachedAt: now.toISOString(),
     };
 
@@ -1106,44 +1743,83 @@ async function startServer() {
     res.json(payload);
   });
 
-  /**
-   * POST /api/checkout/preview
-   * Server-side Haversine distance check + authoritative bill calculation
-   */
-  app.post('/api/checkout/preview', (req, res) => {
-    const { items, lat, lng, couponCode, customerPhone } = req.body || {};
-    if (!Array.isArray(items) || typeof lat !== 'number' || typeof lng !== 'number') {
+  app.post('/api/checkout/preview', previewLimiter, (req, res) => {
+    const parsed = z
+      .object({
+        items: z.array(
+          z.object({
+            menuItemId: z.string(),
+            variantId: z.string().optional(),
+            addonIds: z.array(z.string()).optional(),
+            quantity: z.number(),
+          })
+        ),
+        lat: z.number(),
+        lng: z.number(),
+        couponCode: z.string().nullable().optional(),
+        customerPhone: z.string().optional(),
+      })
+      .safeParse(req.body);
+
+    if (!parsed.success) {
       res.status(400).json({ error: 'Valid cart items and location coordinates are required' });
       return;
     }
 
-    const preview = calculateAuthoritativeBill({
-      items,
-      lat,
-      lng,
-      couponCode,
-      customerPhone,
-    });
-
+    const preview = calculateAuthoritativeBill(parsed.data);
     res.json(preview);
+  });
+
+  // 1.4 Optional Pluggable COD Phone OTP endpoints (used only when db.settings.requirePhoneOtpForCod === true)
+  app.post('/api/guest/cod-otp/send', strictOrderLimiter, (req, res) => {
+    const cleanPhone = String(req.body?.phone || '').replace(/\D/g, '');
+    if (!/^[6-9]\d{9}$/.test(cleanPhone)) {
+      res.status(400).json({ error: 'Enter a valid 10-digit mobile number first' });
+      return;
+    }
+    const sessionId = `cod_otp_${crypto.randomBytes(8).toString('hex')}`;
+    const otp = String(Math.floor(1000 + Math.random() * 9000));
+    codOtpSessions.set(sessionId, {
+      sessionId,
+      phone: cleanPhone,
+      otp,
+      expiresAt: Date.now() + 5 * 60 * 1000,
+    });
+    res.json({
+      sessionId,
+      demoOtp: DEMO_MODE ? otp : undefined,
+    });
+  });
+
+  app.post('/api/guest/cod-otp/verify', strictOrderLimiter, (req, res) => {
+    const { sessionId, otp } = req.body || {};
+    const record = codOtpSessions.get(String(sessionId || ''));
+    if (!record || record.expiresAt < Date.now()) {
+      res.status(400).json({ error: 'OTP session expired. Please request a new code.' });
+      return;
+    }
+    if (record.otp !== String(otp || '').trim()) {
+      res.status(400).json({ error: 'Incorrect 4-digit OTP code.' });
+      return;
+    }
+    const verifiedToken = `cod_verified_${crypto.randomBytes(12).toString('hex')}`;
+    record.verifiedToken = verifiedToken;
+    res.json({ verifiedToken });
   });
 
   /**
    * POST /api/orders
-   * Guest Order Placement (COD or Online via Razorpay)
-   * Enforces:
-   * - Shop Open & Busy mode checks
-   * - Phone & IP Blocklist check
-   * - Per-Phone & Per-IP hourly rate limit
-   * - Captcha / Turnstile verification token
-   * - Server-side Haversine delivery zone validation
-   * - COD limits & First-Order Online Payment rules
+   * Race-safe Guest Order Placement with Turnstile verification, Zod schema validation, and Haversine check
    */
-  app.post('/api/orders', (req, res) => {
-    const clientIp =
-      (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() ||
-      req.socket.remoteAddress ||
-      '127.0.0.1';
+  app.post('/api/orders', strictOrderLimiter, async (req, res) => {
+    const clientIp = req.ip || '127.0.0.1';
+
+    const parsedBody = OrderPlacementSchema.safeParse(req.body);
+    if (!parsedBody.success) {
+      const firstIssue = parsedBody.error.issues[0]?.message || 'Invalid order details';
+      res.status(400).json({ error: firstIssue });
+      return;
+    }
 
     const {
       customerName,
@@ -1156,10 +1832,10 @@ async function startServer() {
       paymentMethod,
       couponCode,
       captchaToken,
+      codOtpToken,
       items,
-    } = req.body || {};
+    } = parsedBody.data;
 
-    // 1. Shop open & busy check
     if (!db.settings.isOpen) {
       res.status(400).json({ error: 'The kitchen is currently closed. Please check our opening hours.' });
       return;
@@ -1169,29 +1845,24 @@ async function startServer() {
       return;
     }
 
-    // 2. Validate guest inputs
-    const cleanName = String(customerName || '').trim().replace(/[<>]/g, '');
-    const cleanPhone = String(customerPhone || '').replace(/\D/g, '');
-    const cleanAddress = String(deliveryAddress || '').trim().replace(/[<>]/g, '');
+    const cleanName = customerName.replace(/[<>]/g, '');
+    const cleanPhone = customerPhone.replace(/\D/g, '');
+    const cleanAddress = deliveryAddress.replace(/[<>]/g, '');
 
-    if (cleanName.length < 2) {
-      res.status(400).json({ error: 'Please enter your full name (at least 2 characters).' });
-      return;
-    }
-    if (!/^[6-9]\d{9}$/.test(cleanPhone)) {
-      res.status(400).json({ error: 'Please enter a valid 10-digit Indian mobile number.' });
-      return;
-    }
-    if (cleanAddress.length < 8) {
-      res.status(400).json({ error: 'Please provide your complete flat/building and street address.' });
-      return;
-    }
-    if (!captchaToken || String(captchaToken).length < 4) {
-      res.status(400).json({ error: 'Please complete the security captcha check before ordering.' });
-      return;
+    // 1.4 Verify Cloudflare Turnstile (or allow demo mode bypass)
+    if (TURNSTILE_SECRET_KEY) {
+      if (!captchaToken) {
+        res.status(400).json({ error: 'Please complete the Cloudflare Turnstile security check.' });
+        return;
+      }
+      const turnstileOk = await verifyTurnstileToken(captchaToken, clientIp);
+      if (!turnstileOk) {
+        res.status(400).json({ error: 'Cloudflare Turnstile verification failed. Please retry.' });
+        return;
+      }
     }
 
-    // 3. Blocklist check (Phone or IP)
+    // Blocklist check (Phone or IP)
     const blockedPhone = db.blockedList.find(
       (b) => b.targetType === 'PHONE' && b.targetValue === cleanPhone
     );
@@ -1205,191 +1876,223 @@ async function startServer() {
       return;
     }
 
-    // 4. Rate Limiting (orders per hour per phone and per IP)
-    const oneHourAgo = Date.now() - 3600 * 1000;
-    const recentPhoneOrders = db.orders.filter(
-      (o) => o.customerPhone === cleanPhone && new Date(o.placedAt).getTime() > oneHourAgo
-    ).length;
-    if (recentPhoneOrders >= db.settings.maxOrdersPerHourPhone) {
-      res.status(429).json({
-        error: `Rate limit exceeded: Maximum ${db.settings.maxOrdersPerHourPhone} orders per hour allowed per phone number.`,
-      });
-      return;
-    }
-
-    const recentIpOrders = db.orders.filter(
-      (o) => o.customerIp === clientIp && new Date(o.placedAt).getTime() > oneHourAgo
-    ).length;
-    if (recentIpOrders >= db.settings.maxOrdersPerHourIp) {
-      res.status(429).json({
-        error: `Rate limit exceeded: Too many orders from this IP address in the past hour.`,
-      });
-      return;
-    }
-
-    // 5. Server-side Haversine distance & authoritative bill calculation
-    const bill = calculateAuthoritativeBill({
-      items: Array.isArray(items) ? items : [],
-      lat: Number(deliveryLat),
-      lng: Number(deliveryLng),
-      couponCode,
-      customerPhone: cleanPhone,
-    });
-
-    if (bill.resolvedItems.length === 0) {
-      res.status(400).json({ error: 'Your cart is empty or selected items are out of stock.' });
-      return;
-    }
-    if (!bill.withinZone) {
-      res.status(400).json({
-        error: `Delivery not available in your area (${bill.distanceKm} km away; max delivery radius is ${bill.maxRadiusKm} km).`,
-      });
-      return;
-    }
-    if (!bill.minOrderMet) {
-      res.status(400).json({
-        error: `Minimum item subtotal is ₹${bill.minOrderAmount}. Please add ₹${bill.minOrderAmount - bill.itemTotal} more.`,
-      });
-      return;
-    }
-
+    // Optional COD Phone OTP verification if enabled by Admin
     const method: PaymentMethod = paymentMethod === 'COD' ? 'COD' : 'RAZORPAY';
-    if (method === 'COD' && !bill.codAllowed) {
-      res.status(400).json({ error: bill.codDisallowedReason || 'Cash on Delivery is not available for this order.' });
-      return;
-    }
-
-    // 6. Generate unguessable tracking_token and 4-digit delivery_otp
-    const orderSeq = 1043 + db.orders.length;
-    const orderNumber = `AAN-${orderSeq}`;
-    const orderId = `ord_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
-    const trackingToken = `trk_${crypto.randomBytes(16).toString('hex')}`;
-    const deliveryOtp = String(Math.floor(1000 + Math.random() * 9000));
-    const nowIso = new Date().toISOString();
-
-    const razorpayOrderId =
-      method === 'RAZORPAY' ? `order_rzp_${crypto.randomBytes(8).toString('hex')}` : undefined;
-
-    const newOrder: OrderRecord = {
-      id: orderId,
-      orderNumber,
-      trackingToken,
-      deliveryOtp,
-      customerName: cleanName,
-      customerPhone: cleanPhone,
-      customerIp: clientIp,
-      deliveryAddress: cleanAddress,
-      deliveryLat: Number(deliveryLat),
-      deliveryLng: Number(deliveryLng),
-      distanceKm: bill.distanceKm,
-      orderNotes: String(orderNotes || '').trim().slice(0, 300),
-      scheduledFor: scheduledFor || null,
-      status: 'PLACED',
-      paymentMethod: method,
-      paymentStatus: 'PENDING',
-      itemTotal: bill.itemTotal,
-      deliveryFee: bill.deliveryFee,
-      gstAmount: bill.gstAmount,
-      discountAmount: bill.discountAmount,
-      couponCode: bill.appliedCoupon,
-      grandTotal: bill.grandTotal,
-      deliveryBoyId: null,
-      placedAt: nowIso,
-      items: bill.resolvedItems,
-      razorpayOrderId,
-    };
-
-    // Upsert guest customer record keyed by phone
-    const existingCust = db.customers[cleanPhone];
-    if (existingCust) {
-      existingCust.name = cleanName;
-      existingCust.lastOrderAt = nowIso;
-      existingCust.lastAddress = cleanAddress;
-      if (method === 'COD') {
-        existingCust.orderCount += 1;
-        existingCust.totalSpent += bill.grandTotal;
+    if (method === 'COD' && db.settings.requirePhoneOtpForCod) {
+      const matchedOtpSession = Array.from(codOtpSessions.values()).find(
+        (s) =>
+          s.phone === cleanPhone &&
+          s.verifiedToken &&
+          s.verifiedToken === codOtpToken &&
+          s.expiresAt >= Date.now()
+      );
+      if (!matchedOtpSession) {
+        res.status(400).json({
+          error: 'Phone OTP verification is required for Cash on Delivery orders.',
+        });
+        return;
       }
-    } else {
-      db.customers[cleanPhone] = {
-        phone: cleanPhone,
-        name: cleanName,
-        isBlocked: false,
-        orderCount: method === 'COD' ? 1 : 0,
-        totalSpent: method === 'COD' ? bill.grandTotal : 0,
-        firstOrderAt: nowIso,
-        lastOrderAt: nowIso,
-        lastAddress: cleanAddress,
-      };
     }
 
-    // Record coupon usage if applied
-    if (bill.appliedCoupon) {
-      db.couponUsages.push({
-        id: `cu_${Date.now()}`,
-        couponCode: bill.appliedCoupon,
-        customerPhone: cleanPhone,
-        orderId,
-        usedAt: nowIso,
+    // 1.6 Race-safe order creation inside write mutex
+    try {
+      const result = await withWriteLock(() => {
+        const oneHourAgo = Date.now() - 3600 * 1000;
+        const recentPhoneOrders = db.orders.filter(
+          (o) => o.customerPhone === cleanPhone && new Date(o.placedAt).getTime() > oneHourAgo
+        ).length;
+        if (recentPhoneOrders >= db.settings.maxOrdersPerHourPhone) {
+          return {
+            status: 429,
+            error: `Rate limit exceeded: Maximum ${db.settings.maxOrdersPerHourPhone} orders per hour allowed per phone number.`,
+          };
+        }
+
+        const recentIpOrders = db.orders.filter(
+          (o) => o.customerIp === clientIp && new Date(o.placedAt).getTime() > oneHourAgo
+        ).length;
+        if (recentIpOrders >= db.settings.maxOrdersPerHourIp) {
+          return {
+            status: 429,
+            error: 'Rate limit exceeded: Too many orders from this IP address in the past hour.',
+          };
+        }
+
+        const bill = calculateAuthoritativeBill({
+          items,
+          lat: Number(deliveryLat),
+          lng: Number(deliveryLng),
+          couponCode,
+          customerPhone: cleanPhone,
+        });
+
+        if (bill.resolvedItems.length === 0) {
+          return { status: 400, error: 'Your cart is empty or selected items are out of stock.' };
+        }
+        if (!bill.withinZone) {
+          return {
+            status: 400,
+            error: `Delivery not available in your area (${bill.distanceKm} km away; max delivery radius is ${bill.maxRadiusKm} km).`,
+          };
+        }
+        if (!bill.minOrderMet) {
+          return {
+            status: 400,
+            error: `Minimum item subtotal is ₹${bill.minOrderAmount}. Please add ₹${bill.minOrderAmount - bill.itemTotal} more.`,
+          };
+        }
+        if (method === 'COD' && !bill.codAllowed) {
+          return {
+            status: 400,
+            error: bill.codDisallowedReason || 'Cash on Delivery is not available for this order.',
+          };
+        }
+
+        const orderSeq = db.nextOrderSequence++;
+        const orderNumber = `AAN-${orderSeq}`;
+        const orderId = `ord_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+        const trackingToken = `trk_${crypto.randomBytes(16).toString('hex')}`;
+        const deliveryOtp = String(Math.floor(1000 + Math.random() * 9000));
+        const nowIso = new Date().toISOString();
+
+        const razorpayOrderId =
+          method === 'RAZORPAY' ? `order_rzp_${crypto.randomBytes(8).toString('hex')}` : undefined;
+
+        const newOrder: OrderRecord = {
+          id: orderId,
+          orderNumber,
+          trackingToken,
+          deliveryOtp,
+          customerName: cleanName,
+          customerPhone: cleanPhone,
+          customerIp: clientIp,
+          deliveryAddress: cleanAddress,
+          deliveryLat: Number(deliveryLat),
+          deliveryLng: Number(deliveryLng),
+          distanceKm: bill.distanceKm,
+          orderNotes: String(orderNotes || '').trim().slice(0, 300),
+          scheduledFor: scheduledFor || null,
+          status: 'PLACED',
+          paymentMethod: method,
+          paymentStatus: 'PENDING',
+          itemTotal: bill.itemTotal,
+          deliveryFee: bill.deliveryFee,
+          gstAmount: bill.gstAmount,
+          discountAmount: bill.discountAmount,
+          couponCode: bill.appliedCoupon,
+          grandTotal: bill.grandTotal,
+          deliveryBoyId: null,
+          placedAt: nowIso,
+          items: bill.resolvedItems,
+          razorpayOrderId,
+        };
+
+        const existingCust = db.customers[cleanPhone];
+        if (existingCust) {
+          existingCust.name = cleanName;
+          existingCust.lastOrderAt = nowIso;
+          existingCust.lastAddress = cleanAddress;
+          if (method === 'COD') {
+            existingCust.orderCount += 1;
+            existingCust.totalSpent += bill.grandTotal;
+          }
+        } else {
+          db.customers[cleanPhone] = {
+            phone: cleanPhone,
+            name: cleanName,
+            isBlocked: false,
+            orderCount: method === 'COD' ? 1 : 0,
+            totalSpent: method === 'COD' ? bill.grandTotal : 0,
+            firstOrderAt: nowIso,
+            lastOrderAt: nowIso,
+            lastAddress: cleanAddress,
+          };
+        }
+
+        if (bill.appliedCoupon) {
+          db.couponUsages.push({
+            id: `cu_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
+            couponCode: bill.appliedCoupon,
+            customerPhone: cleanPhone,
+            orderId,
+            usedAt: nowIso,
+          });
+        }
+
+        const paymentRecord: PaymentRecord = {
+          id: `pay_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
+          orderId,
+          orderNumber,
+          customerPhone: cleanPhone,
+          gateway: method,
+          razorpayOrderId,
+          amount: bill.grandTotal,
+          currency: 'INR',
+          status: 'PENDING',
+          serverHmacVerified: false,
+          webhookVerified: false,
+          apiAmountMatched: false,
+          createdAt: nowIso,
+          updatedAt: nowIso,
+        };
+
+        db.orders.unshift(newOrder);
+        db.payments.unshift(paymentRecord);
+
+        if (method === 'COD') {
+          for (const item of bill.resolvedItems) {
+            const found = db.menuItems.find((m) => m.id === item.menuItemId);
+            if (found) found.salesCount += item.quantity;
+          }
+          clearHomeCache();
+          io.to('admin:live').emit('order:new', newOrder);
+        }
+
+        saveDatabase(db);
+
+        return {
+          status: 201,
+          payload: {
+            order: newOrder,
+            payment: paymentRecord,
+            razorpayCheckout:
+              method === 'RAZORPAY'
+                ? {
+                    keyId: RAZORPAY_KEY_ID,
+                    razorpayOrderId,
+                    amountPaise: bill.grandTotal * 100,
+                    currency: 'INR',
+                    shopName: db.settings.shopName,
+                    mode: RAZORPAY_MODE,
+                  }
+                : null,
+          },
+        };
       });
-    }
 
-    // Create payment ledger record
-    const paymentRecord: PaymentRecord = {
-      id: `pay_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
-      orderId,
-      orderNumber,
-      customerPhone: cleanPhone,
-      gateway: method,
-      razorpayOrderId,
-      amount: bill.grandTotal,
-      currency: 'INR',
-      status: 'PENDING',
-      serverHmacVerified: false,
-      webhookVerified: false,
-      apiAmountMatched: false,
-      createdAt: nowIso,
-      updatedAt: nowIso,
-    };
-
-    db.orders.unshift(newOrder);
-    db.payments.unshift(paymentRecord);
-
-    // Update item sales counts for COD immediately (online updates on verification)
-    if (method === 'COD') {
-      for (const item of bill.resolvedItems) {
-        const found = db.menuItems.find((m) => m.id === item.menuItemId);
-        if (found) found.salesCount += item.quantity;
+      if ('error' in result) {
+        res.status(result.status).json({ error: result.error });
+        return;
       }
-      clearHomeCache();
-      io.to('admin:live').emit('order:new', newOrder);
+      res.status(201).json(result.payload);
+    } catch {
+      res.status(500).json({ error: 'Failed to place order. Please try again.' });
     }
-
-    saveDatabase(db);
-
-    res.status(201).json({
-      order: newOrder,
-      payment: paymentRecord,
-      razorpayCheckout:
-        method === 'RAZORPAY'
-          ? {
-              keyId: RAZORPAY_KEY_ID,
-              razorpayOrderId,
-              amountPaise: bill.grandTotal * 100,
-              currency: 'INR',
-              shopName: db.settings.shopName,
-            }
-          : null,
-    });
   });
 
   /**
-   * POST /api/payments/create-test-signature
-   * Helper for Razorpay Test Mode Checkout Simulator so the user can test
-   * authentic HMAC-SHA256 verification and webhook events end-to-end.
+   * 1.1 POST /api/payments/create-test-signature
+   * Strictly disabled in production OR when RAZORPAY_MODE !== 'demo'
    */
   app.post('/api/payments/create-test-signature', (req, res) => {
+    if (IS_PROD || RAZORPAY_MODE !== 'demo') {
+      res.status(403).json({
+        error: 'Test signature endpoint is disabled in production and live Razorpay mode.',
+      });
+      return;
+    }
     const { razorpayOrderId } = req.body || {};
-    if (!razorpayOrderId) {
+    if (!razorpayOrderId || typeof razorpayOrderId !== 'string') {
       res.status(400).json({ error: 'Missing razorpayOrderId' });
       return;
     }
@@ -1408,81 +2111,79 @@ async function startServer() {
 
   /**
    * POST /api/payments/verify
-   * Step 3 & 5 of Double Verification:
-   * - Verifies HMAC-SHA256(razorpay_order_id + "|" + razorpay_payment_id, RAZORPAY_KEY_SECRET)
-   * - Matches payment amount against authoritative order grandTotal
-   * - Marks order PAID and notifies Admin live dashboard via Socket.io
    */
-  app.post('/api/payments/verify', (req, res) => {
+  app.post('/api/payments/verify', async (req, res) => {
     const { orderId, razorpayOrderId, razorpayPaymentId, razorpaySignature } = req.body || {};
-    const order = db.orders.find((o) => o.id === orderId || o.razorpayOrderId === razorpayOrderId);
-    const payment = db.payments.find(
-      (p) => p.orderId === order?.id || p.razorpayOrderId === razorpayOrderId
-    );
-
-    if (!order || !payment) {
-      res.status(404).json({ error: 'Order or payment record not found' });
+    if (!razorpayOrderId || !razorpayPaymentId || !razorpaySignature) {
+      res.status(400).json({ error: 'Missing payment verification parameters' });
       return;
     }
 
-    const expectedSignature = crypto
-      .createHmac('sha256', RAZORPAY_KEY_SECRET)
-      .update(`${razorpayOrderId}|${razorpayPaymentId}`)
-      .digest('hex');
+    const result = await withWriteLock(() => {
+      const order = db.orders.find((o) => o.id === orderId || o.razorpayOrderId === razorpayOrderId);
+      const payment = db.payments.find(
+        (p) => p.orderId === order?.id || p.razorpayOrderId === razorpayOrderId
+      );
 
-    if (expectedSignature !== razorpaySignature) {
-      payment.status = 'FAILED';
-      order.paymentStatus = 'FAILED';
+      if (!order || !payment) {
+        return { status: 404, error: 'Order or payment record not found' };
+      }
+
+      const expectedSignature = crypto
+        .createHmac('sha256', RAZORPAY_KEY_SECRET)
+        .update(`${razorpayOrderId}|${razorpayPaymentId}`)
+        .digest('hex');
+
+      if (expectedSignature !== razorpaySignature) {
+        payment.status = 'FAILED';
+        order.paymentStatus = 'FAILED';
+        saveDatabase(db);
+        return { status: 400, error: 'HMAC-SHA256 signature verification failed' };
+      }
+
+      const fetchedGatewayAmount = order.grandTotal;
+      const amountMatched = fetchedGatewayAmount === payment.amount;
+
+      payment.razorpayPaymentId = String(razorpayPaymentId);
+      payment.razorpaySignature = String(razorpaySignature);
+      payment.serverHmacVerified = true;
+      payment.apiAmountMatched = amountMatched;
+      payment.status = payment.webhookVerified ? 'VERIFIED' : 'CAPTURED';
+      payment.updatedAt = new Date().toISOString();
+
+      if (order.paymentStatus !== 'PAID') {
+        order.paymentStatus = 'PAID';
+        const cust = db.customers[order.customerPhone];
+        if (cust) {
+          cust.orderCount += 1;
+          cust.totalSpent += order.grandTotal;
+        }
+        for (const item of order.items) {
+          const found = db.menuItems.find((m) => m.id === item.menuItemId);
+          if (found) found.salesCount += item.quantity;
+        }
+        clearHomeCache();
+        io.to('admin:live').emit('order:new', order);
+      }
+
+      io.to(`track:${order.trackingToken}`).emit('order:updated', order);
+      io.to('admin:live').emit('order:updated', order);
       saveDatabase(db);
-      res.status(400).json({ error: 'HMAC-SHA256 signature verification failed' });
+
+      return { status: 200, payload: { verified: true, order, payment } };
+    });
+
+    if ('error' in result) {
+      res.status(result.status).json({ error: result.error });
       return;
     }
-
-    // Step 5: Verify amount matches authoritative order amount
-    const fetchedGatewayAmount = order.grandTotal;
-    const amountMatched = fetchedGatewayAmount === payment.amount;
-
-    payment.razorpayPaymentId = razorpayPaymentId;
-    payment.razorpaySignature = razorpaySignature;
-    payment.serverHmacVerified = true;
-    payment.apiAmountMatched = amountMatched;
-    payment.status = payment.webhookVerified ? 'VERIFIED' : 'CAPTURED';
-    payment.updatedAt = new Date().toISOString();
-
-    if (order.paymentStatus !== 'PAID') {
-      order.paymentStatus = 'PAID';
-      const cust = db.customers[order.customerPhone];
-      if (cust) {
-        cust.orderCount += 1;
-        cust.totalSpent += order.grandTotal;
-      }
-      for (const item of order.items) {
-        const found = db.menuItems.find((m) => m.id === item.menuItemId);
-        if (found) found.salesCount += item.quantity;
-      }
-      clearHomeCache();
-      io.to('admin:live').emit('order:new', order);
-    }
-
-    io.to(`track:${order.trackingToken}`).emit('order:updated', order);
-    io.to('admin:live').emit('order:updated', order);
-    saveDatabase(db);
-
-    res.json({
-      verified: true,
-      order,
-      payment,
-    });
+    res.json(result.payload);
   });
 
   /**
    * POST /api/payments/webhook
-   * Step 4 of Double Verification:
-   * - Razorpay Webhook (payment.captured / payment.failed)
-   * - Verifies x-razorpay-signature using RAZORPAY_WEBHOOK_SECRET
-   * - Strictly idempotent via webhookEventId
    */
-  app.post('/api/payments/webhook', (req, res) => {
+  app.post('/api/payments/webhook', async (req, res) => {
     const webhookBody = JSON.stringify(req.body);
     const providedSig = req.headers['x-razorpay-signature'] as string | undefined;
     const expectedSig = crypto
@@ -1490,9 +2191,8 @@ async function startServer() {
       .update(webhookBody)
       .digest('hex');
 
-    // Allow either valid webhook signature or internal simulated webhook flag
-    const isInternalSim = req.headers['x-aangan-webhook-sim'] === 'true';
-    if (!isInternalSim && providedSig !== expectedSig) {
+    const isDemoSimAllowed = !IS_PROD && RAZORPAY_MODE === 'demo' && req.headers['x-aangan-webhook-sim'] === 'true';
+    if (!isDemoSimAllowed && providedSig !== expectedSig) {
       res.status(400).json({ error: 'Invalid Razorpay webhook signature' });
       return;
     }
@@ -1503,64 +2203,65 @@ async function startServer() {
       return;
     }
 
-    // Idempotency check: has this webhook event already been processed?
-    const alreadyProcessed = db.payments.find((p) => p.webhookEventId === eventId);
-    if (alreadyProcessed) {
-      res.json({ status: 'idempotent_skip', payment: alreadyProcessed });
-      return;
-    }
-
-    const rzpOrderId = payload.order_id;
-    const rzpPaymentId = payload.payment_id;
-    const amountPaise = Number(payload.amount_paise || 0);
-
-    const order = db.orders.find((o) => o.razorpayOrderId === rzpOrderId);
-    const payment = db.payments.find((p) => p.razorpayOrderId === rzpOrderId);
-
-    if (!order || !payment) {
-      res.status(404).json({ error: 'Matching Razorpay order not found' });
-      return;
-    }
-
-    payment.webhookEventId = eventId;
-    payment.updatedAt = new Date().toISOString();
-
-    if (event === 'payment.captured') {
-      const amountMatched = amountPaise === Math.round(order.grandTotal * 100);
-      payment.webhookVerified = true;
-      payment.apiAmountMatched = amountMatched;
-      payment.razorpayPaymentId = rzpPaymentId || payment.razorpayPaymentId;
-      payment.status = 'VERIFIED';
-
-      if (order.paymentStatus !== 'PAID') {
-        order.paymentStatus = 'PAID';
-        const cust = db.customers[order.customerPhone];
-        if (cust) {
-          cust.orderCount += 1;
-          cust.totalSpent += order.grandTotal;
-        }
-        io.to('admin:live').emit('order:new', order);
+    const result = await withWriteLock(() => {
+      const alreadyProcessed = db.payments.find((p) => p.webhookEventId === eventId);
+      if (alreadyProcessed) {
+        return { status: 200, payload: { status: 'idempotent_skip', payment: alreadyProcessed } };
       }
-    } else if (event === 'payment.failed') {
-      payment.status = 'FAILED';
-      order.paymentStatus = 'FAILED';
-      order.status = 'CANCELLED';
-      order.cancelReason = 'Payment failed at gateway webhook';
-      order.cancelledAt = new Date().toISOString();
+
+      const rzpOrderId = payload.order_id;
+      const rzpPaymentId = payload.payment_id;
+      const amountPaise = Number(payload.amount_paise || 0);
+
+      const order = db.orders.find((o) => o.razorpayOrderId === rzpOrderId);
+      const payment = db.payments.find((p) => p.razorpayOrderId === rzpOrderId);
+
+      if (!order || !payment) {
+        return { status: 404, error: 'Matching Razorpay order not found' };
+      }
+
+      payment.webhookEventId = String(eventId);
+      payment.updatedAt = new Date().toISOString();
+
+      if (event === 'payment.captured') {
+        const amountMatched = amountPaise === Math.round(order.grandTotal * 100);
+        payment.webhookVerified = true;
+        payment.apiAmountMatched = amountMatched;
+        payment.razorpayPaymentId = rzpPaymentId || payment.razorpayPaymentId;
+        payment.status = 'VERIFIED';
+
+        if (order.paymentStatus !== 'PAID') {
+          order.paymentStatus = 'PAID';
+          const cust = db.customers[order.customerPhone];
+          if (cust) {
+            cust.orderCount += 1;
+            cust.totalSpent += order.grandTotal;
+          }
+          io.to('admin:live').emit('order:new', order);
+        }
+      } else if (event === 'payment.failed') {
+        payment.status = 'FAILED';
+        order.paymentStatus = 'FAILED';
+        order.status = 'CANCELLED';
+        order.cancelReason = 'Payment failed at gateway webhook';
+        order.cancelledAt = new Date().toISOString();
+      }
+
+      io.to(`track:${order.trackingToken}`).emit('order:updated', order);
+      io.to('admin:live').emit('order:updated', order);
+      saveDatabase(db);
+
+      return { status: 200, payload: { status: 'processed', order, payment } };
+    });
+
+    if ('error' in result) {
+      res.status(result.status).json({ error: result.error });
+      return;
     }
-
-    io.to(`track:${order.trackingToken}`).emit('order:updated', order);
-    io.to('admin:live').emit('order:updated', order);
-    saveDatabase(db);
-
-    res.json({ status: 'processed', order, payment });
+    res.json(result.payload);
   });
 
-  /**
-   * GET /api/track/:trackingToken
-   * Secret unguessable tracking endpoint (no sequential order ID guessing)
-   */
-  app.get('/api/track/:trackingToken', (req, res) => {
+  app.get('/api/track/:trackingToken', trackingAndRiderLimiter, (req, res) => {
     const { trackingToken } = req.params;
     const order = db.orders.find((o) => o.trackingToken === trackingToken);
     if (!order) {
@@ -1582,25 +2283,18 @@ async function startServer() {
     });
   });
 
-  /**
-   * POST /api/orders/by-tokens
-   * Returns "My Recent Orders" on the same device using tokens saved in localStorage
-   */
-  app.post('/api/orders/by-tokens', (req, res) => {
+  app.post('/api/orders/by-tokens', trackingAndRiderLimiter, (req, res) => {
     const { tokens } = req.body || {};
     if (!Array.isArray(tokens)) {
       res.json({ orders: [] });
       return;
     }
-    const matched = db.orders.filter((o) => tokens.includes(o.trackingToken));
+    const safeTokens = tokens.filter((t): t is string => typeof t === 'string' && t.length >= 8).slice(0, 30);
+    const matched = db.orders.filter((o) => safeTokens.includes(o.trackingToken));
     res.json({ orders: matched });
   });
 
-  /**
-   * POST /api/track/:trackingToken/review
-   * Submit post-delivery rating or support/complaint ticket
-   */
-  app.post('/api/track/:trackingToken/review', (req, res) => {
+  app.post('/api/track/:trackingToken/review', trackingAndRiderLimiter, (req, res) => {
     const { trackingToken } = req.params;
     const order = db.orders.find((o) => o.trackingToken === trackingToken);
     if (!order) {
@@ -1608,10 +2302,22 @@ async function startServer() {
       return;
     }
 
-    const { rating, comment, complaintText } = req.body || {};
-    const numRating = Math.max(1, Math.min(5, Number(rating) || 5));
-    const cleanComment = String(comment || '').trim().slice(0, 500);
-    const cleanComplaint = String(complaintText || '').trim().slice(0, 500);
+    const parsed = z
+      .object({
+        rating: z.number().int().min(1).max(5),
+        comment: z.string().max(500).optional().default(''),
+        complaintText: z.string().max(500).optional().default(''),
+      })
+      .safeParse(req.body);
+
+    if (!parsed.success) {
+      res.status(400).json({ error: 'Invalid review input' });
+      return;
+    }
+
+    const { rating: numRating, comment, complaintText } = parsed.data;
+    const cleanComment = comment.trim();
+    const cleanComplaint = complaintText.trim();
 
     let existing = db.reviews.find((r) => r.orderId === order.id);
     if (existing) {
@@ -1642,23 +2348,31 @@ async function startServer() {
   });
 
   // ===========================================================================
-  // DELIVERY PARTNER PORTAL ROUTES (Doorstep OTP Verification)
+  // DELIVERY PARTNER PORTAL ROUTES (Token expiration + Doorstep OTP Verification)
   // ===========================================================================
 
-  app.get('/api/rider/:accessToken', (req, res) => {
+  app.get('/api/rider/:accessToken', trackingAndRiderLimiter, (req, res) => {
     const rider = db.deliveryBoys.find((r) => r.accessToken === req.params.accessToken);
-    if (!rider) {
-      res.status(404).json({ error: 'Invalid delivery partner link' });
+    if (!rider || !rider.isActive) {
+      res.status(404).json({ error: 'Invalid or deactivated delivery partner link' });
+      return;
+    }
+    if (rider.tokenExpiresAt && new Date(rider.tokenExpiresAt).getTime() < Date.now()) {
+      res.status(403).json({ error: 'This delivery partner link has expired. Ask Admin for a fresh link.' });
       return;
     }
     const assignedOrders = db.orders.filter((o) => o.deliveryBoyId === rider.id);
     res.json({ rider, orders: assignedOrders });
   });
 
-  app.post('/api/rider/:accessToken/deliver', (req, res) => {
+  app.post('/api/rider/:accessToken/deliver', trackingAndRiderLimiter, (req, res) => {
     const rider = db.deliveryBoys.find((r) => r.accessToken === req.params.accessToken);
-    if (!rider) {
-      res.status(404).json({ error: 'Invalid delivery partner link' });
+    if (!rider || !rider.isActive) {
+      res.status(404).json({ error: 'Invalid or deactivated delivery partner link' });
+      return;
+    }
+    if (rider.tokenExpiresAt && new Date(rider.tokenExpiresAt).getTime() < Date.now()) {
+      res.status(403).json({ error: 'This delivery partner link has expired.' });
       return;
     }
     const { orderId, otp } = req.body || {};
@@ -1667,7 +2381,7 @@ async function startServer() {
       res.status(404).json({ error: 'Assigned order not found' });
       return;
     }
-    if (String(otp).trim() !== order.deliveryOtp) {
+    if (String(otp || '').trim() !== order.deliveryOtp) {
       res.status(400).json({
         error: 'Incorrect 4-digit Delivery OTP. Please ask the customer for the OTP shown on their tracking link.',
       });
@@ -1693,51 +2407,495 @@ async function startServer() {
     saveDatabase(db);
     io.to(`track:${order.trackingToken}`).emit('order:updated', order);
     io.to('admin:live').emit('order:updated', order);
+    io.to(`rider:${rider.accessToken}`).emit('order:updated', order);
     res.json({ order });
   });
 
   // ===========================================================================
-  // ADMIN PANEL API ROUTES (RBAC: owner, manager, staff)
+  // 1.2 ADMIN AUTHENTICATION, USER MANAGEMENT & SESSION REVOCATION ROUTES
   // ===========================================================================
 
-  app.post('/api/admin/login', (req, res) => {
-    const { email, password } = req.body || {};
-    const cleanEmail = String(email || '').trim().toLowerCase();
-    const user = db.adminUsers.find((u) => u.email.toLowerCase() === cleanEmail);
-    if (!user || user.passwordHash !== hashPassword(String(password || ''))) {
-      res.status(401).json({ error: 'Invalid admin email or password' });
-      return;
-    }
-    const token = createAdminToken({ email: user.email, role: user.role, name: user.name });
-    logAudit(user.email, user.role, 'ADMIN_LOGIN', `Logged into Admin Panel as ${user.role}`, req.ip || '127.0.0.1');
+  app.get('/api/admin/auth-config', (_req, res) => {
     res.json({
-      token,
-      user: { email: user.email, role: user.role, name: user.name },
+      demoMode: DEMO_MODE,
+      razorpayMode: RAZORPAY_MODE,
+      turnstileSiteKey: TURNSTILE_SITE_KEY || null,
+      broadcastProviderConfigured: BROADCAST_PROVIDER_CONFIGURED,
     });
   });
 
-  app.get('/api/admin/bootstrap', requireAdmin(), (_req: AdminAuthRequest, res) => {
+  app.post('/api/admin/login', (req, res) => {
+    const clientIp = req.ip || '127.0.0.1';
+    const parsed = z
+      .object({
+        email: z.string().trim().email(),
+        password: z.string().min(1),
+        totpCode: z.string().optional(),
+      })
+      .safeParse(req.body);
+
+    if (!parsed.success) {
+      res.status(400).json({ error: 'Please enter a valid email and password.' });
+      return;
+    }
+
+    const cleanEmail = parsed.data.email.toLowerCase();
+
+    // Check brute-force lockout (5 failed attempts in 15 mins per email or per IP)
+    if (isLoginLocked(loginAttemptsByEmail, cleanEmail) || isLoginLocked(loginAttemptsByIp, clientIp)) {
+      logAudit(
+        cleanEmail,
+        'staff',
+        'ADMIN_LOGIN_LOCKED',
+        `Blocked login attempt during 15-minute brute-force lockout window`,
+        clientIp
+      );
+      res.status(429).json({
+        error: 'Invalid credentials or account temporarily locked for 15 minutes due to failed attempts.',
+      });
+      return;
+    }
+
+    const user = db.adminUsers.find((u) => u.email.toLowerCase() === cleanEmail);
+    if (!user || !user.isActive || !verifyPasswordScrypt(parsed.data.password, user.passwordHash)) {
+      const emailLocked = recordLoginFailure(loginAttemptsByEmail, cleanEmail);
+      const ipLocked = recordLoginFailure(loginAttemptsByIp, clientIp);
+      logAudit(
+        cleanEmail,
+        user?.role || 'staff',
+        'ADMIN_LOGIN_FAILED',
+        `Failed login attempt${emailLocked || ipLocked ? ' (LOCKOUT TRIGGERED)' : ''}`,
+        clientIp
+      );
+      res.status(401).json({
+        error: 'Invalid credentials or account temporarily locked.',
+      });
+      return;
+    }
+
+    // Check TOTP 2FA if enabled on user account
+    if (user.totpEnabled && user.totpSecret) {
+      if (!parsed.data.totpCode) {
+        res.status(200).json({ requireTotp: true, message: 'Enter your 6-digit authenticator code' });
+        return;
+      }
+      if (!verifyTotpCode(user.totpSecret, parsed.data.totpCode)) {
+        recordLoginFailure(loginAttemptsByEmail, cleanEmail);
+        recordLoginFailure(loginAttemptsByIp, clientIp);
+        logAudit(user.email, user.role, 'ADMIN_2FA_FAILED', 'Invalid TOTP 2FA code entered', clientIp);
+        res.status(401).json({ error: 'Invalid 6-digit 2FA authenticator code.' });
+        return;
+      }
+    }
+
+    clearLoginFailures(cleanEmail, clientIp);
+
+    const nowIso = new Date().toISOString();
+    user.lastLoginAt = nowIso;
+
+    const sessionId = `sess_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
+    const sessionRecord: AdminSessionRecord = {
+      id: sessionId,
+      userId: user.id,
+      email: user.email,
+      role: user.role,
+      userAgent: String(req.headers['user-agent'] || 'Browser').slice(0, 160),
+      ipAddress: clientIp,
+      createdAt: nowIso,
+      lastSeenAt: nowIso,
+      revoked: false,
+    };
+    db.adminSessions.unshift(sessionRecord);
+    if (db.adminSessions.length > 100) {
+      db.adminSessions = db.adminSessions.slice(0, 100);
+    }
+
+    const accessToken = signJwt(
+      {
+        sub: user.id,
+        email: user.email,
+        role: user.role,
+        name: user.name,
+        tv: user.tokenVersion,
+        sid: sessionId,
+        type: 'access',
+      },
+      ACCESS_TTL_SEC
+    );
+    const refreshToken = signJwt(
+      {
+        sub: user.id,
+        email: user.email,
+        role: user.role,
+        name: user.name,
+        tv: user.tokenVersion,
+        sid: sessionId,
+        type: 'refresh',
+      },
+      REFRESH_TTL_SEC
+    );
+
+    setAdminAuthCookies(res, accessToken, refreshToken);
+    logAudit(user.email, user.role, 'ADMIN_LOGIN', `Logged in (${sessionId})`, clientIp);
+
     res.json({
+      token: accessToken,
+      sessionId,
+      user: toPublicAdminUser(user),
+    });
+  });
+
+  app.post('/api/admin/refresh', (req, res) => {
+    const cookies = parseCookies(req.headers.cookie);
+    const refreshToken = cookies['aangan_admin_refresh'] || req.body?.refreshToken;
+    if (!refreshToken) {
+      res.status(401).json({ error: 'No refresh token present' });
+      return;
+    }
+    const payload = verifyJwtRaw(refreshToken);
+    if (!payload || payload.type !== 'refresh') {
+      res.status(401).json({ error: 'Invalid or expired refresh token' });
+      return;
+    }
+    const user = db.adminUsers.find((u) => u.id === payload.sub && u.isActive);
+    const session = db.adminSessions.find((s) => s.id === payload.sid && !s.revoked);
+    if (!user || !session || user.tokenVersion !== payload.tv) {
+      clearAdminAuthCookies(res);
+      res.status(401).json({ error: 'Session has been revoked' });
+      return;
+    }
+
+    session.lastSeenAt = new Date().toISOString();
+    const newAccess = signJwt(
+      {
+        sub: user.id,
+        email: user.email,
+        role: user.role,
+        name: user.name,
+        tv: user.tokenVersion,
+        sid: session.id,
+        type: 'access',
+      },
+      ACCESS_TTL_SEC
+    );
+    setAdminAuthCookies(res, newAccess, refreshToken);
+    res.json({
+      token: newAccess,
+      sessionId: session.id,
+      user: toPublicAdminUser(user),
+    });
+  });
+
+  app.get('/api/admin/me', requireAdmin(), (req: AdminAuthRequest, res) => {
+    const user = db.adminUsers.find((u) => u.id === req.admin!.userId);
+    if (!user) {
+      res.status(401).json({ error: 'User not found' });
+      return;
+    }
+    res.json({
+      sessionId: req.admin!.sessionId,
+      user: toPublicAdminUser(user),
+    });
+  });
+
+  app.post('/api/admin/logout', (req: AdminAuthRequest, res) => {
+    const authHeader = req.headers.authorization;
+    const bearer = authHeader && authHeader.startsWith('Bearer ') ? authHeader.slice(7) : undefined;
+    const verified = authenticateAdminFromTokenOrCookie(bearer, req.headers.cookie);
+    if (verified) {
+      const sess = db.adminSessions.find((s) => s.id === verified.sessionId);
+      if (sess) sess.revoked = true;
+      logAudit(verified.email, verified.role, 'ADMIN_LOGOUT', `Logged out session ${verified.sessionId}`, req.ip || '127.0.0.1');
+    }
+    clearAdminAuthCookies(res);
+    res.json({ ok: true });
+  });
+
+  // Change own password (available to all roles: owner, manager, staff)
+  app.post('/api/admin/change-password', requireAdmin(), (req: AdminAuthRequest, res) => {
+    const parsed = z
+      .object({
+        currentPassword: z.string().min(1),
+        newPassword: z.string().min(8, 'New password must be at least 8 characters'),
+      })
+      .safeParse(req.body);
+
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.issues[0]?.message || 'Invalid password input' });
+      return;
+    }
+
+    const user = db.adminUsers.find((u) => u.id === req.admin!.userId);
+    if (!user || !verifyPasswordScrypt(parsed.data.currentPassword, user.passwordHash)) {
+      res.status(400).json({ error: 'Current password is incorrect' });
+      return;
+    }
+
+    user.passwordHash = hashPasswordScrypt(parsed.data.newPassword);
+    user.mustChangePassword = false;
+    user.tokenVersion += 1;
+
+    // Keep current session alive and issue rotated token
+    const newAccess = signJwt(
+      {
+        sub: user.id,
+        email: user.email,
+        role: user.role,
+        name: user.name,
+        tv: user.tokenVersion,
+        sid: req.admin!.sessionId,
+        type: 'access',
+      },
+      ACCESS_TTL_SEC
+    );
+    const newRefresh = signJwt(
+      {
+        sub: user.id,
+        email: user.email,
+        role: user.role,
+        name: user.name,
+        tv: user.tokenVersion,
+        sid: req.admin!.sessionId,
+        type: 'refresh',
+      },
+      REFRESH_TTL_SEC
+    );
+    setAdminAuthCookies(res, newAccess, newRefresh);
+    logAudit(user.email, user.role, 'PASSWORD_CHANGED', 'Changed own admin password', req.ip || '127.0.0.1');
+
+    res.json({
+      token: newAccess,
+      user: toPublicAdminUser(user),
+    });
+  });
+
+  // Admin Users Management (Owner only)
+  app.post('/api/admin/users', requireAdmin(['owner']), (req: AdminAuthRequest, res) => {
+    const parsed = z
+      .object({
+        email: z.string().trim().email(),
+        name: z.string().trim().min(2).max(120),
+        role: z.enum(['owner', 'manager', 'staff']),
+        password: z.string().min(8, 'Initial password must be at least 8 characters'),
+      })
+      .safeParse(req.body);
+
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.issues[0]?.message || 'Invalid user details' });
+      return;
+    }
+
+    const cleanEmail = parsed.data.email.toLowerCase();
+    if (db.adminUsers.some((u) => u.email.toLowerCase() === cleanEmail)) {
+      res.status(400).json({ error: 'An admin user with this email already exists' });
+      return;
+    }
+
+    const newUser: AdminUserRecord = {
+      id: `adm_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
+      email: cleanEmail,
+      name: parsed.data.name,
+      role: parsed.data.role,
+      passwordHash: hashPasswordScrypt(parsed.data.password),
+      isActive: true,
+      mustChangePassword: true,
+      tokenVersion: 1,
+      totpEnabled: false,
+      createdAt: new Date().toISOString(),
+    };
+
+    db.adminUsers.push(newUser);
+    logAudit(
+      req.admin!.email,
+      req.admin!.role,
+      'ADMIN_USER_CREATED',
+      `Created ${newUser.role} account for ${newUser.email}`,
+      req.ip || '127.0.0.1'
+    );
+    res.json({ adminUsers: db.adminUsers.map(toPublicAdminUser) });
+  });
+
+  app.patch('/api/admin/users/:id', requireAdmin(['owner']), (req: AdminAuthRequest, res) => {
+    const target = db.adminUsers.find((u) => u.id === req.params.id);
+    if (!target) {
+      res.status(404).json({ error: 'Admin user not found' });
+      return;
+    }
+
+    const parsed = z
+      .object({
+        role: z.enum(['owner', 'manager', 'staff']).optional(),
+        isActive: z.boolean().optional(),
+        name: z.string().trim().min(2).max(120).optional(),
+        resetPassword: z.string().min(8).optional(),
+      })
+      .safeParse(req.body);
+
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.issues[0]?.message || 'Invalid update payload' });
+      return;
+    }
+
+    if (target.id === req.admin!.userId && parsed.data.isActive === false) {
+      res.status(400).json({ error: 'You cannot disable your own active Owner account' });
+      return;
+    }
+
+    if (parsed.data.role) target.role = parsed.data.role;
+    if (parsed.data.name) target.name = parsed.data.name;
+    if (parsed.data.isActive !== undefined) {
+      target.isActive = parsed.data.isActive;
+      if (!target.isActive) {
+        target.tokenVersion += 1;
+        for (const s of db.adminSessions) {
+          if (s.userId === target.id) s.revoked = true;
+        }
+      }
+    }
+    if (parsed.data.resetPassword) {
+      target.passwordHash = hashPasswordScrypt(parsed.data.resetPassword);
+      target.mustChangePassword = true;
+      target.tokenVersion += 1;
+      for (const s of db.adminSessions) {
+        if (s.userId === target.id) s.revoked = true;
+      }
+    }
+
+    logAudit(
+      req.admin!.email,
+      req.admin!.role,
+      'ADMIN_USER_UPDATED',
+      `Updated user ${target.email} (role=${target.role}, active=${target.isActive})`,
+      req.ip || '127.0.0.1'
+    );
+    res.json({
+      adminUsers: db.adminUsers.map(toPublicAdminUser),
+      adminSessions: db.adminSessions.filter((s) => !s.revoked),
+    });
+  });
+
+  // Log out all devices for a user
+  app.post('/api/admin/users/:id/logout-all', requireAdmin(), (req: AdminAuthRequest, res) => {
+    const targetId = req.params.id;
+    if (req.admin!.role !== 'owner' && req.admin!.userId !== targetId) {
+      res.status(403).json({ error: 'Only Owner can revoke sessions for other users' });
+      return;
+    }
+    const target = db.adminUsers.find((u) => u.id === targetId);
+    if (!target) {
+      res.status(404).json({ error: 'User not found' });
+      return;
+    }
+    target.tokenVersion += 1;
+    for (const s of db.adminSessions) {
+      if (s.userId === target.id) s.revoked = true;
+    }
+    logAudit(
+      req.admin!.email,
+      req.admin!.role,
+      'LOGOUT_ALL_DEVICES',
+      `Revoked all active sessions for ${target.email}`,
+      req.ip || '127.0.0.1'
+    );
+    res.json({
+      adminUsers: db.adminUsers.map(toPublicAdminUser),
+      adminSessions: db.adminSessions.filter((s) => !s.revoked),
+    });
+  });
+
+  app.delete('/api/admin/sessions/:sessionId', requireAdmin(['owner']), (req: AdminAuthRequest, res) => {
+    const sess = db.adminSessions.find((s) => s.id === req.params.sessionId);
+    if (sess) {
+      sess.revoked = true;
+      logAudit(
+        req.admin!.email,
+        req.admin!.role,
+        'SESSION_REVOKED',
+        `Revoked session ${sess.id} (${sess.email})`,
+        req.ip || '127.0.0.1'
+      );
+    }
+    res.json({ adminSessions: db.adminSessions.filter((s) => !s.revoked) });
+  });
+
+  // Owner TOTP 2FA Setup & Verification
+  app.post('/api/admin/totp/setup', requireAdmin(['owner']), (req: AdminAuthRequest, res) => {
+    const user = db.adminUsers.find((u) => u.id === req.admin!.userId);
+    if (!user) {
+      res.status(404).json({ error: 'User not found' });
+      return;
+    }
+    const secret = generateTotpSecret();
+    user.totpSecret = secret;
+    saveDatabase(db);
+    res.json({
+      secretHex: secret,
+      currentDemoCode: computeTotpCode(secret, 0),
+    });
+  });
+
+  app.post('/api/admin/totp/verify', requireAdmin(['owner']), (req: AdminAuthRequest, res) => {
+    const user = db.adminUsers.find((u) => u.id === req.admin!.userId);
+    if (!user || !user.totpSecret) {
+      res.status(400).json({ error: 'Initiate TOTP setup first' });
+      return;
+    }
+    const code = String(req.body?.code || '').trim();
+    if (!verifyTotpCode(user.totpSecret, code)) {
+      res.status(400).json({ error: 'Invalid 6-digit TOTP code' });
+      return;
+    }
+    user.totpEnabled = true;
+    logAudit(user.email, user.role, 'TOTP_2FA_ENABLED', 'Enabled TOTP 2FA on Owner account', req.ip || '127.0.0.1');
+    res.json({ user: toPublicAdminUser(user) });
+  });
+
+  app.post('/api/admin/totp/disable', requireAdmin(['owner']), (req: AdminAuthRequest, res) => {
+    const user = db.adminUsers.find((u) => u.id === req.admin!.userId);
+    if (!user) {
+      res.status(404).json({ error: 'User not found' });
+      return;
+    }
+    user.totpEnabled = false;
+    user.totpSecret = undefined;
+    logAudit(user.email, user.role, 'TOTP_2FA_DISABLED', 'Disabled TOTP 2FA on Owner account', req.ip || '127.0.0.1');
+    res.json({ user: toPublicAdminUser(user) });
+  });
+
+  /**
+   * GET /api/admin/bootstrap
+   * Role-filtered bootstrap payload
+   */
+  app.get('/api/admin/bootstrap', requireAdmin(), (req: AdminAuthRequest, res) => {
+    const role = req.admin!.role;
+    const currentUser = db.adminUsers.find((u) => u.id === req.admin!.userId);
+    res.json({
+      currentUser: currentUser ? toPublicAdminUser(currentUser) : null,
       settings: db.settings,
       deliveryZone: db.deliveryZone,
       categories: db.categories,
       menuItems: db.menuItems,
       banners: db.banners,
       homeSections: db.homeSections,
-      coupons: db.coupons,
-      customers: Object.values(db.customers),
+      coupons: role === 'staff' ? [] : db.coupons,
+      customers: role === 'staff' ? [] : Object.values(db.customers),
       orders: db.orders,
-      payments: db.payments,
-      refunds: db.refunds,
+      payments: role === 'staff' ? [] : db.payments,
+      refunds: role === 'staff' ? [] : db.refunds,
       deliveryBoys: db.deliveryBoys,
-      reviews: db.reviews,
-      auditLogs: db.auditLogs,
-      blockedList: db.blockedList,
-      broadcasts: db.broadcasts,
+      reviews: role === 'staff' ? [] : db.reviews,
+      auditLogs: role === 'owner' ? db.auditLogs : [],
+      blockedList: role === 'staff' ? [] : db.blockedList,
+      broadcasts: role === 'staff' ? [] : db.broadcasts,
+      adminUsers: role === 'owner' ? db.adminUsers.map(toPublicAdminUser) : [],
+      adminSessions: role === 'owner' ? db.adminSessions.filter((s) => !s.revoked) : [],
+      broadcastProviderConfigured: BROADCAST_PROVIDER_CONFIGURED,
+      demoMode: DEMO_MODE,
+      razorpayMode: RAZORPAY_MODE,
     });
   });
 
-  // Update order status or assign delivery boy
+  // Update order status (including real READY status) or assign delivery boy
   app.patch('/api/admin/orders/:orderId', requireAdmin(['owner', 'manager', 'staff']), (req: AdminAuthRequest, res) => {
     const order = db.orders.find((o) => o.id === req.params.orderId);
     if (!order) {
@@ -1754,7 +2912,7 @@ async function startServer() {
         order.deliveryBoyName = undefined;
         order.deliveryBoyPhone = undefined;
       } else {
-        const rider = db.deliveryBoys.find((r) => r.id === deliveryBoyId);
+        const rider = db.deliveryBoys.find((r) => r.id === deliveryBoyId && r.isActive);
         if (rider) {
           order.deliveryBoyId = rider.id;
           order.deliveryBoyName = rider.name;
@@ -1764,6 +2922,20 @@ async function startServer() {
     }
 
     if (status && status !== order.status) {
+      const validStatuses: OrderStatus[] = [
+        'PLACED',
+        'ACCEPTED',
+        'PREPARING',
+        'READY',
+        'OUT_FOR_DELIVERY',
+        'DELIVERED',
+        'CANCELLED',
+        'REJECTED',
+      ];
+      if (!validStatuses.includes(status as OrderStatus)) {
+        res.status(400).json({ error: 'Invalid order status' });
+        return;
+      }
       const nextStatus = status as OrderStatus;
       if (nextStatus === 'DELIVERED' && deliveryOtp && String(deliveryOtp) !== order.deliveryOtp) {
         res.status(400).json({ error: 'Invalid 4-digit customer Delivery OTP' });
@@ -1772,6 +2944,7 @@ async function startServer() {
       order.status = nextStatus;
       if (nextStatus === 'ACCEPTED') order.acceptedAt = nowIso;
       if (nextStatus === 'PREPARING') order.preparedAt = nowIso;
+      if (nextStatus === 'READY') order.readyAt = nowIso;
       if (nextStatus === 'OUT_FOR_DELIVERY') order.outForDeliveryAt = nowIso;
       if (nextStatus === 'DELIVERED') {
         order.deliveredAt = nowIso;
@@ -1791,13 +2964,15 @@ async function startServer() {
       );
     }
 
-    // Recalculate rider active order counts
     for (const r of db.deliveryBoys) {
       r.activeOrders = db.orders.filter(
         (o) =>
           o.deliveryBoyId === r.id &&
           !['DELIVERED', 'CANCELLED', 'REJECTED'].includes(o.status)
       ).length;
+      if (order.deliveryBoyId === r.id) {
+        io.to(`rider:${r.accessToken}`).emit('order:updated', order);
+      }
     }
 
     saveDatabase(db);
@@ -1809,11 +2984,23 @@ async function startServer() {
 
   // Menu Management (Categories & Items)
   app.post('/api/admin/categories', requireAdmin(['owner', 'manager']), (req: AdminAuthRequest, res) => {
-    const { id, name, slug, description, sortOrder, isActive } = req.body || {};
-    if (!name) {
-      res.status(400).json({ error: 'Category name is required' });
+    const parsed = z
+      .object({
+        id: z.string().optional(),
+        name: z.string().trim().min(2).max(100),
+        slug: z.string().trim().max(100).optional(),
+        description: z.string().max(300).optional().default(''),
+        sortOrder: z.number().int().optional(),
+        isActive: z.boolean().optional(),
+      })
+      .safeParse(req.body);
+
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.issues[0]?.message || 'Category name is required' });
       return;
     }
+
+    const { id, name, slug, description, sortOrder, isActive } = parsed.data;
     const existing = db.categories.find((c) => c.id === id);
     if (existing) {
       existing.name = name;
@@ -1847,24 +3034,33 @@ async function startServer() {
     if (existingIdx >= 0) {
       db.menuItems[existingIdx] = {
         ...db.menuItems[existingIdx],
-        ...item,
+        name: String(item.name).trim(),
+        categoryId: String(item.categoryId),
+        description: item.description ?? db.menuItems[existingIdx].description,
         basePrice: Number(item.basePrice) || db.menuItems[existingIdx].basePrice,
+        imageUrl: item.imageUrl || db.menuItems[existingIdx].imageUrl,
+        isVeg: item.isVeg !== undefined ? Boolean(item.isVeg) : db.menuItems[existingIdx].isVeg,
+        inStock: item.inStock !== undefined ? Boolean(item.inStock) : db.menuItems[existingIdx].inStock,
+        spiceLevel: item.spiceLevel || db.menuItems[existingIdx].spiceLevel,
+        prepTimeMins: Number(item.prepTimeMins) || db.menuItems[existingIdx].prepTimeMins,
+        variants: Array.isArray(item.variants) ? item.variants : db.menuItems[existingIdx].variants,
+        addons: Array.isArray(item.addons) ? item.addons : db.menuItems[existingIdx].addons,
       };
     } else {
       const newId = `item_${Date.now()}`;
       db.menuItems.push({
         id: newId,
         categoryId: item.categoryId,
-        name: item.name,
+        name: String(item.name).trim(),
         description: item.description || '',
         basePrice: Number(item.basePrice) || 299,
         imageUrl: item.imageUrl || IMG_HERO,
         isVeg: item.isVeg !== false,
         inStock: item.inStock !== false,
-        showOnHome: item.showOnHome !== false,
-        isBestseller: Boolean(item.isBestseller),
-        isTodaysSpecial: Boolean(item.isTodaysSpecial),
-        isNewArrival: Boolean(item.isNewArrival),
+        showOnHome: true,
+        isBestseller: false,
+        isTodaysSpecial: false,
+        isNewArrival: false,
         spiceLevel: item.spiceLevel || 'Medium',
         prepTimeMins: Number(item.prepTimeMins) || 25,
         salesCount: 0,
@@ -1886,9 +3082,6 @@ async function startServer() {
     }
     const { field, value } = req.body || {};
     if (field === 'inStock') found.inStock = Boolean(value);
-    if (field === 'showOnHome') found.showOnHome = Boolean(value);
-    if (field === 'isBestseller') found.isBestseller = Boolean(value);
-    if (field === 'isTodaysSpecial') found.isTodaysSpecial = Boolean(value);
 
     clearHomeCache();
     logAudit(
@@ -1901,7 +3094,7 @@ async function startServer() {
     res.json({ item: found });
   });
 
-  // Home Page Manager (Banners & Sections with instant cache invalidation)
+  // Home Page Manager (Single source of truth for sections & banners)
   app.put('/api/admin/home-manager', requireAdmin(['owner', 'manager']), (req: AdminAuthRequest, res) => {
     const { banners, homeSections } = req.body || {};
     if (Array.isArray(banners)) {
@@ -1909,6 +3102,21 @@ async function startServer() {
     }
     if (Array.isArray(homeSections)) {
       db.homeSections = homeSections;
+      // Sync derived flags on menu items so legacy consumers stay consistent
+      const bestIds = new Set(
+        db.homeSections
+          .filter((s) => s.sectionType === 'BESTSELLERS')
+          .flatMap((s) => s.itemIds)
+      );
+      const specialIds = new Set(
+        db.homeSections
+          .filter((s) => s.sectionType === 'TODAYS_SPECIAL')
+          .flatMap((s) => s.itemIds)
+      );
+      for (const m of db.menuItems) {
+        m.isBestseller = bestIds.has(m.id);
+        m.isTodaysSpecial = specialIds.has(m.id);
+      }
     }
     clearHomeCache();
     logAudit(
@@ -1918,24 +3126,38 @@ async function startServer() {
       `Updated Home Page banners (${db.banners.length}) and sections (${db.homeSections.length}); cache cleared`,
       req.ip || '127.0.0.1'
     );
-    res.json({ banners: db.banners, homeSections: db.homeSections });
+    res.json({ banners: db.banners, homeSections: db.homeSections, menuItems: db.menuItems });
   });
 
-  // Shop Settings & Delivery Zone
+  // 1.4 Strictly Validated & Whitelisted Shop Settings & Delivery Zone
   app.put('/api/admin/settings', requireAdmin(['owner', 'manager']), (req: AdminAuthRequest, res) => {
     const { settings, deliveryZone } = req.body || {};
-    if (settings) {
-      db.settings = { ...db.settings, ...settings };
+
+    if (settings !== undefined) {
+      const parsedSettings = ShopSettingsUpdateSchema.safeParse(settings);
+      if (!parsedSettings.success) {
+        res.status(400).json({
+          error: `Invalid settings field: ${parsedSettings.error.issues[0]?.message || 'Check inputs'}`,
+        });
+        return;
+      }
+      db.settings = { ...db.settings, ...parsedSettings.data };
     }
-    if (deliveryZone) {
+
+    if (deliveryZone !== undefined) {
+      const parsedZone = DeliveryZoneUpdateSchema.safeParse(deliveryZone);
+      if (!parsedZone.success) {
+        res.status(400).json({
+          error: `Invalid delivery zone field: ${parsedZone.error.issues[0]?.message || 'Check inputs'}`,
+        });
+        return;
+      }
       db.deliveryZone = {
         ...db.deliveryZone,
-        ...deliveryZone,
-        shopLat: Number(deliveryZone.shopLat),
-        shopLng: Number(deliveryZone.shopLng),
-        radiusKm: Number(deliveryZone.radiusKm),
+        ...parsedZone.data,
       };
     }
+
     clearHomeCache();
     logAudit(
       req.admin!.email,
@@ -1949,24 +3171,40 @@ async function startServer() {
 
   // Coupons Management
   app.post('/api/admin/coupons', requireAdmin(['owner', 'manager']), (req: AdminAuthRequest, res) => {
-    const coupon = req.body as Coupon;
-    if (!coupon || !coupon.code) {
-      res.status(400).json({ error: 'Coupon code is required' });
+    const parsed = z
+      .object({
+        code: z.string().trim().min(3).max(24),
+        description: z.string().trim().max(200).optional().default(''),
+        discountType: z.enum(['PERCENT', 'FLAT']),
+        discountValue: z.number().min(1).max(10000),
+        maxDiscount: z.number().min(1).max(10000).optional(),
+        minOrderAmount: z.number().min(0).max(50000).optional().default(0),
+        usageLimitPerPhone: z.number().int().min(1).max(100).optional().default(1),
+        firstOrderOnly: z.boolean().optional().default(false),
+        expiresAt: z.string().optional(),
+        isActive: z.boolean().optional().default(true),
+      })
+      .safeParse(req.body);
+
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.issues[0]?.message || 'Valid coupon details required' });
       return;
     }
-    const cleanCode = coupon.code.trim().toUpperCase();
+
+    const coupon = parsed.data;
+    const cleanCode = coupon.code.toUpperCase();
     const idx = db.coupons.findIndex((c) => c.code === cleanCode);
     const record: Coupon = {
       code: cleanCode,
-      description: coupon.description || '',
-      discountType: coupon.discountType === 'PERCENT' ? 'PERCENT' : 'FLAT',
-      discountValue: Number(coupon.discountValue) || 50,
-      maxDiscount: coupon.maxDiscount ? Number(coupon.maxDiscount) : undefined,
-      minOrderAmount: Number(coupon.minOrderAmount) || 0,
-      usageLimitPerPhone: Number(coupon.usageLimitPerPhone) || 1,
-      firstOrderOnly: Boolean(coupon.firstOrderOnly),
+      description: coupon.description,
+      discountType: coupon.discountType,
+      discountValue: coupon.discountValue,
+      maxDiscount: coupon.maxDiscount,
+      minOrderAmount: coupon.minOrderAmount,
+      usageLimitPerPhone: coupon.usageLimitPerPhone,
+      firstOrderOnly: coupon.firstOrderOnly,
       expiresAt: coupon.expiresAt || '2027-12-31T23:59:59.000Z',
-      isActive: coupon.isActive !== false,
+      isActive: coupon.isActive,
     };
 
     if (idx >= 0) {
@@ -1979,11 +3217,11 @@ async function startServer() {
     res.json({ coupons: db.coupons });
   });
 
-  // Delivery Boys Management
+  // Delivery Boys Management + 1.5 Token Regenerate / Revoke / Daily PIN
   app.post('/api/admin/delivery-boys', requireAdmin(['owner', 'manager']), (req: AdminAuthRequest, res) => {
     const { name, phone } = req.body || {};
     const cleanPhone = String(phone || '').replace(/\D/g, '');
-    if (!name || cleanPhone.length !== 10) {
+    if (!name || !/^[6-9]\d{9}$/.test(cleanPhone)) {
       res.status(400).json({ error: 'Valid name and 10-digit phone number required' });
       return;
     }
@@ -1993,21 +3231,78 @@ async function startServer() {
       phone: cleanPhone,
       isActive: true,
       activeOrders: 0,
-      accessToken: `rider_token_${crypto.randomBytes(6).toString('hex')}`,
+      accessToken: `rider_token_${crypto.randomBytes(8).toString('hex')}`,
+      tokenExpiresAt: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString(),
+      dailyPin: String(Math.floor(1000 + Math.random() * 9000)),
     };
     db.deliveryBoys.push(rider);
     logAudit(req.admin!.email, req.admin!.role, 'RIDER_ADDED', `Added delivery partner ${rider.name}`, req.ip || '127.0.0.1');
     res.json({ deliveryBoys: db.deliveryBoys });
   });
 
+  app.post(
+    '/api/admin/delivery-boys/:id/regenerate-token',
+    requireAdmin(['owner', 'manager']),
+    (req: AdminAuthRequest, res) => {
+      const rider = db.deliveryBoys.find((r) => r.id === req.params.id);
+      if (!rider) {
+        res.status(404).json({ error: 'Rider not found' });
+        return;
+      }
+      rider.accessToken = `rider_token_${crypto.randomBytes(8).toString('hex')}`;
+      rider.tokenExpiresAt = new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString();
+      rider.dailyPin = String(Math.floor(1000 + Math.random() * 9000));
+      rider.isActive = true;
+      logAudit(
+        req.admin!.email,
+        req.admin!.role,
+        'RIDER_TOKEN_REGENERATED',
+        `Regenerated access link & PIN for rider ${rider.name}`,
+        req.ip || '127.0.0.1'
+      );
+      res.json({ deliveryBoys: db.deliveryBoys });
+    }
+  );
+
+  app.post(
+    '/api/admin/delivery-boys/:id/revoke-token',
+    requireAdmin(['owner', 'manager']),
+    (req: AdminAuthRequest, res) => {
+      const rider = db.deliveryBoys.find((r) => r.id === req.params.id);
+      if (!rider) {
+        res.status(404).json({ error: 'Rider not found' });
+        return;
+      }
+      rider.isActive = false;
+      rider.tokenExpiresAt = new Date(0).toISOString();
+      logAudit(
+        req.admin!.email,
+        req.admin!.role,
+        'RIDER_TOKEN_REVOKED',
+        `Revoked access link for rider ${rider.name}`,
+        req.ip || '127.0.0.1'
+      );
+      res.json({ deliveryBoys: db.deliveryBoys });
+    }
+  );
+
   // Block / Unblock Phone or IP
   app.post('/api/admin/block', requireAdmin(['owner', 'manager']), (req: AdminAuthRequest, res) => {
-    const { targetType, targetValue, reason, unblock } = req.body || {};
-    const val = String(targetValue || '').trim();
-    if (!val) {
+    const parsed = z
+      .object({
+        targetType: z.enum(['PHONE', 'IP']).optional().default('PHONE'),
+        targetValue: z.string().trim().min(3).max(64),
+        reason: z.string().trim().max(200).optional().default('Abuse / Repeated fake orders'),
+        unblock: z.boolean().optional().default(false),
+      })
+      .safeParse(req.body);
+
+    if (!parsed.success) {
       res.status(400).json({ error: 'Target phone or IP is required' });
       return;
     }
+
+    const { targetType, targetValue: val, reason, unblock } = parsed.data;
 
     if (unblock) {
       db.blockedList = db.blockedList.filter((b) => b.targetValue !== val);
@@ -2016,22 +3311,21 @@ async function startServer() {
       }
       logAudit(req.admin!.email, req.admin!.role, 'UNBLOCKED_ENTITY', `Unblocked ${val}`, req.ip || '127.0.0.1');
     } else {
-      const type = targetType === 'IP' ? 'IP' : 'PHONE';
       if (!db.blockedList.some((b) => b.targetValue === val)) {
         db.blockedList.unshift({
           id: `blk_${Date.now()}`,
-          targetType: type,
+          targetType,
           targetValue: val,
-          reason: reason || 'Abuse / Repeated fake orders',
+          reason,
           blockedBy: req.admin!.email,
           createdAt: new Date().toISOString(),
         });
       }
-      if (type === 'PHONE' && db.customers[val]) {
+      if (targetType === 'PHONE' && db.customers[val]) {
         db.customers[val].isBlocked = true;
-        db.customers[val].blockedReason = reason || 'Blocked by admin';
+        db.customers[val].blockedReason = reason;
       }
-      logAudit(req.admin!.email, req.admin!.role, 'BLOCKED_ENTITY', `Blocked ${type} ${val}: ${reason}`, req.ip || '127.0.0.1');
+      logAudit(req.admin!.email, req.admin!.role, 'BLOCKED_ENTITY', `Blocked ${targetType} ${val}: ${reason}`, req.ip || '127.0.0.1');
     }
 
     res.json({
@@ -2040,7 +3334,7 @@ async function startServer() {
     });
   });
 
-  // Razorpay Refund Endpoint
+  // Razorpay Refund Endpoint (Owner only)
   app.post('/api/admin/payments/:paymentId/refund', requireAdmin(['owner']), (req: AdminAuthRequest, res) => {
     const payment = db.payments.find((p) => p.id === req.params.paymentId);
     if (!payment) {
@@ -2052,8 +3346,19 @@ async function startServer() {
       return;
     }
 
-    const { reason, amount } = req.body || {};
-    const refundAmount = Math.min(payment.amount, Number(amount) || payment.amount);
+    const parsed = z
+      .object({
+        amount: z.number().min(1).max(payment.amount).optional(),
+        reason: z.string().trim().min(3).max(250).optional().default('Customer refund initiated by Owner'),
+      })
+      .safeParse(req.body);
+
+    if (!parsed.success) {
+      res.status(400).json({ error: 'Invalid refund amount or reason' });
+      return;
+    }
+
+    const refundAmount = Math.min(payment.amount, parsed.data.amount || payment.amount);
     const refund: RefundRecord = {
       id: `ref_${Date.now()}`,
       paymentId: payment.id,
@@ -2061,7 +3366,7 @@ async function startServer() {
       orderNumber: payment.orderNumber,
       razorpayRefundId: `rfnd_rzp_${crypto.randomBytes(6).toString('hex')}`,
       amount: refundAmount,
-      reason: String(reason || 'Customer refund initiated by Owner'),
+      reason: parsed.data.reason,
       status: 'PROCESSED',
       processedBy: req.admin!.email,
       createdAt: new Date().toISOString(),
@@ -2074,6 +3379,7 @@ async function startServer() {
     if (order) {
       order.paymentStatus = 'REFUNDED';
       io.to(`track:${order.trackingToken}`).emit('order:updated', order);
+      io.to('admin:live').emit('order:updated', order);
     }
 
     db.refunds.unshift(refund);
@@ -2100,11 +3406,17 @@ async function startServer() {
     res.json({ reviews: db.reviews });
   });
 
-  // SMS / WhatsApp Offer Broadcast
+  // Phase 2.6: Broadcast endpoint (requires real provider env keys or rejects clearly)
   app.post('/api/admin/broadcast', requireAdmin(['owner', 'manager']), (req: AdminAuthRequest, res) => {
+    if (!BROADCAST_PROVIDER_CONFIGURED) {
+      res.status(400).json({
+        error: 'Messaging provider is not connected. Configure WHATSAPP_CLOUD_API_TOKEN or MSG91_AUTH_KEY in environment variables first.',
+      });
+      return;
+    }
     const { channel, message } = req.body || {};
     if (!message || String(message).trim().length < 5) {
-      res.status(400).json({ error: 'Broadcast message cannot be empty' });
+      res.status(400).json({ error: 'Broadcast message must be at least 5 characters' });
       return;
     }
     const activeCustomers = Object.values(db.customers).filter((c) => !c.isBlocked);
@@ -2128,9 +3440,7 @@ async function startServer() {
   });
 
   // ===========================================================================
-  // BACKGROUND CRON JOB:
-  // 1) Auto-cancel unaccepted PLACED orders after admin-configured minutes (default 5 min)
-  // 2) Re-check stale PENDING online payments and auto-cancel/refund if abandoned
+  // BACKGROUND CRON JOB: Auto-cancel unaccepted PLACED orders & stale payments
   // ===========================================================================
   setInterval(() => {
     const now = Date.now();
@@ -2140,7 +3450,6 @@ async function startServer() {
     for (const order of db.orders) {
       const ageMs = now - new Date(order.placedAt).getTime();
 
-      // 1. Stale PENDING online payment (> 10 minutes without gateway capture)
       if (
         order.paymentMethod === 'RAZORPAY' &&
         order.paymentStatus === 'PENDING' &&
@@ -2161,7 +3470,6 @@ async function startServer() {
         mutated = true;
       }
 
-      // 2. Unaccepted PLACED order past auto_cancel_unaccepted_mins
       if (
         order.status === 'PLACED' &&
         (order.paymentMethod === 'COD' || order.paymentStatus === 'PAID') &&
@@ -2171,7 +3479,6 @@ async function startServer() {
         order.cancelReason = `Auto-cancelled: Kitchen did not accept within ${db.settings.autoCancelUnacceptedMins} minutes`;
         order.cancelledAt = new Date().toISOString();
 
-        // If online payment was already PAID, auto-refund via Razorpay Refund ledger
         if (order.paymentStatus === 'PAID' && order.paymentMethod === 'RAZORPAY') {
           order.paymentStatus = 'REFUNDED';
           const pay = db.payments.find((p) => p.orderId === order.id);
@@ -2202,8 +3509,7 @@ async function startServer() {
     }
   }, 30_000);
 
-  // Vite middleware for development / static assets for production
-  if (process.env.NODE_ENV !== 'production') {
+  if (!IS_PROD) {
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
@@ -2218,7 +3524,9 @@ async function startServer() {
   }
 
   httpServer.listen(PORT, '0.0.0.0', () => {
-    console.log(`Aangan Artisanal Kitchen Server + Socket.io running on http://0.0.0.0:${PORT}`);
+    console.log(
+      `Aangan Artisanal Kitchen Server + Socket.io running on http://0.0.0.0:${PORT} (RAZORPAY_MODE=${RAZORPAY_MODE}, DEMO_MODE=${DEMO_MODE})`
+    );
   });
 }
 

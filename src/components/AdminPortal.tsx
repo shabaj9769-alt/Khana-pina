@@ -1,32 +1,14 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  AlertCircle,
   AlertTriangle,
-  ArrowDown,
-  ArrowUp,
-  ArrowUpRight,
-  Ban,
+  BarChart3,
   Bell,
-  BellOff,
-  Check,
-  CheckCircle2,
-  ChevronDown,
-  ChevronRight,
-  ChevronUp,
-  Clock,
-  CreditCard,
+  Copy,
   Download,
-  ExternalLink,
-  Eye,
-  FileBarChart,
-  GripVertical,
-  Home,
-  Info,
-  Lock,
+  Edit3,
+  KeyRound,
   LogOut,
-  MapPin,
   Megaphone,
-  Moon,
   MoreHorizontal,
   MoreVertical,
   Navigation,
@@ -35,26 +17,24 @@ import {
   Plus,
   Printer,
   RefreshCw,
-  Save,
   Search,
   Settings,
-  ShieldAlert,
+  ShieldCheck,
   Sparkles,
   Store,
-  Sun,
-  Tag,
   Trash2,
-  TrendingUp,
   Truck,
   Users,
-  Utensils,
   UtensilsCrossed,
   Volume2,
+  VolumeX,
   X,
 } from 'lucide-react';
 import { Socket } from 'socket.io-client';
 import {
   AdminRole,
+  AdminSessionRecord,
+  AdminUserPublic,
   AuditLogRecord,
   Banner,
   BlockedEntry,
@@ -64,7 +44,6 @@ import {
   DeliveryBoy,
   DeliveryZone,
   HomeSection,
-  HomeSectionType,
   MenuItem,
   OrderRecord,
   OrderStatus,
@@ -76,56 +55,38 @@ import {
 
 interface AdminPortalProps {
   socket: Socket | null;
-  onRefreshStorefront: () => void;
-  onOpenRiderPortal: (token: string) => void;
+  onRefreshStorefront?: () => void;
+  onOpenRiderPortal?: (token: string) => void;
   onBackToStorefront?: () => void;
 }
 
 type AdminSectionId =
   | 'orders'
   | 'menu'
-  | 'home_page'
-  | 'reports'
-  | 'settings'
-  | 'delivery_zone'
-  | 'riders'
+  | 'storefront'
   | 'customers'
-  | 'coupons'
-  | 'payments_refunds'
-  | 'audit_log'
-  | 'broadcast';
+  | 'marketing'
+  | 'delivery'
+  | 'finance'
+  | 'settings';
 
-type OrderFilterTab =
-  | 'new'
-  | 'preparing'
-  | 'ready'
-  | 'out_for_delivery'
-  | 'completed'
-  | 'cancelled';
+type OrderFilterTab = 'NEW' | 'PREPARING' | 'READY' | 'OUT' | 'COMPLETED' | 'CANCELLED';
 
-// Web Audio API synthesized kitchen bell chime
-function playKitchenOrderBell() {
-  try {
-    const AudioCtx =
-      window.AudioContext ||
-      (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-    const ctx = new AudioCtx();
-    const now = ctx.currentTime;
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = 'sine';
-    osc.frequency.setValueAtTime(880, now);
-    osc.frequency.setValueAtTime(1174.66, now + 0.14);
-    gain.gain.setValueAtTime(0.25, now);
-    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.65);
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.start(now);
-    osc.stop(now + 0.65);
-  } catch {
-    // Ignore audio context autoplay restrictions
-  }
-}
+const ADMIN_SECTIONS: {
+  id: AdminSectionId;
+  label: string;
+  icon: React.FC<{ className?: string }>;
+  roles: AdminRole[];
+}[] = [
+  { id: 'orders', label: 'Orders', icon: Package, roles: ['owner', 'manager', 'staff'] },
+  { id: 'menu', label: 'Menu', icon: UtensilsCrossed, roles: ['owner', 'manager', 'staff'] },
+  { id: 'storefront', label: 'Storefront', icon: Store, roles: ['owner', 'manager'] },
+  { id: 'customers', label: 'Customers', icon: Users, roles: ['owner', 'manager'] },
+  { id: 'marketing', label: 'Marketing', icon: Megaphone, roles: ['owner', 'manager'] },
+  { id: 'delivery', label: 'Delivery', icon: Truck, roles: ['owner', 'manager'] },
+  { id: 'finance', label: 'Finance', icon: BarChart3, roles: ['owner', 'manager'] },
+  { id: 'settings', label: 'Settings', icon: Settings, roles: ['owner', 'manager', 'staff'] },
+];
 
 export const AdminPortal: React.FC<AdminPortalProps> = ({
   socket,
@@ -133,728 +94,931 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   onOpenRiderPortal,
   onBackToStorefront,
 }) => {
-  // Admin Auth State
-  const [token, setToken] = useState<string | null>(() =>
-    localStorage.getItem('aangan_admin_token')
-  );
-  const [adminUser, setAdminUser] = useState<{
-    email: string;
-    role: AdminRole;
-    name: string;
-  } | null>(() => {
-    try {
-      const raw = localStorage.getItem('aangan_admin_user');
-      return raw ? JSON.parse(raw) : null;
-    } catch {
-      return null;
-    }
+  // Auth & session state (kept in memory + HttpOnly cookie, never stored for 24h in localStorage)
+  const [accessToken, setAccessToken] = useState<string | null>(null);
+  const [currentUser, setCurrentUser] = useState<AdminUserPublic | null>(null);
+  const [authChecking, setAuthChecking] = useState(true);
+  const [authConfig, setAuthConfig] = useState<{
+    demoMode: boolean;
+    razorpayMode: 'demo' | 'live';
+    demoRoles: { email: string; role: AdminRole; name: string }[];
+  }>({
+    demoMode: false,
+    razorpayMode: 'demo',
+    demoRoles: [],
   });
 
-  const [loginEmail, setLoginEmail] = useState('owner@aangan.in');
-  const [loginPassword, setLoginPassword] = useState('admin123');
+  // Login form state (no prefilled credentials)
+  const [loginEmail, setLoginEmail] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [loginTotpCode, setLoginTotpCode] = useState('');
+  const [requireTotpStep, setRequireTotpStep] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
+  const [loggingIn, setLoggingIn] = useState(false);
 
-  // Dark Mode (kitchen use at night)
-  const [darkMode, setDarkMode] = useState<boolean>(() => {
-    return localStorage.getItem('aangan_admin_dark') === '1';
-  });
-
-  useEffect(() => {
-    if (darkMode) {
-      document.documentElement.classList.add('dark');
-      localStorage.setItem('aangan_admin_dark', '1');
-    } else {
-      document.documentElement.classList.remove('dark');
-      localStorage.setItem('aangan_admin_dark', '0');
-    }
-    return () => {
-      document.documentElement.classList.remove('dark');
-    };
-  }, [darkMode]);
-
-  // Navigation & Sheets State
+  // Navigation state
   const [activeSection, setActiveSection] = useState<AdminSectionId>('orders');
   const [moreSheetOpen, setMoreSheetOpen] = useState(false);
-  const [orderFilter, setOrderFilter] = useState<OrderFilterTab>('new');
-  const [soundEnabled, setSoundEnabled] = useState(true);
-  const [showCronInfoPopover, setShowCronInfoPopover] = useState(false);
-  const [statusToast, setStatusToast] = useState<string | null>(null);
-  const [openMenuOrderId, setOpenMenuOrderId] = useState<string | null>(null);
-  const [nowTick, setNowTick] = useState(() => Date.now());
 
-  // Track orders marked "Ready for Pickup/Dispatch" in kitchen workflow
-  const [readyOrderIds, setReadyOrderIds] = useState<string[]>(() => {
-    try {
-      const raw = localStorage.getItem('aangan_ready_orders');
-      return raw ? JSON.parse(raw) : [];
-    } catch {
-      return [];
-    }
-  });
+  // Sub-tabs per grouped section
+  const [menuSubTab, setMenuSubTab] = useState<'items' | 'categories' | 'variants' | 'stock'>('items');
+  const [storefrontSubTab, setStorefrontSubTab] = useState<'homepage' | 'banners' | 'theme'>('homepage');
+  const [customersSubTab, setCustomersSubTab] = useState<'list' | 'blocklist' | 'reviews'>('list');
+  const [marketingSubTab, setMarketingSubTab] = useState<'coupons' | 'broadcast'>('coupons');
+  const [deliverySubTab, setDeliverySubTab] = useState<'zone' | 'riders'>('zone');
+  const [financeSubTab, setFinanceSubTab] = useState<'payments' | 'refunds' | 'reports'>('payments');
+  const [settingsSubTab, setSettingsSubTab] = useState<
+    'shop' | 'rules' | 'team' | 'security' | 'audit'
+  >('shop');
 
-  useEffect(() => {
-    try {
-      localStorage.setItem('aangan_ready_orders', JSON.stringify(readyOrderIds));
-    } catch {
-      // Ignore storage error
-    }
-  }, [readyOrderIds]);
-
-  // 1-second ticker for live "Auto-cancel in 4:32" countdown on New orders
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setNowTick(Date.now());
-    }, 1000);
-    return () => clearInterval(timer);
-  }, []);
-
-  // Bootstrap Data State
-  const [loading, setLoading] = useState(false);
+  // Bootstrap store state
   const [settings, setSettings] = useState<ShopSettings | null>(null);
   const [deliveryZone, setDeliveryZone] = useState<DeliveryZone | null>(null);
   const [categories, setCategories] = useState<Category[]>([]);
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
-  const [banners, setBanners] = useState<Banner[]>([]);
   const [homeSections, setHomeSections] = useState<HomeSection[]>([]);
+  const [banners, setBanners] = useState<Banner[]>([]);
   const [coupons, setCoupons] = useState<Coupon[]>([]);
-  const [customers, setCustomers] = useState<CustomerRecord[]>([]);
+  const [deliveryBoys, setDeliveryBoys] = useState<DeliveryBoy[]>([]);
   const [orders, setOrders] = useState<OrderRecord[]>([]);
   const [payments, setPayments] = useState<PaymentRecord[]>([]);
   const [refunds, setRefunds] = useState<RefundRecord[]>([]);
-  const [deliveryBoys, setDeliveryBoys] = useState<DeliveryBoy[]>([]);
+  const [customers, setCustomers] = useState<CustomerRecord[]>([]);
+  const [blockedList, setBlockedList] = useState<BlockedEntry[]>([]);
   const [reviews, setReviews] = useState<ReviewRecord[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLogRecord[]>([]);
-  const [blockedList, setBlockedList] = useState<BlockedEntry[]>([]);
+  const [adminUsers, setAdminUsers] = useState<AdminUserPublic[]>([]);
+  const [adminSessions, setAdminSessions] = useState<AdminSessionRecord[]>([]);
+  const [broadcastProviderConfigured, setBroadcastProviderConfigured] = useState(false);
 
-  // Pull-to-refresh touch state
-  const [touchStartY, setTouchStartY] = useState<number | null>(null);
-  const [pullingRefresh, setPullingRefresh] = useState(false);
-
-  // Thermal KOT Print Slip Modal
+  // Orders Live Board State
+  const [orderFilter, setOrderFilter] = useState<OrderFilterTab>('NEW');
+  const [orderSearch, setOrderSearch] = useState('');
+  const [soundEnabled, setSoundEnabled] = useState(true);
+  const [newOrderBadgeCount, setNewOrderBadgeCount] = useState(0);
+  const [openCardMenuId, setOpenCardMenuId] = useState<string | null>(null);
   const [kotOrder, setKotOrder] = useState<OrderRecord | null>(null);
+  const [toastMsg, setToastMsg] = useState<string | null>(null);
 
-  // Home Page Manager State
-  const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({});
-  const [itemSearchInSection, setItemSearchInSection] = useState<Record<string, string>>({});
-  const [showMobilePreviewSheet, setShowMobilePreviewSheet] = useState(false);
-  const [draggedSectionIdx, setDraggedSectionIdx] = useState<number | null>(null);
+  // Shared Refund Modal State (used in both Order Card 3-dot menu and Finance -> Refunds)
+  const [refundModalOrder, setRefundModalOrder] = useState<OrderRecord | null>(null);
+  const [refundAmountInput, setRefundAmountInput] = useState<string>('');
+  const [refundReasonInput, setRefundReasonInput] = useState<string>('');
+  const [refundSubmitting, setRefundSubmitting] = useState(false);
 
-  // Menu Management State
-  const [editingItem, setEditingItem] = useState<Partial<MenuItem> | null>(null);
-  const [menuFormError, setMenuFormError] = useState<string | null>(null);
-  const [menuSearch, setMenuSearch] = useState('');
-
-  // Reports State
-  const [reportRange, setReportRange] = useState<'today' | '7d' | '30d' | 'all'>('7d');
-
-  // Form States & Inline Validation Errors
-  const [newCoupon, setNewCoupon] = useState<Partial<Coupon>>({
-    code: '',
+  // Dish Add/Edit Form Modal State
+  const [editingDish, setEditingDish] = useState<MenuItem | null>(null);
+  const [dishModalOpen, setDishModalOpen] = useState(false);
+  const [dishForm, setDishForm] = useState({
+    name: '',
     description: '',
-    discountType: 'FLAT',
-    discountValue: 100,
-    minOrderAmount: 499,
-    usageLimitPerPhone: 2,
-    firstOrderOnly: false,
-    isActive: true,
+    categoryId: 'cat_biryani',
+    basePrice: 320,
+    isVeg: true,
+    inStock: true,
+    imageUrl: '/src/assets/images/dish_royal_biryani_1793975538453.jpg',
+    variantsJson: '[{"id":"v_reg","itemId":"item_1","name":"Regular","price":320,"inStock":true}]',
+    addonsJson: '[]',
   });
-  const [couponError, setCouponError] = useState<string | null>(null);
 
+  // Category Form State
+  const [newCategoryName, setNewCategoryName] = useState('');
+
+  // Storefront Banner & Home Section State
+  const [newSectionTitle, setNewSectionTitle] = useState('');
+  const [newSectionSubtitle, setNewSectionSubtitle] = useState('');
+  const [newBannerTitle, setNewBannerTitle] = useState('');
+  const [newBannerSubtitle, setNewBannerSubtitle] = useState('');
+  const [newBannerCta, setNewBannerCta] = useState('Order Now');
+  const [newBannerImage, setNewBannerImage] = useState(
+    '/src/assets/images/hero_artisanal_feast_1793975537331.jpg'
+  );
+
+  // Coupon Form State
+  const [couponCode, setCouponCode] = useState('');
+  const [couponType, setCouponType] = useState<'FLAT' | 'PERCENT'>('PERCENT');
+  const [couponValue, setCouponValue] = useState(15);
+  const [couponMinOrder, setCouponMinOrder] = useState(399);
+  const [couponMaxDiscount, setCouponMaxDiscount] = useState(120);
+  const [couponDesc, setCouponDesc] = useState('');
+
+  // Broadcast Form State
+  const [broadcastMessage, setBroadcastMessage] = useState('');
+
+  // Rider Form State
   const [newRiderName, setNewRiderName] = useState('');
   const [newRiderPhone, setNewRiderPhone] = useState('');
-  const [riderError, setRiderError] = useState<string | null>(null);
 
-  const [blockType, setBlockType] = useState<'PHONE' | 'IP'>('PHONE');
-  const [blockValue, setBlockValue] = useState('');
-  const [blockReason, setBlockReason] = useState('Repeated fake COD orders');
-  const [blockError, setBlockError] = useState<string | null>(null);
+  // Customer Blocklist & Expand History State
+  const [blockPhoneInput, setBlockPhoneInput] = useState('');
+  const [expandedCustomerPhone, setExpandedCustomerPhone] = useState<string | null>(null);
 
-  const [broadcastChannel, setBroadcastChannel] = useState<'WHATSAPP' | 'SMS'>('WHATSAPP');
-  const [broadcastMsg, setBroadcastMsg] = useState(
-    'Weekend Royal Handi Offer at Aangan Kitchen! Use code FEAST150 for flat ₹150 OFF on direct orders today.'
-  );
-  const [broadcastError, setBroadcastError] = useState<string | null>(null);
+  // Team & Security State
+  const [newUserName, setNewUserName] = useState('');
+  const [newUserEmail, setNewUserEmail] = useState('');
+  const [newUserRole, setNewUserRole] = useState<AdminRole>('staff');
+  const [newUserPassword, setNewUserPassword] = useState('');
+  const [resetPassModalUser, setResetPassModalUser] = useState<AdminUserPublic | null>(null);
+  const [resetPassNewVal, setResetPassNewVal] = useState('');
 
-  const [zoneError, setZoneError] = useState<string | null>(null);
-  const [settingsError, setSettingsError] = useState<string | null>(null);
+  // Change My Password State
+  const [currentPasswordInput, setCurrentPasswordInput] = useState('');
+  const [newPasswordInput, setNewPasswordInput] = useState('');
+  const [confirmPasswordInput, setConfirmPasswordInput] = useState('');
+  const [passwordModalOpen, setPasswordModalOpen] = useState(false);
+
+  // Owner TOTP 2FA Setup State
+  const [totpSetupData, setTotpSetupData] = useState<{
+    secretHex: string;
+    currentDemoCode?: string;
+  } | null>(null);
+  const [totpVerifyCode, setTotpVerifyCode] = useState('');
+
+  const tokenRef = useRef<string | null>(null);
+  tokenRef.current = accessToken;
 
   const showToast = (msg: string) => {
-    setStatusToast(msg);
-    setTimeout(() => setStatusToast(null), 3200);
+    setToastMsg(msg);
+    setTimeout(() => setToastMsg(null), 3200);
   };
 
-  const fetchBootstrap = async (authToken = token) => {
-    if (!authToken) return;
-    try {
-      setLoading(true);
-      const res = await fetch('/api/admin/bootstrap', {
-        headers: { Authorization: `Bearer ${authToken}` },
+  // Helper for authenticated API calls with automatic token refresh
+  const adminFetch = async (url: string, options: RequestInit = {}): Promise<Response> => {
+    const headers = new Headers(options.headers || {});
+    if (!headers.has('Content-Type') && options.body) {
+      headers.set('Content-Type', 'application/json');
+    }
+    if (tokenRef.current) {
+      headers.set('Authorization', `Bearer ${tokenRef.current}`);
+    }
+
+    let res = await fetch(url, {
+      ...options,
+      headers,
+      credentials: 'include',
+    });
+
+    if (res.status === 401) {
+      // Attempt silent refresh using HttpOnly refresh cookie
+      const refreshRes = await fetch('/api/admin/refresh', {
+        method: 'POST',
+        credentials: 'include',
       });
-      if (res.status === 401) {
-        handleLogout();
-        return;
+      if (refreshRes.ok) {
+        const refreshData = await refreshRes.json();
+        if (refreshData.token) {
+          setAccessToken(refreshData.token);
+          tokenRef.current = refreshData.token;
+          headers.set('Authorization', `Bearer ${refreshData.token}`);
+          res = await fetch(url, {
+            ...options,
+            headers,
+            credentials: 'include',
+          });
+        }
       }
-      const data = await res.json();
-      if (res.ok) {
-        setSettings(data.settings);
-        setDeliveryZone(data.deliveryZone);
-        setCategories(data.categories || []);
-        setMenuItems(data.menuItems || []);
-        setBanners(data.banners || []);
-        setHomeSections(data.homeSections || []);
-        setCoupons(data.coupons || []);
-        setCustomers(data.customers || []);
-        setOrders(data.orders || []);
-        setPayments(data.payments || []);
-        setRefunds(data.refunds || []);
-        setDeliveryBoys(data.deliveryBoys || []);
-        setReviews(data.reviews || []);
-        setAuditLogs(data.auditLogs || []);
-        setBlockedList(data.blockedList || []);
-      }
-    } finally {
-      setLoading(false);
+    }
+    return res;
+  };
+
+  const playKitchenBell = () => {
+    if (!soundEnabled) return;
+    try {
+      const ctx = new (window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(880, ctx.currentTime);
+      osc.frequency.setValueAtTime(1174.66, ctx.currentTime + 0.14);
+      gain.gain.setValueAtTime(0.18, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.55);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.55);
+    } catch {
+      // Ignore audio autoplay restriction
     }
   };
 
-  useEffect(() => {
-    if (token) {
-      fetchBootstrap(token);
-    }
-  }, [token]);
-
-  // Real-time Socket.io listener for new & updated orders
-  useEffect(() => {
-    if (!socket || !token) return;
-    socket.emit('join:admin');
-
-    const handleNewOrder = (newOrd: OrderRecord) => {
-      if (soundEnabled) {
-        playKitchenOrderBell();
+  const fetchBootstrap = async () => {
+    const res = await adminFetch('/api/admin/bootstrap');
+    if (!res.ok) {
+      if (res.status === 401) {
+        setCurrentUser(null);
+        setAccessToken(null);
       }
-      setOrderFilter('new');
-      showToast(`New Order ${newOrd.orderNumber} · ₹${newOrd.grandTotal}`);
-      fetchBootstrap(token);
+      return;
+    }
+    const data = await res.json();
+    setCurrentUser(data.currentUser);
+    setSettings(data.settings);
+    setDeliveryZone(data.deliveryZone);
+    setCategories(data.categories || []);
+    setMenuItems(data.menuItems || []);
+    setHomeSections(data.homeSections || []);
+    setBanners(data.banners || []);
+    setCoupons(data.coupons || []);
+    setDeliveryBoys(data.deliveryBoys || []);
+    setOrders(data.orders || []);
+    setPayments(data.payments || []);
+    setRefunds(data.refunds || []);
+    setCustomers(data.customers || []);
+    setBlockedList(data.blockedList || []);
+    setReviews(data.reviews || []);
+    setAuditLogs(data.auditLogs || []);
+    setAdminUsers(data.adminUsers || []);
+    setAdminSessions(data.adminSessions || []);
+    setBroadcastProviderConfigured(Boolean(data.broadcastProviderConfigured));
+
+    if (data.currentUser?.role === 'staff') {
+      setMenuSubTab('stock');
+    }
+    onRefreshStorefront?.();
+  };
+
+  // Initial auth config + existing cookie session check
+  useEffect(() => {
+    const init = async () => {
+      try {
+        try {
+          localStorage.removeItem('aangan_admin_jwt_v1');
+          localStorage.removeItem('aangan_ready_orders');
+        } catch {
+          // Ignore storage errors
+        }
+
+        const cfgRes = await fetch('/api/admin/auth-config');
+        if (cfgRes.ok) {
+          const cfg = await cfgRes.json();
+          setAuthConfig(cfg);
+        }
+
+        const refreshRes = await fetch('/api/admin/refresh', {
+          method: 'POST',
+          credentials: 'include',
+        });
+        if (refreshRes.ok) {
+          const refreshData = await refreshRes.json();
+          setAccessToken(refreshData.token);
+          tokenRef.current = refreshData.token;
+          setCurrentUser(refreshData.user);
+          await fetchBootstrap();
+        }
+      } finally {
+        setAuthChecking(false);
+      }
+    };
+    init();
+  }, []);
+
+  // Authenticate Socket.io room and subscribe to live order updates
+  useEffect(() => {
+    if (!socket || !currentUser) return;
+
+    socket.emit('join:admin', { token: accessToken });
+
+    const handleNewOrder = (order: OrderRecord) => {
+      setOrders((prev) => {
+        if (prev.some((o) => o.id === order.id)) return prev;
+        return [order, ...prev];
+      });
+      setNewOrderBadgeCount((c) => c + 1);
+      playKitchenBell();
+      showToast(`New Order ${order.orderNumber} (${order.customerName})`);
     };
 
-    const handleUpdatedOrder = () => {
-      fetchBootstrap(token);
+    const handleOrderUpdated = (updated: OrderRecord) => {
+      setOrders((prev) => prev.map((o) => (o.id === updated.id ? updated : o)));
     };
 
     socket.on('order:new', handleNewOrder);
-    socket.on('order:updated', handleUpdatedOrder);
+    socket.on('order:updated', handleOrderUpdated);
 
     return () => {
       socket.off('order:new', handleNewOrder);
-      socket.off('order:updated', handleUpdatedOrder);
+      socket.off('order:updated', handleOrderUpdated);
     };
-  }, [socket, token, soundEnabled]);
+  }, [socket, currentUser, accessToken, soundEnabled]);
 
-  const handleLogin = async (e: React.FormEvent) => {
+  const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoginError(null);
-    if (!loginEmail.trim() || !loginPassword.trim()) {
-      setLoginError('Please enter both email and password.');
-      return;
-    }
-    const res = await fetch('/api/admin/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: loginEmail, password: loginPassword }),
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      setLoginError(data.error || 'Login failed');
-      return;
-    }
-    localStorage.setItem('aangan_admin_token', data.token);
-    localStorage.setItem('aangan_admin_user', JSON.stringify(data.user));
-    setToken(data.token);
-    setAdminUser(data.user);
-  };
-
-  const handleLogout = () => {
-    localStorage.removeItem('aangan_admin_token');
-    localStorage.removeItem('aangan_admin_user');
-    setToken(null);
-    setAdminUser(null);
-  };
-
-  // Quick toggle Shop Open/Closed in Top Bar
-  const handleQuickToggleShopOpen = async () => {
-    if (!token || !settings || !deliveryZone) return;
-    const nextOpen = !settings.isOpen;
-    const updatedSettings = { ...settings, isOpen: nextOpen };
-    setSettings(updatedSettings);
-    const res = await fetch('/api/admin/settings', {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({ settings: updatedSettings, deliveryZone }),
-    });
-    if (res.ok) {
-      onRefreshStorefront();
-      showToast(nextOpen ? 'Shop is now OPEN for orders' : 'Shop marked CLOSED');
-    }
-  };
-
-  // Update Order Status or Assign Delivery Boy
-  const handleUpdateOrder = async (
-    orderId: string,
-    payload: { status?: OrderStatus; deliveryBoyId?: string | null; cancelReason?: string }
-  ) => {
-    if (!token) return;
-    const res = await fetch(`/api/admin/orders/${orderId}`, {
-      method: 'PATCH',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify(payload),
-    });
-    const data = await res.json();
-    if (res.ok) {
-      if (payload.status && payload.status !== 'PREPARING') {
-        setReadyOrderIds((prev) => prev.filter((id) => id !== orderId));
+    setLoggingIn(true);
+    try {
+      const res = await fetch('/api/admin/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          email: loginEmail.trim(),
+          password: loginPassword,
+          totpCode: requireTotpStep ? loginTotpCode.trim() : undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        if (data.requireTotp) {
+          setRequireTotpStep(true);
+          setLoginError('Enter your 6-digit Authenticator 2FA code to continue.');
+          return;
+        }
+        setLoginError(data.error || 'Invalid email or password.');
+        return;
       }
+
+      setAccessToken(data.token);
+      tokenRef.current = data.token;
+      setCurrentUser(data.user);
+      setLoginPassword('');
+      setLoginTotpCode('');
+      setRequireTotpStep(false);
+      await fetchBootstrap();
+      if (data.user?.mustChangePassword) {
+        setPasswordModalOpen(true);
+      }
+    } catch {
+      setLoginError('Network error while signing in.');
+    } finally {
+      setLoggingIn(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    await adminFetch('/api/admin/logout', { method: 'POST' });
+    setAccessToken(null);
+    tokenRef.current = null;
+    setCurrentUser(null);
+    setLoginEmail('');
+    setLoginPassword('');
+  };
+
+  // Save Shop Settings (and optional DeliveryZone) via PUT /api/admin/settings
+  const handleSaveShopSettings = async (
+    settingsPatch?: Partial<ShopSettings>,
+    zonePatch?: Partial<DeliveryZone>
+  ) => {
+    if (!settings) return;
+    const mergedSettings = settingsPatch ? { ...settings, ...settingsPatch } : settings;
+    const mergedZone =
+      zonePatch && deliveryZone ? { ...deliveryZone, ...zonePatch } : deliveryZone;
+
+    setSettings(mergedSettings);
+    if (mergedZone) setDeliveryZone(mergedZone);
+
+    const res = await adminFetch('/api/admin/settings', {
+      method: 'PUT',
+      body: JSON.stringify({
+        settings: mergedSettings,
+        deliveryZone: mergedZone || undefined,
+      }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      setSettings(data.settings);
+      if (data.deliveryZone) setDeliveryZone(data.deliveryZone);
+      onRefreshStorefront?.();
+      showToast('Settings saved');
+    } else {
+      const err = await res.json().catch(() => ({}));
+      showToast(err.error || 'Could not save settings');
+    }
+  };
+
+  // Order status progression & rider assignment
+  const handleUpdateOrderStatus = async (
+    orderId: string,
+    status?: OrderStatus,
+    deliveryBoyId?: string
+  ) => {
+    const res = await adminFetch(`/api/admin/orders/${orderId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status, deliveryBoyId }),
+    });
+    const data = await res.json();
+    if (res.ok && data.order) {
+      setOrders((prev) => prev.map((o) => (o.id === orderId ? data.order : o)));
       showToast(`Order ${data.order.orderNumber} updated`);
-      fetchBootstrap(token);
     } else {
       showToast(data.error || 'Failed to update order');
     }
   };
 
-  const handleMarkOrderReady = (order: OrderRecord) => {
-    if (!readyOrderIds.includes(order.id)) {
-      setReadyOrderIds((prev) => [...prev, order.id]);
-    }
-    showToast(`Order ${order.orderNumber} marked Ready for dispatch`);
-  };
-
-  // Save Home Page Manager (Banners & Sections)
-  const handleSaveHomeManager = async () => {
-    if (!token) return;
-    const res = await fetch('/api/admin/home-manager', {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({ banners, homeSections }),
-    });
-    const data = await res.json();
-    if (res.ok) {
-      setBanners(data.banners);
-      setHomeSections(data.homeSections);
-      onRefreshStorefront();
-      showToast('Home Page saved & storefront cache cleared!');
-    } else {
-      showToast(data.error || 'Error saving Home Page');
-    }
-  };
-
-  // Toggle Menu Item Flag
-  const handleToggleMenuItem = async (
-    itemId: string,
-    field: 'inStock' | 'showOnHome' | 'isBestseller' | 'isTodaysSpecial',
-    value: boolean
-  ) => {
-    if (!token) return;
-    const res = await fetch(`/api/admin/menu-items/${itemId}/toggle`, {
-      method: 'PATCH',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({ field, value }),
-    });
-    if (res.ok) {
-      fetchBootstrap(token);
-      onRefreshStorefront();
-      showToast('Menu item updated');
-    }
-  };
-
-  // Save new or edited menu item
-  const handleSaveMenuItem = async (e: React.FormEvent) => {
+  // Shared Refund Modal Submit (Owner only)
+  const handleConfirmRefund = async (e: React.FormEvent) => {
     e.preventDefault();
-    setMenuFormError(null);
-    if (!token || !editingItem) return;
-    if (!editingItem.name || editingItem.name.trim().length < 2) {
-      setMenuFormError('Dish name is required (min 2 characters).');
-      return;
-    }
-    if (!editingItem.basePrice || Number(editingItem.basePrice) <= 0) {
-      setMenuFormError('Base price must be greater than ₹0.');
+    if (!refundModalOrder) return;
+    const amount = Number(refundAmountInput);
+    if (!amount || amount <= 0 || amount > refundModalOrder.grandTotal) {
+      showToast('Enter a valid refund amount up to order total');
       return;
     }
 
-    const res = await fetch('/api/admin/menu-items', {
+    const paymentRec = payments.find((p) => p.orderId === refundModalOrder.id);
+    if (!paymentRec) {
+      showToast('No payment record found for this order');
+      return;
+    }
+
+    setRefundSubmitting(true);
+    try {
+      const res = await adminFetch(`/api/admin/payments/${paymentRec.id}/refund`, {
+        method: 'POST',
+        body: JSON.stringify({
+          amount,
+          reason: refundReasonInput.trim() || 'Admin initiated refund',
+        }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        showToast(`Refund of ₹${amount} processed for ${refundModalOrder.orderNumber}`);
+        setRefundModalOrder(null);
+        await fetchBootstrap();
+      } else {
+        showToast(data.error || 'Refund failed');
+      }
+    } finally {
+      setRefundSubmitting(false);
+    }
+  };
+
+  // Menu Item Stock Toggle
+  const handleToggleItemStock = async (item: MenuItem) => {
+    const res = await adminFetch(`/api/admin/menu-items/${item.id}/toggle`, {
+      method: 'PATCH',
+      body: JSON.stringify({ field: 'inStock', value: !item.inStock }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      setMenuItems((prev) => prev.map((m) => (m.id === item.id ? data.item : m)));
+      onRefreshStorefront?.();
+      showToast(`${item.name}: ${!item.inStock ? 'In Stock' : 'Out of Stock'}`);
+    }
+  };
+
+  // Open Dish Modal for Add or Edit
+  const openAddDishModal = () => {
+    setEditingDish(null);
+    setDishForm({
+      name: '',
+      description: '',
+      categoryId: categories[0]?.id || 'cat_biryani',
+      basePrice: 320,
+      isVeg: true,
+      inStock: true,
+      imageUrl: '/src/assets/images/dish_royal_biryani_1793975538453.jpg',
+      variantsJson: '[{"id":"v_reg","itemId":"new","name":"Regular","price":320,"inStock":true}]',
+      addonsJson: '[]',
+    });
+    setDishModalOpen(true);
+  };
+
+  const openEditDishModal = (item: MenuItem) => {
+    setEditingDish(item);
+    setDishForm({
+      name: item.name,
+      description: item.description,
+      categoryId: item.categoryId,
+      basePrice: item.basePrice,
+      isVeg: item.isVeg,
+      inStock: item.inStock,
+      imageUrl: item.imageUrl,
+      variantsJson: JSON.stringify(item.variants),
+      addonsJson: JSON.stringify(item.addons),
+    });
+    setDishModalOpen(true);
+  };
+
+  const handleSaveDishForm = async (e: React.FormEvent) => {
+    e.preventDefault();
+    let parsedVariants = [];
+    let parsedAddons = [];
+    try {
+      parsedVariants = JSON.parse(dishForm.variantsJson || '[]');
+      parsedAddons = JSON.parse(dishForm.addonsJson || '[]');
+    } catch {
+      showToast('Invalid JSON in Variants or Add-ons');
+      return;
+    }
+
+    const payload = {
+      id: editingDish?.id,
+      name: dishForm.name,
+      description: dishForm.description,
+      categoryId: dishForm.categoryId,
+      basePrice: Number(dishForm.basePrice),
+      isVeg: dishForm.isVeg,
+      inStock: dishForm.inStock,
+      imageUrl: dishForm.imageUrl,
+      variants: parsedVariants,
+      addons: parsedAddons,
+    };
+
+    const res = await adminFetch('/api/admin/menu-items', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify(editingItem),
+      body: JSON.stringify(payload),
+    });
+    if (res.ok) {
+      setDishModalOpen(false);
+      await fetchBootstrap();
+      showToast(editingDish ? 'Dish updated' : 'New dish created');
+    }
+  };
+
+  // Save Home Page Manager (Banners + Home Sections)
+  const handleSaveHomeManager = async (nextBanners: Banner[], nextSections: HomeSection[]) => {
+    setBanners(nextBanners);
+    setHomeSections(nextSections);
+    const res = await adminFetch('/api/admin/home-manager', {
+      method: 'PUT',
+      body: JSON.stringify({ banners: nextBanners, homeSections: nextSections }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      setBanners(data.banners || nextBanners);
+      setHomeSections(data.homeSections || nextSections);
+      if (data.menuItems) setMenuItems(data.menuItems);
+      onRefreshStorefront?.();
+      showToast('Home Page Manager saved');
+    }
+  };
+
+  // Unified Delivery Zone + Fee Slabs Save (Single Save Button)
+  const handleSaveDeliveryZoneAndSlabs = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!deliveryZone || !settings) return;
+    await handleSaveShopSettings(
+      { deliverySlabs: settings.deliverySlabs },
+      deliveryZone
+    );
+  };
+
+  // Rider Management (Add, Regenerate Token, Revoke Token)
+  const handleAddRider = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newRiderName.trim() || !newRiderPhone.trim()) return;
+    const res = await adminFetch('/api/admin/delivery-boys', {
+      method: 'POST',
+      body: JSON.stringify({ name: newRiderName.trim(), phone: newRiderPhone.trim() }),
+    });
+    if (res.ok) {
+      setNewRiderName('');
+      setNewRiderPhone('');
+      await fetchBootstrap();
+      showToast('Delivery partner added');
+    } else {
+      const err = await res.json().catch(() => ({}));
+      showToast(err.error || 'Could not add rider');
+    }
+  };
+
+  const handleRegenerateRiderToken = async (riderId: string) => {
+    const res = await adminFetch(`/api/admin/delivery-boys/${riderId}/regenerate-token`, {
+      method: 'POST',
+    });
+    if (res.ok) {
+      await fetchBootstrap();
+      showToast('New rider token & PIN generated');
+    }
+  };
+
+  const handleRevokeRiderToken = async (riderId: string) => {
+    const res = await adminFetch(`/api/admin/delivery-boys/${riderId}/revoke-token`, {
+      method: 'POST',
+    });
+    if (res.ok) {
+      await fetchBootstrap();
+      showToast('Rider link revoked & rider deactivated');
+    }
+  };
+
+  // Change My Password handler
+  const handleChangeMyPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (newPasswordInput.length < 8) {
+      showToast('New password must be at least 8 characters');
+      return;
+    }
+    if (newPasswordInput !== confirmPasswordInput) {
+      showToast('New passwords do not match');
+      return;
+    }
+    const res = await adminFetch('/api/admin/change-password', {
+      method: 'POST',
+      body: JSON.stringify({
+        currentPassword: currentPasswordInput,
+        newPassword: newPasswordInput,
+      }),
     });
     const data = await res.json();
     if (res.ok) {
-      setMenuItems(data.menuItems);
-      setEditingItem(null);
-      onRefreshStorefront();
-      showToast('Dish saved to menu!');
+      if (data.token) {
+        setAccessToken(data.token);
+        tokenRef.current = data.token;
+      }
+      setCurrentPasswordInput('');
+      setNewPasswordInput('');
+      setConfirmPasswordInput('');
+      setPasswordModalOpen(false);
+      await fetchBootstrap();
+      showToast('Password updated. Other sessions revoked.');
     } else {
-      setMenuFormError(data.error || 'Could not save dish');
+      showToast(data.error || 'Could not change password');
     }
   };
 
-  // Save Shop Settings & Delivery Zone
-  const handleSaveSettingsAndZone = async (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    setSettingsError(null);
-    setZoneError(null);
-    if (!token || !settings || !deliveryZone) return;
-
-    if (settings.minOrderAmount < 0 || settings.gstPercent < 0) {
-      setSettingsError('Minimum order amount and GST cannot be negative.');
-      return;
-    }
-    if (deliveryZone.radiusKm <= 0 || deliveryZone.radiusKm > 50) {
-      setZoneError('Delivery radius must be between 0.5 km and 50 km.');
-      return;
-    }
-
-    const res = await fetch('/api/admin/settings', {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({ settings, deliveryZone }),
-    });
-    if (res.ok) {
-      onRefreshStorefront();
-      showToast('Settings & Delivery Zone saved!');
-      fetchBootstrap(token);
-    } else {
-      const d = await res.json();
-      setSettingsError(d.error || 'Failed to save settings');
-    }
-  };
-
-  // Export Sales Report CSV
-  const handleExportCsv = () => {
+  // CSV Export for Finance -> Reports
+  const handleExportOrdersCsv = () => {
     const headers = [
       'OrderNumber',
-      'PlacedAt',
+      'Status',
       'CustomerName',
       'CustomerPhone',
-      'DistanceKm',
       'PaymentMethod',
       'PaymentStatus',
-      'OrderStatus',
       'ItemTotal',
       'DeliveryFee',
       'GST',
       'Discount',
       'GrandTotal',
+      'PlacedAt',
     ];
-    const rows = orders.map((o) =>
-      [
-        o.orderNumber,
-        o.placedAt,
-        `"${o.customerName.replace(/"/g, '""')}"`,
-        o.customerPhone,
-        o.distanceKm,
-        o.paymentMethod,
-        o.paymentStatus,
-        o.status,
-        o.itemTotal,
-        o.deliveryFee,
-        o.gstAmount,
-        o.discountAmount,
-        o.grandTotal,
-      ].join(',')
-    );
-    const csvContent = [headers.join(','), ...rows].join('\n');
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const rows = orders.map((o) => [
+      o.orderNumber,
+      o.status,
+      `"${o.customerName.replace(/"/g, '""')}"`,
+      o.customerPhone,
+      o.paymentMethod,
+      o.paymentStatus,
+      o.itemTotal,
+      o.deliveryFee,
+      o.gstAmount,
+      o.discountAmount,
+      o.grandTotal,
+      o.placedAt,
+    ]);
+    const csv = [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `aangan_sales_report_${new Date().toISOString().slice(0, 10)}.csv`;
-    link.click();
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `aangan-orders-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
     URL.revokeObjectURL(url);
-    showToast('Sales report CSV downloaded');
   };
 
-  // Order Categorization by Filter Tab
-  const categorizedOrders = useMemo(() => {
-    const newOrders = orders.filter((o) => o.status === 'PLACED');
-    const preparingOrders = orders.filter(
-      (o) =>
-        (o.status === 'ACCEPTED' || o.status === 'PREPARING') &&
-        !readyOrderIds.includes(o.id)
-    );
-    const readyOrders = orders.filter(
-      (o) =>
-        (o.status === 'ACCEPTED' || o.status === 'PREPARING') &&
-        readyOrderIds.includes(o.id)
-    );
-    const outForDeliveryOrders = orders.filter((o) => o.status === 'OUT_FOR_DELIVERY');
-    const completedOrders = orders.filter((o) => o.status === 'DELIVERED');
-    const cancelledOrders = orders.filter((o) =>
-      ['CANCELLED', 'REJECTED'].includes(o.status)
-    );
+  // Compute which Home Page sections each dish belongs to (Single Source of Truth)
+  const itemHomeSectionNamesMap = useMemo(() => {
+    const map: Record<string, string[]> = {};
+    for (const sec of homeSections) {
+      for (const itemId of sec.itemIds) {
+        if (!map[itemId]) map[itemId] = [];
+        map[itemId].push(sec.title);
+      }
+    }
+    return map;
+  }, [homeSections]);
 
+  // Order counts & filtered orders
+  const orderCounts = useMemo(() => {
     return {
-      new: newOrders,
-      preparing: preparingOrders,
-      ready: readyOrders,
-      out_for_delivery: outForDeliveryOrders,
-      completed: completedOrders,
-      cancelled: cancelledOrders,
+      NEW: orders.filter((o) => o.status === 'PLACED' || o.status === 'ACCEPTED').length,
+      PREPARING: orders.filter((o) => o.status === 'PREPARING').length,
+      READY: orders.filter((o) => o.status === 'READY').length,
+      OUT: orders.filter((o) => o.status === 'OUT_FOR_DELIVERY').length,
+      COMPLETED: orders.filter((o) => o.status === 'DELIVERED').length,
+      CANCELLED: orders.filter((o) => o.status === 'CANCELLED' || o.status === 'REJECTED').length,
     };
-  }, [orders, readyOrderIds]);
+  }, [orders]);
 
-  // Dashboard Top Strip Metrics (Today's orders, Revenue, Pending, Avg prep time)
-  const kpis = useMemo(() => {
-    const validOrders = orders.filter((o) => !['CANCELLED', 'REJECTED'].includes(o.status));
-    const revenue = validOrders.reduce((s, o) => s + o.grandTotal, 0);
-    const pendingOrders = orders.filter((o) =>
-      ['PLACED', 'ACCEPTED', 'PREPARING', 'OUT_FOR_DELIVERY'].includes(o.status)
-    ).length;
-    const avgPrepMins =
-      menuItems.length > 0
-        ? Math.round(
-            menuItems.reduce((sum, item) => sum + (item.prepTimeMins || 24), 0) /
-              menuItems.length
-          )
-        : 24;
+  const filteredOrders = useMemo(() => {
+    return orders.filter((o) => {
+      if (orderFilter === 'NEW' && o.status !== 'PLACED' && o.status !== 'ACCEPTED') return false;
+      if (orderFilter === 'PREPARING' && o.status !== 'PREPARING') return false;
+      if (orderFilter === 'READY' && o.status !== 'READY') return false;
+      if (orderFilter === 'OUT' && o.status !== 'OUT_FOR_DELIVERY') return false;
+      if (orderFilter === 'COMPLETED' && o.status !== 'DELIVERED') return false;
+      if (orderFilter === 'CANCELLED' && o.status !== 'CANCELLED' && o.status !== 'REJECTED')
+        return false;
 
+      if (orderSearch.trim()) {
+        const q = orderSearch.toLowerCase();
+        const matchId = o.orderNumber.toLowerCase().includes(q);
+        const matchPhone = o.customerPhone.includes(q);
+        const matchName = o.customerName.toLowerCase().includes(q);
+        if (!matchId && !matchPhone && !matchName) return false;
+      }
+      return true;
+    });
+  }, [orders, orderFilter, orderSearch]);
+
+  // Allowed sections for current user role
+  const allowedSections = useMemo(() => {
+    if (!currentUser) return [];
+    return ADMIN_SECTIONS.filter((s) => s.roles.includes(currentUser.role));
+  }, [currentUser]);
+
+  // Finance summary metrics
+  const financeMetrics = useMemo(() => {
+    const delivered = orders.filter((o) => o.status === 'DELIVERED');
+    const totalRevenue = delivered.reduce((sum, o) => sum + o.grandTotal, 0);
+    const totalGst = delivered.reduce((sum, o) => sum + o.gstAmount, 0);
+    const totalDeliveryFees = delivered.reduce((sum, o) => sum + o.deliveryFee, 0);
+    const totalRefunded = refunds.reduce((sum, r) => sum + r.amount, 0);
     return {
-      todaysOrders: orders.length,
-      revenue,
-      pendingOrders,
-      avgPrepMins,
-      newCount: categorizedOrders.new.length,
+      deliveredCount: delivered.length,
+      totalRevenue,
+      totalGst,
+      totalDeliveryFees,
+      totalRefunded,
     };
-  }, [orders, menuItems, categorizedOrders.new.length]);
+  }, [orders, refunds]);
 
-  // Format remaining auto-cancel countdown (e.g. "4:32")
-  const getAutoCancelCountdown = (placedAtIso: string): string => {
-    const timeoutMins = settings?.autoCancelUnacceptedMins || 5;
-    const expiryMs = new Date(placedAtIso).getTime() + timeoutMins * 60 * 1000;
-    const diffSec = Math.max(0, Math.floor((expiryMs - nowTick) / 1000));
-    const mins = Math.floor(diffSec / 60);
-    const secs = diffSec % 60;
-    return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
-  };
-
-  // Sidebar & Navigation Config
-  const allNavSections: {
-    id: AdminSectionId;
-    label: string;
-    icon: React.ComponentType<{ className?: string }>;
-    badge?: number;
-  }[] = [
-    { id: 'orders', label: 'Orders', icon: UtensilsCrossed, badge: kpis.newCount },
-    { id: 'menu', label: 'Menu', icon: Utensils },
-    { id: 'home_page', label: 'Home Page', icon: Home },
-    { id: 'reports', label: 'Reports', icon: FileBarChart },
-    { id: 'settings', label: 'Settings', icon: Settings },
-    { id: 'delivery_zone', label: 'Delivery Zone', icon: MapPin },
-    { id: 'riders', label: 'Riders', icon: Truck },
-    { id: 'customers', label: 'Customers', icon: Users },
-    { id: 'coupons', label: 'Coupons', icon: Tag },
-    { id: 'payments_refunds', label: 'Payments & Refunds', icon: CreditCard },
-    { id: 'audit_log', label: 'Audit Log', icon: ShieldAlert },
-    { id: 'broadcast', label: 'Broadcast', icon: Megaphone },
-  ];
-
-  const moreSections = allNavSections.slice(4);
-
-  // ===========================================================================
-  // RENDER LOGIN VIEW IF NOT AUTHENTICATED
-  // ===========================================================================
-  if (!token || !adminUser) {
+  if (authChecking) {
     return (
-      <div className="admin-ops-theme min-h-[100dvh] w-full max-w-full overflow-x-hidden flex items-center justify-center p-4 bg-[#F4F5F7] dark:bg-slate-950 text-[#111827] dark:text-slate-100">
-        <div className="w-full max-w-md rounded-[12px] bg-white dark:bg-slate-900 border border-gray-200 dark:border-slate-800 p-6 shadow-[0_1px_3px_rgba(0,0,0,0.08)] space-y-5 min-w-0">
-          <div className="space-y-1">
-            <div className="flex items-center justify-between gap-2">
-              <span className="inline-flex items-center gap-1.5 text-[12px] font-semibold text-[#D9480F]">
-                <Lock className="w-3.5 h-3.5 shrink-0" />
-                <span>Operations Console</span>
-              </span>
-              {onBackToStorefront && (
-                <button
-                  type="button"
-                  onClick={onBackToStorefront}
-                  className="text-[12px] font-medium text-[#6B7280] hover:text-[#111827] dark:hover:text-white cursor-pointer"
-                >
-                  &larr; Storefront
-                </button>
-              )}
-            </div>
-            <h1 className="text-[24px] font-bold text-[#111827] dark:text-white leading-tight">
-              Admin Sign In
-            </h1>
-            <p className="text-[14px] text-[#6B7280] dark:text-slate-400">
-              Select a role preset or enter your kitchen credentials.
-            </p>
-          </div>
-
-          <div className="space-y-2">
-            <span className="block text-[12px] font-semibold text-[#6B7280] dark:text-slate-400">
-              Quick Demo Role Presets
-            </span>
-            <div className="grid grid-cols-3 gap-2">
-              {[
-                { label: 'Owner', email: 'owner@aangan.in', pass: 'admin123' },
-                { label: 'Manager', email: 'manager@aangan.in', pass: 'manager123' },
-                { label: 'Staff', email: 'staff@aangan.in', pass: 'staff123' },
-              ].map((preset) => (
-                <button
-                  key={preset.label}
-                  type="button"
-                  onClick={() => {
-                    setLoginEmail(preset.email);
-                    setLoginPassword(preset.pass);
-                    setLoginError(null);
-                  }}
-                  className={`min-h-[44px] px-2 rounded-[8px] border text-[12px] font-semibold transition-colors duration-200 cursor-pointer whitespace-nowrap ${
-                    loginEmail === preset.email
-                      ? 'border-[#D9480F] bg-[#D9480F] text-white'
-                      : 'border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-800 text-[#111827] dark:text-slate-200'
-                  }`}
-                >
-                  {preset.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <form onSubmit={handleLogin} className="space-y-4">
-            <div>
-              <label className="block text-[14px] font-semibold text-[#111827] dark:text-slate-200 mb-1.5">
-                Admin Email
-              </label>
-              <input
-                type="email"
-                required
-                value={loginEmail}
-                onChange={(e) => setLoginEmail(e.target.value)}
-                className="w-full min-h-[48px] px-3.5 rounded-[8px] border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-[14px] text-[#111827] dark:text-white focus:outline-none focus:border-[#D9480F]"
-              />
-            </div>
-            <div>
-              <label className="block text-[14px] font-semibold text-[#111827] dark:text-slate-200 mb-1.5">
-                Password
-              </label>
-              <input
-                type="password"
-                required
-                value={loginPassword}
-                onChange={(e) => setLoginPassword(e.target.value)}
-                className="w-full min-h-[48px] px-3.5 rounded-[8px] border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-[14px] text-[#111827] dark:text-white focus:outline-none focus:border-[#D9480F]"
-              />
-            </div>
-
-            {loginError && (
-              <p className="text-[12px] text-[#DC2626] font-semibold flex items-center gap-1.5">
-                <AlertCircle className="w-4 h-4 shrink-0" />
-                <span>{loginError}</span>
-              </p>
-            )}
-
-            <button
-              type="submit"
-              className="w-full min-h-[48px] px-4 rounded-[8px] bg-[#D9480F] hover:bg-[#c23f0b] active:scale-[0.99] text-white text-[14px] font-semibold transition-all duration-200 cursor-pointer whitespace-nowrap"
-            >
-              Sign In to Operations Dashboard
-            </button>
-          </form>
+      <div className="min-h-[100dvh] w-full flex items-center justify-center bg-[#F4F5F7] text-[#111827] p-4">
+        <div className="bg-white rounded-2xl p-6 shadow-xs border border-gray-200 text-sm font-medium">
+          Verifying kitchen session...
         </div>
       </div>
     );
   }
 
-  const activeFilterOrders = categorizedOrders[orderFilter];
-
-  return (
-    <div
-      className="admin-ops-theme min-h-[100dvh] w-full max-w-full overflow-x-hidden flex flex-col lg:flex-row bg-[#F4F5F7] dark:bg-slate-950 text-[#111827] dark:text-slate-100"
-      onTouchStart={(e) => {
-        if (window.scrollY === 0) {
-          setTouchStartY(e.touches[0].clientY);
-        }
-      }}
-      onTouchEnd={(e) => {
-        if (touchStartY !== null) {
-          const deltaY = e.changedTouches[0].clientY - touchStartY;
-          if (deltaY > 75 && window.scrollY === 0) {
-            setPullingRefresh(true);
-            fetchBootstrap(token).finally(() =>
-              setTimeout(() => setPullingRefresh(false), 400)
-            );
-          }
-          setTouchStartY(null);
-        }
-      }}
-    >
-      {/* =====================================================================
-          DESKTOP LEFT SIDEBAR (1024px+ / lg:flex)
-         ===================================================================== */}
-      <aside className="hidden lg:flex lg:w-64 lg:flex-col lg:fixed lg:inset-y-0 lg:left-0 z-30 bg-white dark:bg-slate-900 border-r border-gray-200 dark:border-slate-800">
-        <div className="p-4 border-b border-gray-200 dark:border-slate-800 flex items-center justify-between gap-2 min-w-0">
-          <div className="min-w-0 flex-1">
-            <h1 className="text-[15px] font-bold text-[#111827] dark:text-white leading-snug break-words">
-              {settings?.shopName || 'Aangan Artisanal Kitchen'}
-            </h1>
-            <p className="text-[12px] text-[#6B7280] dark:text-slate-400 truncate">
-              {adminUser.name} · {adminUser.role.toUpperCase()}
+  // ============================================================================
+  // LOGIN SCREEN (Phase 1.2: No prefilled credentials; Demo presets only if DEMO_MODE=true)
+  // ============================================================================
+  if (!currentUser) {
+    return (
+      <div className="admin-ops-theme min-h-[100dvh] w-full max-w-[100vw] overflow-x-clip bg-[#F4F5F7] flex items-center justify-center p-4">
+        <div className="w-full max-w-md bg-white rounded-2xl border border-gray-200 shadow-lg p-6 space-y-5 min-w-0">
+          <div className="space-y-1">
+            <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-md bg-[#D9480F]/10 text-[#D9480F] text-xs font-bold">
+              <ShieldCheck className="w-4 h-4" />
+              <span>Aangan Kitchen · Staff & Admin Portal</span>
+            </div>
+            <h1 className="text-xl font-bold text-[#111827]">Sign in to Kitchen Console</h1>
+            <p className="text-xs text-[#6B7280]">
+              Protected by scrypt password hashing, HttpOnly session cookies, and 5-attempt lockout.
             </p>
           </div>
-          <button
-            type="button"
-            onClick={() => setDarkMode((d) => !d)}
-            aria-label="Toggle night mode"
-            className="min-w-[40px] min-h-[40px] rounded-[8px] border border-gray-200 dark:border-slate-700 flex items-center justify-center text-[#6B7280] dark:text-slate-300 hover:bg-gray-100 dark:hover:bg-slate-800 cursor-pointer shrink-0"
-          >
-            {darkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
-          </button>
+
+          <form onSubmit={handleLoginSubmit} className="space-y-3.5">
+            <div>
+              <label className="block text-xs font-semibold text-[#111827] mb-1">
+                Work Email
+              </label>
+              <input
+                type="email"
+                required
+                autoComplete="username"
+                value={loginEmail}
+                onChange={(e) => setLoginEmail(e.target.value)}
+                placeholder="name@aangan.in"
+                className="w-full min-h-[44px] px-3.5 rounded-xl border border-gray-300 text-sm focus:border-[#D9480F] focus:outline-none"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-[#111827] mb-1">
+                Password
+              </label>
+              <input
+                type="password"
+                required
+                autoComplete="current-password"
+                value={loginPassword}
+                onChange={(e) => setLoginPassword(e.target.value)}
+                placeholder="Enter your password"
+                className="w-full min-h-[44px] px-3.5 rounded-xl border border-gray-300 text-sm focus:border-[#D9480F] focus:outline-none"
+              />
+            </div>
+
+            {requireTotpStep && (
+              <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 space-y-1.5">
+                <label className="block text-xs font-bold text-amber-950">
+                  Owner 2FA Authenticator Code (6 digits)
+                </label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={6}
+                  value={loginTotpCode}
+                  onChange={(e) => setLoginTotpCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                  placeholder="000000"
+                  className="w-full min-h-[42px] px-3 rounded-lg border border-amber-300 bg-white font-mono text-sm"
+                />
+              </div>
+            )}
+
+            {loginError && (
+              <div className="p-3 rounded-xl bg-red-50 border border-red-200 text-xs font-medium text-red-800 break-words">
+                {loginError}
+              </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={loggingIn}
+              className="w-full min-h-[48px] rounded-xl bg-[#D9480F] hover:bg-[#c23f0b] text-white font-semibold text-sm cursor-pointer disabled:opacity-50"
+            >
+              {loggingIn ? 'Signing in...' : 'Sign In'}
+            </button>
+          </form>
+
+          {/* Show Demo Role Presets ONLY when server explicitly reports demoMode === true */}
+          {authConfig.demoMode && authConfig.demoRoles.length > 0 && (
+            <div className="pt-4 border-t border-gray-200 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-amber-800">
+                  Demo Mode Role Presets (Dev Only)
+                </span>
+                <span className="text-[11px] font-mono text-gray-500">Pass: admin123</span>
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                {authConfig.demoRoles.map((preset) => (
+                  <button
+                    key={preset.email}
+                    type="button"
+                    onClick={() => {
+                      setLoginEmail(preset.email);
+                      setLoginPassword(
+                        preset.role === 'owner'
+                          ? 'admin123'
+                          : preset.role === 'manager'
+                          ? 'manager123'
+                          : 'staff123'
+                      );
+                      setLoginError(null);
+                    }}
+                    className="px-2.5 py-2 rounded-lg border border-gray-200 hover:border-[#D9480F] bg-gray-50 text-left text-xs cursor-pointer min-w-0"
+                  >
+                    <p className="font-bold text-[#111827] capitalize truncate">{preset.role}</p>
+                    <p className="text-[10px] text-[#6B7280] truncate">{preset.email}</p>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="pt-2 text-center">
+            <button
+              type="button"
+              onClick={() => (onBackToStorefront ? onBackToStorefront() : (window.location.href = '/'))}
+              className="text-xs font-medium text-[#6B7280] hover:text-[#111827] underline cursor-pointer"
+            >
+              ← Return to Customer Storefront
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="admin-ops-theme min-h-[100dvh] w-full max-w-[100vw] overflow-x-clip bg-[#F4F5F7] text-[#111827] flex flex-col lg:flex-row">
+      {/* ========================================================================
+          DESKTOP LEFT SIDEBAR (1024px+): All 8 Grouped Sections
+      ======================================================================== */}
+      <aside className="hidden lg:flex lg:flex-col lg:w-64 lg:shrink-0 bg-white border-r border-gray-200 min-h-[100dvh] sticky top-0">
+        <div className="p-4 border-b border-gray-200 space-y-1">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-base font-bold text-[#111827] truncate">
+              {settings?.shopName || 'Aangan Kitchen'}
+            </span>
+            <span className="px-2 py-0.5 rounded bg-orange-100 text-[#D9480F] text-[11px] font-bold uppercase">
+              {currentUser.role}
+            </span>
+          </div>
+          <p className="text-xs text-[#6B7280] truncate">{currentUser.email}</p>
         </div>
 
-        <nav className="flex-1 overflow-y-auto p-3 space-y-1">
-          {allNavSections.map((sec) => {
+        <nav className="flex-1 p-3 space-y-1 overflow-y-auto">
+          {allowedSections.map((sec) => {
             const Icon = sec.icon;
-            const isActive = activeSection === sec.id;
+            const active = activeSection === sec.id;
             return (
               <button
                 key={sec.id}
                 type="button"
                 onClick={() => setActiveSection(sec.id)}
-                className={`w-full min-h-[44px] px-3 rounded-[8px] flex items-center justify-between gap-2 text-[14px] font-semibold transition-colors duration-200 cursor-pointer whitespace-nowrap ${
-                  isActive
+                className={`w-full min-h-[44px] px-3.5 rounded-xl flex items-center justify-between gap-2 text-sm font-semibold transition-colors cursor-pointer ${
+                  active
                     ? 'bg-[#D9480F] text-white'
-                    : 'text-[#6B7280] dark:text-slate-400 hover:bg-gray-100 dark:hover:bg-slate-800 hover:text-[#111827] dark:hover:text-white'
+                    : 'text-[#111827] hover:bg-gray-100'
                 }`}
               >
                 <span className="flex items-center gap-2.5 min-w-0">
                   <Icon className="w-4 h-4 shrink-0" />
                   <span className="truncate">{sec.label}</span>
                 </span>
-                {sec.badge !== undefined && sec.badge > 0 && (
+                {sec.id === 'orders' && orderCounts.NEW > 0 && (
                   <span
-                    className={`px-2 py-0.5 rounded-full text-[12px] font-bold tabular-nums shrink-0 ${
-                      isActive
-                        ? 'bg-white text-[#D9480F]'
-                        : 'bg-[#D9480F] text-white'
+                    className={`px-2 py-0.5 rounded-full text-xs font-bold ${
+                      active ? 'bg-white text-[#D9480F]' : 'bg-[#D9480F] text-white'
                     }`}
                   >
-                    {sec.badge}
+                    {orderCounts.NEW}
                   </span>
                 )}
               </button>
@@ -862,690 +1026,468 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
           })}
         </nav>
 
-        <div className="p-3 border-t border-gray-200 dark:border-slate-800 space-y-2">
-          {onBackToStorefront && (
-            <button
-              type="button"
-              onClick={onBackToStorefront}
-              className="w-full min-h-[44px] px-3 rounded-[8px] border border-gray-200 dark:border-slate-700 text-[14px] font-semibold text-[#111827] dark:text-slate-200 hover:bg-gray-50 dark:hover:bg-slate-800 flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap"
-            >
-              <Store className="w-4 h-4 shrink-0" />
-              <span>View Storefront</span>
-            </button>
-          )}
+        <div className="p-3 border-t border-gray-200 space-y-2">
+          <button
+            type="button"
+            onClick={() => setPasswordModalOpen(true)}
+            className="w-full min-h-[40px] px-3 rounded-xl border border-gray-200 hover:bg-gray-50 text-xs font-semibold text-[#111827] flex items-center justify-center gap-2 cursor-pointer"
+          >
+            <KeyRound className="w-3.5 h-3.5" />
+            <span>Change My Password</span>
+          </button>
           <button
             type="button"
             onClick={handleLogout}
-            className="w-full min-h-[44px] px-3 rounded-[8px] border border-red-200 dark:border-red-900/50 text-[14px] font-semibold text-[#DC2626] hover:bg-red-50 dark:hover:bg-red-950/40 flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap"
+            className="w-full min-h-[40px] px-3 rounded-xl border border-red-200 text-red-700 hover:bg-red-50 text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer"
           >
-            <LogOut className="w-4 h-4 shrink-0" />
+            <LogOut className="w-3.5 h-3.5" />
             <span>Sign Out</span>
           </button>
         </div>
       </aside>
 
-      {/* =====================================================================
-          MAIN RIGHT COLUMN (Top Bar + Dashboard Strip + Section Viewport)
-         ===================================================================== */}
-      <div className="flex-1 lg:pl-64 flex flex-col min-w-0 w-full max-w-[100vw] overflow-x-clip pb-20 lg:pb-8">
-        {/* STICKY TOP BAR (Mobile & Desktop): Shop Name, Open/Closed Toggle, Bell Icon with New-Order Badge */}
-        <header className="sticky top-0 left-0 right-0 z-30 w-full max-w-[100vw] min-h-[56px] py-1.5 bg-white dark:bg-slate-900 border-b border-gray-200 dark:border-slate-800 px-4 flex items-center justify-between gap-2 shadow-[0_1px_3px_rgba(0,0,0,0.08)] overflow-x-clip">
-          <div className="flex items-center gap-2 min-w-0 flex-1">
-            <span className="text-[14px] sm:text-[16px] font-bold text-[#111827] dark:text-white leading-snug break-words">
-              {settings?.shopName || 'Aangan Artisanal Kitchen'}
-            </span>
-          </div>
+      {/* ========================================================================
+          MAIN RIGHT COLUMN (Top Bar + Active Section Content)
+      ======================================================================== */}
+      <div className="flex-1 min-w-0 flex flex-col pb-24 lg:pb-8">
+        {/* Sticky Top Bar */}
+        <header className="sticky top-0 z-30 bg-white border-b border-gray-200 px-4 py-3 shadow-2xs">
+          <div className="max-w-6xl mx-auto flex flex-wrap items-center justify-between gap-2 min-w-0">
+            <div className="flex items-center gap-2 min-w-0">
+              <h1 className="text-base sm:text-lg font-bold text-[#111827] truncate">
+                {settings?.shopName || 'Aangan Kitchen'}
+              </h1>
+              <span className="lg:hidden px-2 py-0.5 rounded bg-orange-100 text-[#D9480F] text-[10px] font-bold uppercase shrink-0">
+                {currentUser.role}
+              </span>
+            </div>
 
-          <div className="flex items-center gap-2 shrink-0">
-            {/* Open / Closed Toggle */}
-            <button
-              type="button"
-              role="switch"
-              aria-checked={Boolean(settings?.isOpen)}
-              onClick={handleQuickToggleShopOpen}
-              className={`min-h-[38px] px-3 rounded-full text-[12px] font-semibold flex items-center gap-1.5 border transition-colors duration-200 cursor-pointer whitespace-nowrap shrink-0 ${
-                settings?.isOpen
-                  ? 'bg-green-50 dark:bg-green-950/50 border-green-200 dark:border-green-800 text-[#16A34A]'
-                  : 'bg-red-50 dark:bg-red-950/50 border-red-200 dark:border-red-800 text-[#DC2626]'
-              }`}
-            >
-              <span
-                className={`w-2 h-2 rounded-full shrink-0 ${
-                  settings?.isOpen ? 'bg-[#16A34A]' : 'bg-[#DC2626]'
-                }`}
-              />
-              <span>{settings?.isOpen ? 'Open' : 'Closed'}</span>
-            </button>
+            <div className="flex items-center gap-2 shrink-0">
+              {/* Quick Shop Open/Closed Toggle (synced with Settings -> Shop Info) */}
+              {settings && currentUser.role !== 'staff' && (
+                <button
+                  type="button"
+                  onClick={() => handleSaveShopSettings({ isOpen: !settings.isOpen })}
+                  className={`min-h-[38px] px-3 rounded-full text-xs font-bold flex items-center gap-1.5 border cursor-pointer ${
+                    settings.isOpen
+                      ? 'bg-green-50 border-green-300 text-green-800'
+                      : 'bg-red-50 border-red-300 text-red-800'
+                  }`}
+                >
+                  <span
+                    className={`w-2 h-2 rounded-full ${
+                      settings.isOpen ? 'bg-green-600' : 'bg-red-600'
+                    }`}
+                  />
+                  <span>{settings.isOpen ? 'OPEN' : 'CLOSED'}</span>
+                </button>
+              )}
 
-            {/* Bell Icon with New-Order Badge */}
-            <button
-              type="button"
-              onClick={() => {
-                setActiveSection('orders');
-                setOrderFilter('new');
-                const nextSound = !soundEnabled;
-                setSoundEnabled(nextSound);
-                if (nextSound) playKitchenOrderBell();
-                showToast(nextSound ? 'Order sound alerts ON' : 'Order sound alerts MUTED');
-              }}
-              aria-label="Order notifications and chime toggle"
-              className="relative min-w-[40px] min-h-[40px] rounded-[8px] border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 flex items-center justify-center text-[#111827] dark:text-slate-100 hover:bg-gray-50 cursor-pointer shrink-0"
-            >
-              {soundEnabled ? (
-                <Bell className="w-5 h-5" />
-              ) : (
-                <BellOff className="w-5 h-5 text-[#6B7280]" />
-              )}
-              {kpis.newCount > 0 && (
-                <span className="absolute -top-1 -right-1 min-w-[20px] h-5 px-1 rounded-full bg-[#D9480F] text-white text-[12px] font-bold tabular-nums flex items-center justify-center">
-                  {kpis.newCount}
-                </span>
-              )}
-            </button>
+              {/* Sound toggle */}
+              <button
+                type="button"
+                onClick={() => setSoundEnabled((s) => !s)}
+                aria-label="Toggle kitchen bell"
+                className="min-w-[38px] min-h-[38px] rounded-xl border border-gray-200 bg-white hover:bg-gray-50 flex items-center justify-center text-[#111827] cursor-pointer"
+              >
+                {soundEnabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
+              </button>
+
+              {/* Bell icon with new-order badge */}
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveSection('orders');
+                  setOrderFilter('NEW');
+                  setNewOrderBadgeCount(0);
+                }}
+                className="relative min-w-[38px] min-h-[38px] rounded-xl border border-gray-200 bg-white hover:bg-gray-50 flex items-center justify-center text-[#111827] cursor-pointer"
+              >
+                <Bell className="w-4 h-4" />
+                {(newOrderBadgeCount > 0 || orderCounts.NEW > 0) && (
+                  <span className="absolute -top-1 -right-1 px-1.5 py-0.2 rounded-full bg-[#D9480F] text-white text-[10px] font-bold">
+                    {orderCounts.NEW}
+                  </span>
+                )}
+              </button>
+            </div>
           </div>
         </header>
 
-        {/* Pull-to-refresh indicator */}
-        {pullingRefresh && (
-          <div className="bg-[#D9480F]/10 text-[#D9480F] py-2 px-4 text-center text-[12px] font-semibold flex items-center justify-center gap-2">
-            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-            <span>Refreshing live kitchen queue...</span>
+        {/* Force Password Change Warning Banner if mustChangePassword is true */}
+        {currentUser.mustChangePassword && (
+          <div className="bg-amber-50 border-b border-amber-300 px-4 py-2.5">
+            <div className="max-w-6xl mx-auto flex flex-wrap items-center justify-between gap-2 text-xs text-amber-950">
+              <div className="flex items-center gap-2 font-semibold min-w-0">
+                <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0" />
+                <span className="break-words">
+                  Security Requirement: You are using a seeded or temporary password. Please change your password now.
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPasswordModalOpen(true)}
+                className="px-3 py-1.5 rounded-lg bg-amber-900 text-white font-semibold text-xs cursor-pointer shrink-0"
+              >
+                Change Password Now
+              </button>
+            </div>
           </div>
         )}
 
-        {/* PAGE CONTENT CONTAINER (480px centered on mobile, 1200px on desktop, 16px padding) */}
-        <div className="w-full max-w-[480px] lg:max-w-[1200px] mx-auto px-4 py-4 space-y-3 min-w-0 overflow-x-clip">
-          {/* 5. DASHBOARD TOP STRIP (2x2 grid on mobile, 4 in a row on desktop) */}
-          <section className="grid grid-cols-2 lg:grid-cols-4 gap-3 min-w-0">
-            <div className="bg-white dark:bg-slate-900 rounded-[12px] p-3.5 shadow-[0_1px_3px_rgba(0,0,0,0.08)] border border-gray-100 dark:border-slate-800 min-w-0">
-              <div className="flex items-center justify-between gap-1">
-                <span className="text-[12px] font-medium text-[#6B7280] dark:text-slate-400 truncate">
-                  Today&apos;s orders
-                </span>
-                <ArrowUpRight className="w-3.5 h-3.5 text-[#16A34A] shrink-0" />
-              </div>
-              <p className="mt-1 text-[24px] font-bold text-[#111827] dark:text-white tabular-nums leading-tight truncate">
-                {kpis.todaysOrders}
-              </p>
-            </div>
-
-            <div className="bg-white dark:bg-slate-900 rounded-[12px] p-3.5 shadow-[0_1px_3px_rgba(0,0,0,0.08)] border border-gray-100 dark:border-slate-800 min-w-0">
-              <div className="flex items-center justify-between gap-1">
-                <span className="text-[12px] font-medium text-[#6B7280] dark:text-slate-400 truncate">
-                  Revenue
-                </span>
-                <TrendingUp className="w-3.5 h-3.5 text-[#16A34A] shrink-0" />
-              </div>
-              <p className="mt-1 text-[24px] font-bold text-[#111827] dark:text-white tabular-nums leading-tight truncate">
-                ₹{kpis.revenue.toLocaleString()}
-              </p>
-            </div>
-
-            <div className="bg-white dark:bg-slate-900 rounded-[12px] p-3.5 shadow-[0_1px_3px_rgba(0,0,0,0.08)] border border-gray-100 dark:border-slate-800 min-w-0">
-              <div className="flex items-center justify-between gap-1">
-                <span className="text-[12px] font-medium text-[#6B7280] dark:text-slate-400 truncate">
-                  Pending
-                </span>
-                <ArrowUpRight className="w-3.5 h-3.5 text-[#D97706] shrink-0" />
-              </div>
-              <p className="mt-1 text-[24px] font-bold text-[#D97706] tabular-nums leading-tight truncate">
-                {kpis.pendingOrders}
-              </p>
-            </div>
-
-            <div className="bg-white dark:bg-slate-900 rounded-[12px] p-3.5 shadow-[0_1px_3px_rgba(0,0,0,0.08)] border border-gray-100 dark:border-slate-800 min-w-0">
-              <div className="flex items-center justify-between gap-1">
-                <span className="text-[12px] font-medium text-[#6B7280] dark:text-slate-400 truncate">
-                  Avg prep time
-                </span>
-                <ArrowUpRight className="w-3.5 h-3.5 text-[#2563EB] shrink-0" />
-              </div>
-              <p className="mt-1 text-[24px] font-bold text-[#111827] dark:text-white tabular-nums leading-tight truncate">
-                {kpis.avgPrepMins}m
-              </p>
-            </div>
-          </section>
-
-          {/* =================================================================
-              SECTION 1: ORDERS SCREEN & REBUILT ADMIN ORDER CARD
-             ================================================================= */}
+        {/* Main Content Container */}
+        <main className="w-full max-w-6xl mx-auto px-4 py-4 space-y-4 min-w-0">
+          {/* ====================================================================
+              1. ORDERS SECTION (Live Kitchen Board)
+          ==================================================================== */}
           {activeSection === 'orders' && (
-            <section className="space-y-3 min-w-0">
-              {/* Compact Header Row with Info Tooltip Icon (No long cron paragraphs!) */}
-              <div className="relative flex items-center justify-between gap-2 min-w-0">
-                <div className="flex items-center gap-2 min-w-0">
-                  <h2 className="text-[20px] font-bold text-[#111827] dark:text-white truncate">
-                    Orders Queue
-                  </h2>
-                  <button
-                    type="button"
-                    onClick={() => setShowCronInfoPopover((v) => !v)}
-                    aria-label="Order queue rules and sound test"
-                    className="min-w-[36px] min-h-[36px] rounded-full text-[#6B7280] hover:text-[#111827] dark:hover:text-white hover:bg-gray-200/60 dark:hover:bg-slate-800 flex items-center justify-center cursor-pointer shrink-0"
-                  >
-                    <Info className="w-4 h-4" />
-                  </button>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => fetchBootstrap(token)}
-                  className="min-h-[40px] px-3 rounded-[8px] border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-[12px] font-semibold text-[#111827] dark:text-slate-200 flex items-center gap-1.5 hover:bg-gray-50 cursor-pointer whitespace-nowrap shrink-0"
-                >
-                  <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-                  <span>Refresh</span>
-                </button>
-
-                {/* Collapsed Info Popover / Tooltip */}
-                {showCronInfoPopover && (
-                  <div className="absolute top-11 left-0 z-30 w-72 max-w-[calc(100vw-2rem)] rounded-[12px] bg-white dark:bg-slate-900 border border-gray-200 dark:border-slate-700 p-3.5 shadow-lg space-y-2.5 text-[12px]">
-                    <div className="flex items-start justify-between gap-2">
-                      <p className="font-semibold text-[#111827] dark:text-white">
-                        Auto-Cancel & Chime
-                      </p>
-                      <button
-                        type="button"
-                        onClick={() => setShowCronInfoPopover(false)}
-                        className="text-[#6B7280] hover:text-[#111827]"
-                      >
-                        <X className="w-4 h-4" />
-                      </button>
-                    </div>
-                    <p className="text-[#6B7280] dark:text-slate-400 leading-relaxed break-words">
-                      Unaccepted new orders auto-cancel after{' '}
-                      {settings?.autoCancelUnacceptedMins || 5} mins via background cron.
-                    </p>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        playKitchenOrderBell();
-                        showToast('Played kitchen order bell chime');
-                      }}
-                      className="w-full min-h-[40px] px-3 rounded-[8px] bg-gray-100 dark:bg-slate-800 hover:bg-gray-200 text-[#111827] dark:text-white font-semibold flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
-                    >
-                      <Volume2 className="w-4 h-4 text-[#D9480F]" />
-                      <span>Test Sound Alert</span>
-                    </button>
-                  </div>
-                )}
-              </div>
-
-              {/* Sticky Filter Tabs (horizontal scroll, snap) */}
-              <div className="sticky top-14 z-20 -mx-4 px-4 py-2 bg-[#F4F5F7]/95 dark:bg-slate-950/95 backdrop-blur-xs border-b border-gray-200/80 dark:border-slate-800">
-                <div className="flex items-center gap-2 overflow-x-auto no-scrollbar snap-x">
+            <section className="space-y-4 min-w-0">
+              {/* Sticky Filter Tabs */}
+              <div className="sticky top-[63px] z-20 bg-[#F4F5F7] pt-1 pb-2 space-y-2.5">
+                <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-1">
                   {(
                     [
-                      { id: 'new', label: `New (${categorizedOrders.new.length})` },
-                      {
-                        id: 'preparing',
-                        label: `Preparing (${categorizedOrders.preparing.length})`,
-                      },
-                      { id: 'ready', label: `Ready (${categorizedOrders.ready.length})` },
-                      {
-                        id: 'out_for_delivery',
-                        label: `Out for delivery (${categorizedOrders.out_for_delivery.length})`,
-                      },
-                      {
-                        id: 'completed',
-                        label: `Completed (${categorizedOrders.completed.length})`,
-                      },
-                      {
-                        id: 'cancelled',
-                        label: `Cancelled (${categorizedOrders.cancelled.length})`,
-                      },
-                    ] as const
-                  ).map((tab) => {
-                    const active = orderFilter === tab.id;
-                    return (
-                      <button
-                        key={tab.id}
-                        type="button"
-                        onClick={() => setOrderFilter(tab.id)}
-                        className={`snap-start min-h-[44px] px-4 rounded-full text-[14px] font-semibold whitespace-nowrap shrink-0 transition-colors duration-200 cursor-pointer tabular-nums ${
-                          active
-                            ? 'bg-[#D9480F] text-white shadow-xs'
-                            : 'bg-white dark:bg-slate-900 text-[#6B7280] dark:text-slate-300 border border-gray-200 dark:border-slate-800 hover:text-[#111827]'
+                      { id: 'NEW', label: 'New', count: orderCounts.NEW },
+                      { id: 'PREPARING', label: 'Preparing', count: orderCounts.PREPARING },
+                      { id: 'READY', label: 'Ready', count: orderCounts.READY },
+                      { id: 'OUT', label: 'Out for delivery', count: orderCounts.OUT },
+                      { id: 'COMPLETED', label: 'Completed', count: orderCounts.COMPLETED },
+                      { id: 'CANCELLED', label: 'Cancelled', count: orderCounts.CANCELLED },
+                    ] as { id: OrderFilterTab; label: string; count: number }[]
+                  ).map((tab) => (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      onClick={() => setOrderFilter(tab.id)}
+                      className={`min-h-[40px] px-3.5 rounded-xl text-xs font-bold whitespace-nowrap flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 ${
+                        orderFilter === tab.id
+                          ? 'bg-[#D9480F] text-white shadow-xs'
+                          : 'bg-white text-[#111827] border border-gray-200 hover:bg-gray-50'
+                      }`}
+                    >
+                      <span>{tab.label}</span>
+                      <span
+                        className={`px-1.5 py-0.5 rounded-full text-[11px] ${
+                          orderFilter === tab.id
+                            ? 'bg-white/20 text-white'
+                            : 'bg-gray-100 text-gray-700'
                         }`}
                       >
-                        {tab.label}
-                      </button>
-                    );
-                  })}
+                        {tab.count}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+
+                {/* Search Input */}
+                <div className="relative">
+                  <Search className="w-4 h-4 text-gray-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={orderSearch}
+                    onChange={(e) => setOrderSearch(e.target.value)}
+                    placeholder="Search by Order ID, customer name, or phone..."
+                    className="w-full min-h-[42px] pl-10 pr-4 rounded-xl bg-white border border-gray-200 text-xs sm:text-sm focus:border-[#D9480F] focus:outline-none"
+                  />
                 </div>
               </div>
 
-              {/* Order Cards List or Skeleton / Empty State */}
-              {loading && orders.length === 0 ? (
-                <div className="space-y-3">
-                  {[1, 2].map((i) => (
-                    <div
-                      key={i}
-                      className="bg-white dark:bg-slate-900 rounded-[12px] p-4 shadow-[0_1px_3px_rgba(0,0,0,0.08)] space-y-3 animate-pulse"
-                    >
-                      <div className="h-5 bg-gray-200 dark:bg-slate-800 rounded w-1/3" />
-                      <div className="h-4 bg-gray-100 dark:bg-slate-800 rounded w-2/3" />
-                      <div className="h-16 bg-gray-100 dark:bg-slate-800 rounded w-full" />
-                    </div>
-                  ))}
-                </div>
-              ) : activeFilterOrders.length === 0 ? (
-                <div className="bg-white dark:bg-slate-900 rounded-[12px] p-10 text-center shadow-[0_1px_3px_rgba(0,0,0,0.08)] border border-gray-100 dark:border-slate-800 space-y-3">
-                  <div className="w-14 h-14 rounded-full bg-gray-100 dark:bg-slate-800 text-[#6B7280] flex items-center justify-center mx-auto">
-                    <Package className="w-7 h-7" />
-                  </div>
-                  <p className="text-[16px] font-semibold text-[#111827] dark:text-white">
-                    No orders yet
-                  </p>
-                  <p className="text-[14px] text-[#6B7280] dark:text-slate-400 max-w-xs mx-auto">
-                    There are currently no orders in the &ldquo;{orderFilter.replace(/_/g, ' ')}&rdquo; stage.
+              {/* Order Cards List */}
+              {filteredOrders.length === 0 ? (
+                <div className="bg-white rounded-2xl border border-gray-200 p-8 text-center space-y-2">
+                  <Package className="w-8 h-8 text-gray-400 mx-auto" />
+                  <p className="text-sm font-bold text-[#111827]">No orders in this filter</p>
+                  <p className="text-xs text-[#6B7280]">
+                    Incoming guest orders will appear here in real time.
                   </p>
                 </div>
               ) : (
-                <div className="space-y-3 min-w-0">
-                  {activeFilterOrders.map((order) => {
-                    const isNew = order.status === 'PLACED';
-                    const isReady = readyOrderIds.includes(order.id);
-                    const isTerminal = ['DELIVERED', 'CANCELLED', 'REJECTED'].includes(
-                      order.status
-                    );
-
-                    // Left border color & status badge style by status
-                    let leftBorderClass = 'border-l-[#D97706]';
-                    let badgeBgText = 'bg-amber-100 text-[#D97706]';
-                    let statusLabel = 'New';
-
-                    if (order.status === 'PLACED') {
-                      leftBorderClass = 'border-l-[#D97706]';
-                      badgeBgText = 'bg-amber-100 text-[#D97706]';
-                      statusLabel = 'New';
-                    } else if (order.status === 'ACCEPTED' || order.status === 'PREPARING') {
-                      leftBorderClass = 'border-l-[#2563EB]';
-                      badgeBgText = 'bg-blue-100 text-[#2563EB]';
-                      statusLabel = isReady
-                        ? 'Ready'
-                        : order.status === 'ACCEPTED'
-                        ? 'Accepted'
-                        : 'Preparing';
-                    } else if (order.status === 'OUT_FOR_DELIVERY') {
-                      leftBorderClass = 'border-l-[#7C3AED]';
-                      badgeBgText = 'bg-purple-100 text-[#7C3AED]';
-                      statusLabel = 'Out for delivery';
-                    } else if (order.status === 'DELIVERED') {
-                      leftBorderClass = 'border-l-[#16A34A]';
-                      badgeBgText = 'bg-green-100 text-[#16A34A]';
-                      statusLabel = 'Delivered';
-                    } else {
-                      leftBorderClass = 'border-l-[#DC2626]';
-                      badgeBgText = 'bg-red-100 text-[#DC2626]';
-                      statusLabel = order.status === 'REJECTED' ? 'Rejected' : 'Cancelled';
-                    }
-
-                    // Payment chip label & tint
-                    const paymentChipLabel =
-                      order.paymentMethod === 'COD' && order.paymentStatus !== 'PAID'
-                        ? 'COD'
-                        : order.paymentStatus === 'PAID'
-                        ? 'PAID'
-                        : 'PENDING';
-
-                    const paymentChipStyle =
-                      paymentChipLabel === 'PAID'
-                        ? 'bg-green-100 text-[#16A34A]'
-                        : paymentChipLabel === 'COD'
-                        ? 'bg-amber-100 text-[#D97706]'
-                        : 'bg-gray-100 text-[#6B7280]';
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 min-w-0">
+                  {filteredOrders.map((order) => {
+                    const leftBorderColor =
+                      order.status === 'PLACED' || order.status === 'ACCEPTED'
+                        ? 'border-l-[#D9480F]'
+                        : order.status === 'PREPARING' || order.status === 'READY'
+                        ? 'border-l-blue-600'
+                        : order.status === 'OUT_FOR_DELIVERY'
+                        ? 'border-l-purple-600'
+                        : order.status === 'DELIVERED'
+                        ? 'border-l-green-600'
+                        : 'border-l-red-600';
 
                     const mapsUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
                       `${order.deliveryLat},${order.deliveryLng}`
                     )}`;
 
-                    const matchedPayment = payments.find((p) => p.orderId === order.id);
-
                     return (
                       <article
                         key={order.id}
-                        className={`rounded-[12px] bg-white dark:bg-slate-900 border border-gray-200 dark:border-slate-800 border-l-4 ${leftBorderClass} shadow-[0_1px_3px_rgba(0,0,0,0.08)] p-4 space-y-3 min-w-0 ${
-                          isNew ? 'ring-2 ring-amber-400/50 animate-[pulse_3s_ease-in-out_infinite]' : ''
-                        }`}
+                        className={`bg-white rounded-2xl border border-gray-200 border-l-4 ${leftBorderColor} p-4 shadow-2xs flex flex-col justify-between gap-3 min-w-0`}
                       >
-                        {/* ROW 1: Order ID (bold, 16px, no-wrap) on left, status badge on right */}
-                        <div className="flex items-center justify-between gap-2 min-w-0">
-                          <span className="text-[16px] font-bold text-[#111827] dark:text-white whitespace-nowrap tabular-nums">
-                            {order.orderNumber}
-                          </span>
-                          <span
-                            className={`px-3 py-1 rounded-full text-[12px] font-semibold whitespace-nowrap shrink-0 ${badgeBgText}`}
-                          >
-                            {statusLabel}
-                          </span>
-                        </div>
-
-                        {/* ROW 2 (small grey): time + payment chip (PAID / COD / PENDING) + distance chip + Auto-cancel countdown if New */}
-                        <div className="flex flex-wrap items-center gap-2 text-[12px] text-[#6B7280] dark:text-slate-400 min-w-0">
-                          <span className="tabular-nums whitespace-nowrap">
-                            {new Date(order.placedAt).toLocaleTimeString([], {
-                              hour: '2-digit',
-                              minute: '2-digit',
-                            })}
-                          </span>
-                          <span
-                            className={`px-2.5 py-0.5 rounded-full text-[12px] font-semibold whitespace-nowrap ${paymentChipStyle}`}
-                          >
-                            {paymentChipLabel}
-                          </span>
-                          <span className="px-2.5 py-0.5 rounded-full bg-gray-100 dark:bg-slate-800 text-[#6B7280] dark:text-slate-300 font-medium tabular-nums whitespace-nowrap">
-                            {order.distanceKm} km
-                          </span>
-                          {isNew && (
-                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-red-50 text-[#DC2626] font-semibold tabular-nums whitespace-nowrap">
-                              <Clock className="w-3 h-3 shrink-0" />
-                              <span>Auto-cancel in {getAutoCancelCountdown(order.placedAt)}</span>
+                        <div className="space-y-3 min-w-0">
+                          {/* Row 1: Order ID on left, status badge on right */}
+                          <div className="flex items-center justify-between gap-2 min-w-0">
+                            <span className="text-base font-bold text-[#111827] whitespace-nowrap tabular-nums">
+                              {order.orderNumber}
                             </span>
-                          )}
-                        </div>
-
-                        {/* DIVIDER */}
-                        <hr className="border-gray-100 dark:border-slate-800" />
-
-                        {/* CUSTOMER BLOCK: name (bold), tap-to-call phone button, address (wraps fully, 2-3 lines) with "Open in Maps" button */}
-                        <div className="space-y-2 min-w-0">
-                          <div className="flex flex-wrap items-center justify-between gap-2 min-w-0">
-                            <p className="text-[16px] font-bold text-[#111827] dark:text-white break-words min-w-0">
-                              {order.customerName}
-                            </p>
-                            <a
-                              href={`tel:+91${order.customerPhone}`}
-                              className="inline-flex items-center gap-1.5 min-h-[36px] px-3 rounded-[8px] bg-gray-100 dark:bg-slate-800 hover:bg-gray-200 text-[#111827] dark:text-slate-200 text-[12px] font-semibold tabular-nums whitespace-nowrap shrink-0"
+                            <span
+                              className={`px-2.5 py-1 rounded-full text-[11px] font-bold uppercase whitespace-nowrap ${
+                                order.status === 'PLACED'
+                                  ? 'bg-orange-100 text-[#D9480F] animate-pulse'
+                                  : order.status === 'READY'
+                                  ? 'bg-emerald-100 text-emerald-800'
+                                  : order.status === 'DELIVERED'
+                                  ? 'bg-green-100 text-green-800'
+                                  : order.status === 'CANCELLED' || order.status === 'REJECTED'
+                                  ? 'bg-red-100 text-red-800'
+                                  : 'bg-blue-100 text-blue-800'
+                              }`}
                             >
-                              <Phone className="w-3.5 h-3.5 text-[#D9480F] shrink-0" />
-                              <span>+91 {order.customerPhone}</span>
-                            </a>
+                              {order.status.replace(/_/g, ' ')}
+                            </span>
                           </div>
 
-                          <p className="text-[14px] text-[#6B7280] dark:text-slate-300 leading-snug break-words">
-                            {order.deliveryAddress}
-                          </p>
+                          {/* Row 2: Time + Payment chip + Distance chip */}
+                          <div className="flex flex-wrap items-center gap-2 text-xs text-[#6B7280]">
+                            <span>
+                              {new Date(order.placedAt).toLocaleTimeString([], {
+                                hour: '2-digit',
+                                minute: '2-digit',
+                              })}
+                            </span>
+                            <span>·</span>
+                            <span
+                              className={`px-2 py-0.5 rounded font-bold text-[11px] ${
+                                order.paymentStatus === 'PAID'
+                                  ? 'bg-green-100 text-green-800'
+                                  : order.paymentMethod === 'COD'
+                                  ? 'bg-amber-100 text-amber-900'
+                                  : 'bg-gray-100 text-gray-700'
+                              }`}
+                            >
+                              {order.paymentMethod === 'COD' && order.paymentStatus !== 'PAID'
+                                ? 'COD'
+                                : order.paymentStatus}
+                            </span>
+                            <span className="px-2 py-0.5 rounded bg-gray-100 text-gray-700 font-semibold">
+                              {order.distanceKm} km
+                            </span>
+                          </div>
 
-                          <div>
+                          <hr className="border-gray-100" />
+
+                          {/* Customer Block */}
+                          <div className="space-y-1.5 min-w-0">
+                            <div className="flex items-center justify-between gap-2 min-w-0">
+                              <p className="text-sm font-bold text-[#111827] break-words min-w-0">
+                                {order.customerName}
+                              </p>
+                              <a
+                                href={`tel:+91${order.customerPhone}`}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-gray-100 hover:bg-gray-200 text-xs font-semibold text-[#111827] shrink-0"
+                              >
+                                <Phone className="w-3.5 h-3.5 text-[#D9480F]" />
+                                <span>{order.customerPhone}</span>
+                              </a>
+                            </div>
+                            <p className="text-xs text-[#6B7280] break-words leading-relaxed">
+                              {order.deliveryAddress}
+                            </p>
                             <a
                               href={mapsUrl}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="inline-flex items-center gap-1.5 text-[12px] font-semibold text-[#2563EB] hover:underline whitespace-nowrap"
+                              className="inline-flex items-center gap-1 text-xs font-semibold text-blue-600 hover:underline"
                             >
-                              <MapPin className="w-3.5 h-3.5 shrink-0" />
+                              <Navigation className="w-3 h-3" />
                               <span>Open in Maps</span>
-                              <ExternalLink className="w-3 h-3 shrink-0" />
                             </a>
                           </div>
-                        </div>
 
-                        {/* KITCHEN NOTE: highlighted yellow box with icon, wraps fully */}
-                        {order.orderNotes && (
-                          <div className="p-3 rounded-[8px] bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/60 flex items-start gap-2 min-w-0">
-                            <AlertTriangle className="w-4 h-4 text-[#D97706] shrink-0 mt-0.5" />
-                            <p className="text-[14px] text-amber-900 dark:text-amber-200 font-medium break-words min-w-0 flex-1">
-                              {order.orderNotes}
-                            </p>
-                          </div>
-                        )}
-
-                        {/* ITEMS LIST: each row = qty badge, name (wraps), price right-aligned. Variants in small grey text under the name */}
-                        <div className="pt-2 border-t border-gray-100 dark:border-slate-800 space-y-2.5 min-w-0">
-                          {order.items.map((it, idx) => (
-                            <div
-                              key={idx}
-                              className="flex items-start justify-between gap-2.5 min-w-0"
-                            >
-                              <span className="px-2 py-0.5 rounded-[6px] bg-gray-100 dark:bg-slate-800 text-[#111827] dark:text-white text-[12px] font-bold tabular-nums shrink-0 mt-0.5">
-                                {it.quantity}x
-                              </span>
-                              <div className="min-w-0 flex-1">
-                                <p className="text-[14px] font-semibold text-[#111827] dark:text-white break-words">
-                                  {it.itemName}
-                                </p>
-                                {(it.variantName || it.addons.length > 0) && (
-                                  <p className="text-[12px] text-[#6B7280] dark:text-slate-400 break-words mt-0.5">
-                                    {it.variantName}
-                                    {it.variantName && it.addons.length > 0 ? ' · ' : ''}
-                                    {it.addons.length > 0
-                                      ? `+ ${it.addons.map((a) => a.name).join(', ')}`
-                                      : ''}
-                                  </p>
-                                )}
-                              </div>
-                              <span className="text-[14px] font-semibold text-[#111827] dark:text-white tabular-nums whitespace-nowrap shrink-0">
-                                ₹{it.lineTotal}
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-
-                        {/* BILL ROW: total in bold */}
-                        <div className="pt-2.5 border-t border-gray-200 dark:border-slate-800 flex items-center justify-between gap-2 min-w-0">
-                          <span className="text-[14px] font-bold text-[#111827] dark:text-white">
-                            Total Bill
-                          </span>
-                          <span className="text-[16px] font-bold text-[#111827] dark:text-white tabular-nums whitespace-nowrap">
-                            ₹{order.grandTotal}
-                          </span>
-                        </div>
-
-                        {/* ACTION AREA: sticky at card bottom, full width, stacked vertically on mobile */}
-                        <div className="sticky bottom-0 z-10 pt-3 border-t border-gray-100 dark:border-slate-800 bg-white dark:bg-slate-900 space-y-2.5 min-w-0">
-                          {/* 1. Accept / Reject (two equal buttons side by side) */}
-                          {order.status === 'PLACED' && (
-                            <div className="grid grid-cols-2 gap-2 min-w-0">
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  handleUpdateOrder(order.id, { status: 'ACCEPTED' })
-                                }
-                                className="min-h-[48px] px-3 rounded-[8px] bg-[#16A34A] hover:bg-green-700 active:scale-[0.99] text-white text-[14px] font-semibold flex items-center justify-center gap-1.5 whitespace-nowrap transition-all duration-200 cursor-pointer"
-                              >
-                                <Check className="w-4 h-4 shrink-0" />
-                                <span>Accept</span>
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  handleUpdateOrder(order.id, {
-                                    status: 'REJECTED',
-                                    cancelReason: 'Kitchen at full capacity',
-                                  })
-                                }
-                                className="min-h-[48px] px-3 rounded-[8px] border border-red-300 bg-red-50 hover:bg-red-100 active:scale-[0.99] text-[#DC2626] text-[14px] font-semibold flex items-center justify-center gap-1.5 whitespace-nowrap transition-all duration-200 cursor-pointer"
-                              >
-                                <X className="w-4 h-4 shrink-0" />
-                                <span>Reject</span>
-                              </button>
+                          {/* Kitchen Note */}
+                          {order.orderNotes && (
+                            <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-950 font-medium break-words">
+                              <strong>Kitchen Note:</strong> {order.orderNotes}
                             </div>
                           )}
 
-                          {/* 2. Status progress buttons: Start Preparing > Mark Ready > Dispatch */}
-                          {!isTerminal && order.status !== 'PLACED' && (
-                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 min-w-0">
-                              <button
-                                type="button"
-                                disabled={order.status !== 'ACCEPTED'}
-                                onClick={() =>
-                                  handleUpdateOrder(order.id, { status: 'PREPARING' })
-                                }
-                                className={`min-h-[48px] px-3 rounded-[8px] text-[14px] font-semibold flex items-center justify-center gap-1.5 whitespace-nowrap transition-colors duration-200 cursor-pointer ${
-                                  order.status === 'ACCEPTED'
-                                    ? 'bg-[#2563EB] text-white hover:bg-blue-700'
-                                    : 'bg-gray-100 dark:bg-slate-800 text-[#6B7280] opacity-60 cursor-not-allowed'
-                                }`}
+                          {/* Items List */}
+                          <div className="space-y-1.5 pt-1 border-t border-gray-100">
+                            {order.items.map((item, idx) => (
+                              <div
+                                key={`${order.id}_item_${idx}`}
+                                className="flex items-start justify-between gap-2 text-xs min-w-0"
                               >
-                                <Utensils className="w-4 h-4 shrink-0" />
-                                <span>Start Preparing</span>
-                              </button>
-
-                              <button
-                                type="button"
-                                disabled={
-                                  !(
-                                    (order.status === 'PREPARING' ||
-                                      order.status === 'ACCEPTED') &&
-                                    !isReady
-                                  )
-                                }
-                                onClick={() => handleMarkOrderReady(order)}
-                                className={`min-h-[48px] px-3 rounded-[8px] text-[14px] font-semibold flex items-center justify-center gap-1.5 whitespace-nowrap transition-colors duration-200 cursor-pointer ${
-                                  (order.status === 'PREPARING' ||
-                                    order.status === 'ACCEPTED') &&
-                                  !isReady
-                                    ? 'bg-[#D97706] text-white hover:bg-amber-700'
-                                    : 'bg-gray-100 dark:bg-slate-800 text-[#6B7280] opacity-60 cursor-not-allowed'
-                                }`}
-                              >
-                                <CheckCircle2 className="w-4 h-4 shrink-0" />
-                                <span>Mark Ready</span>
-                              </button>
-
-                              <button
-                                type="button"
-                                disabled={
-                                  !(
-                                    order.status === 'PREPARING' ||
-                                    order.status === 'ACCEPTED' ||
-                                    order.status === 'OUT_FOR_DELIVERY'
-                                  )
-                                }
-                                onClick={() =>
-                                  handleUpdateOrder(order.id, {
-                                    status:
-                                      order.status === 'OUT_FOR_DELIVERY'
-                                        ? 'DELIVERED'
-                                        : 'OUT_FOR_DELIVERY',
-                                  })
-                                }
-                                className={`min-h-[48px] px-3 rounded-[8px] text-[14px] font-semibold flex items-center justify-center gap-1.5 whitespace-nowrap transition-colors duration-200 cursor-pointer ${
-                                  order.status === 'OUT_FOR_DELIVERY'
-                                    ? 'bg-[#16A34A] text-white hover:bg-green-700'
-                                    : 'bg-[#7C3AED] text-white hover:bg-purple-700'
-                                }`}
-                              >
-                                <Truck className="w-4 h-4 shrink-0" />
-                                <span>
-                                  {order.status === 'OUT_FOR_DELIVERY'
-                                    ? 'Mark Delivered'
-                                    : 'Dispatch'}
+                                <div className="flex items-start gap-2 min-w-0">
+                                  <span className="px-1.5 py-0.5 rounded bg-orange-50 border border-orange-200 text-[#D9480F] font-bold shrink-0">
+                                    {item.quantity}x
+                                  </span>
+                                  <div className="min-w-0">
+                                    <p className="font-semibold text-[#111827] break-words">
+                                      {item.itemName}
+                                    </p>
+                                    {(item.variantName || item.addons.length > 0) && (
+                                      <p className="text-[11px] text-[#6B7280] break-words">
+                                        {[item.variantName, ...item.addons.map((a) => a.name)]
+                                          .filter(Boolean)
+                                          .join(' · ')}
+                                      </p>
+                                    )}
+                                  </div>
+                                </div>
+                                <span className="font-mono font-semibold text-[#111827] shrink-0">
+                                  ₹{item.lineTotal}
                                 </span>
+                              </div>
+                            ))}
+                          </div>
+
+                          {/* Bill Row */}
+                          <div className="flex items-center justify-between pt-2 border-t border-gray-100 text-sm font-bold text-[#111827]">
+                            <span>Total Bill</span>
+                            <span className="font-mono">₹{order.grandTotal}</span>
+                          </div>
+                        </div>
+
+                        {/* Sticky / Stacked Action Area */}
+                        <div className="pt-3 border-t border-gray-200 space-y-2.5">
+                          {order.status === 'PLACED' && (
+                            <div className="grid grid-cols-2 gap-2">
+                              <button
+                                type="button"
+                                onClick={() => handleUpdateOrderStatus(order.id, 'ACCEPTED')}
+                                className="min-h-[42px] rounded-xl bg-green-600 hover:bg-green-700 text-white text-xs font-bold cursor-pointer"
+                              >
+                                Accept Order
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleUpdateOrderStatus(order.id, 'REJECTED')}
+                                className="min-h-[42px] rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold cursor-pointer"
+                              >
+                                Reject
                               </button>
                             </div>
                           )}
 
-                          {/* 3. "Assign Rider" as a full-width select with the label ABOVE it */}
-                          <div className="space-y-1 min-w-0">
-                            <label className="block text-[12px] font-semibold text-[#6B7280] dark:text-slate-400">
-                              Assign Rider
-                            </label>
-                            <select
-                              value={order.deliveryBoyId || ''}
-                              onChange={(e) =>
-                                handleUpdateOrder(order.id, {
-                                  deliveryBoyId: e.target.value || null,
-                                })
-                              }
-                              className="w-full min-h-[48px] px-3 rounded-[8px] border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-[14px] text-[#111827] dark:text-white focus:outline-none focus:border-[#D9480F]"
+                          {order.status === 'ACCEPTED' && (
+                            <button
+                              type="button"
+                              onClick={() => handleUpdateOrderStatus(order.id, 'PREPARING')}
+                              className="w-full min-h-[42px] rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold cursor-pointer"
                             >
-                              <option value="">Unassigned</option>
-                              {deliveryBoys.map((r) => (
-                                <option key={r.id} value={r.id}>
-                                  {r.name} ({r.activeOrders} active)
-                                </option>
-                              ))}
-                            </select>
-                          </div>
+                              Start Preparing
+                            </button>
+                          )}
 
-                          {/* 4. Secondary: Print KOT icon button, Cancel/Refund in an overflow (3-dot) menu */}
-                          <div className="flex items-center justify-between gap-2 pt-1 min-w-0">
+                          {order.status === 'PREPARING' && (
+                            <button
+                              type="button"
+                              onClick={() => handleUpdateOrderStatus(order.id, 'READY')}
+                              className="w-full min-h-[42px] rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold cursor-pointer"
+                            >
+                              Mark Ready for Pickup
+                            </button>
+                          )}
+
+                          {order.status === 'READY' && (
+                            <button
+                              type="button"
+                              onClick={() => handleUpdateOrderStatus(order.id, 'OUT_FOR_DELIVERY')}
+                              className="w-full min-h-[42px] rounded-xl bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold cursor-pointer"
+                            >
+                              Dispatch Order
+                            </button>
+                          )}
+
+                          {order.status === 'OUT_FOR_DELIVERY' && (
+                            <button
+                              type="button"
+                              onClick={() => handleUpdateOrderStatus(order.id, 'DELIVERED')}
+                              className="w-full min-h-[42px] rounded-xl bg-green-700 hover:bg-green-800 text-white text-xs font-bold cursor-pointer"
+                            >
+                              Mark Delivered
+                            </button>
+                          )}
+
+                          {/* Assign Rider Select with Label Above */}
+                          {currentUser.role !== 'staff' &&
+                            !['DELIVERED', 'CANCELLED', 'REJECTED'].includes(order.status) && (
+                              <div>
+                                <label className="block text-[11px] font-bold text-[#6B7280] mb-1">
+                                  Assign Rider
+                                </label>
+                                <select
+                                  value={order.deliveryBoyId || ''}
+                                  onChange={(e) =>
+                                    handleUpdateOrderStatus(order.id, undefined, e.target.value)
+                                  }
+                                  className="w-full min-h-[40px] px-3 rounded-xl border border-gray-300 bg-white text-xs font-semibold"
+                                >
+                                  <option value="">-- Unassigned --</option>
+                                  {deliveryBoys
+                                    .filter((r) => r.isActive)
+                                    .map((r) => (
+                                      <option key={r.id} value={r.id}>
+                                        {r.name} ({r.phone})
+                                      </option>
+                                    ))}
+                                </select>
+                              </div>
+                            )}
+
+                          {/* Secondary row: Print KOT + 3-dot overflow menu */}
+                          <div className="flex items-center justify-between gap-2 pt-1">
                             <button
                               type="button"
                               onClick={() => setKotOrder(order)}
-                              className="min-h-[48px] px-3.5 rounded-[8px] border border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-800 hover:bg-gray-100 text-[#111827] dark:text-slate-200 text-[14px] font-semibold flex items-center gap-2 whitespace-nowrap cursor-pointer"
+                              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-gray-200 hover:bg-gray-50 text-xs font-semibold text-[#111827] cursor-pointer"
                             >
-                              <Printer className="w-4 h-4 shrink-0" />
+                              <Printer className="w-3.5 h-3.5" />
                               <span>Print KOT</span>
                             </button>
 
                             <div className="relative">
                               <button
                                 type="button"
-                                aria-label="More order actions"
                                 onClick={() =>
-                                  setOpenMenuOrderId((prev) =>
-                                    prev === order.id ? null : order.id
-                                  )
+                                  setOpenCardMenuId(openCardMenuId === order.id ? null : order.id)
                                 }
-                                className="min-w-[48px] min-h-[48px] rounded-[8px] border border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-800 hover:bg-gray-100 text-[#111827] dark:text-slate-200 flex items-center justify-center cursor-pointer"
+                                className="p-2 rounded-xl border border-gray-200 hover:bg-gray-50 text-[#111827] cursor-pointer"
                               >
-                                <MoreVertical className="w-5 h-5" />
+                                <MoreVertical className="w-4 h-4" />
                               </button>
-
-                              {openMenuOrderId === order.id && (
-                                <div className="absolute right-0 bottom-14 z-30 w-48 rounded-[12px] bg-white dark:bg-slate-900 border border-gray-200 dark:border-slate-700 shadow-lg py-1.5 text-[14px]">
-                                  {!isTerminal && (
+                              {openCardMenuId === order.id && (
+                                <div className="absolute right-0 bottom-11 z-30 w-44 bg-white rounded-xl border border-gray-200 shadow-lg py-1 text-xs">
+                                  {!['DELIVERED', 'CANCELLED', 'REJECTED'].includes(
+                                    order.status
+                                  ) && (
                                     <button
                                       type="button"
                                       onClick={() => {
-                                        setOpenMenuOrderId(null);
-                                        handleUpdateOrder(order.id, {
-                                          status: 'CANCELLED',
-                                          cancelReason: 'Cancelled by kitchen admin',
-                                        });
+                                        setOpenCardMenuId(null);
+                                        handleUpdateOrderStatus(order.id, 'CANCELLED');
                                       }}
-                                      className="w-full min-h-[44px] px-3.5 text-left text-[#DC2626] font-semibold hover:bg-red-50 dark:hover:bg-red-950/40 flex items-center gap-2 cursor-pointer whitespace-nowrap"
+                                      className="w-full px-3 py-2 text-left text-red-700 hover:bg-red-50 font-semibold cursor-pointer"
                                     >
-                                      <Ban className="w-4 h-4 shrink-0" />
-                                      <span>Cancel Order</span>
+                                      Cancel Order
                                     </button>
                                   )}
-
-                                  {matchedPayment &&
-                                    matchedPayment.status !== 'REFUNDED' &&
-                                    adminUser.role === 'owner' && (
+                                  {currentUser.role === 'owner' &&
+                                    order.paymentStatus === 'PAID' && (
                                       <button
                                         type="button"
-                                        onClick={async () => {
-                                          setOpenMenuOrderId(null);
-                                          const res = await fetch(
-                                            `/api/admin/payments/${matchedPayment.id}/refund`,
-                                            {
-                                              method: 'POST',
-                                              headers: {
-                                                'Content-Type': 'application/json',
-                                                Authorization: `Bearer ${token}`,
-                                              },
-                                              body: JSON.stringify({
-                                                amount: matchedPayment.amount,
-                                                reason: 'Refunded from Order Card menu',
-                                              }),
-                                            }
-                                          );
-                                          if (res.ok) {
-                                            fetchBootstrap(token);
-                                            showToast(
-                                              `Refunded ₹${matchedPayment.amount} for ${order.orderNumber}`
-                                            );
-                                          }
+                                        onClick={() => {
+                                          setOpenCardMenuId(null);
+                                          setRefundModalOrder(order);
+                                          setRefundAmountInput(String(order.grandTotal));
+                                          setRefundReasonInput('');
                                         }}
-                                        className="w-full min-h-[44px] px-3.5 text-left text-[#D97706] font-semibold hover:bg-amber-50 dark:hover:bg-amber-950/40 flex items-center gap-2 cursor-pointer whitespace-nowrap"
+                                        className="w-full px-3 py-2 text-left text-[#111827] hover:bg-gray-100 font-semibold cursor-pointer"
                                       >
-                                        <CreditCard className="w-4 h-4 shrink-0" />
-                                        <span>Issue Refund</span>
+                                        Issue Refund...
                                       </button>
                                     )}
-
-                                  <button
-                                    type="button"
-                                    onClick={() => setOpenMenuOrderId(null)}
-                                    className="w-full min-h-[44px] px-3.5 text-left text-[#6B7280] font-medium hover:bg-gray-50 dark:hover:bg-slate-800 flex items-center gap-2 cursor-pointer whitespace-nowrap"
-                                  >
-                                    <X className="w-4 h-4 shrink-0" />
-                                    <span>Close Menu</span>
-                                  </button>
                                 </div>
                               )}
                             </div>
@@ -1559,2050 +1501,2127 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             </section>
           )}
 
-          {/* =================================================================
-              SECTION 2: MENU MANAGEMENT (Cards with photo, name, price, stock switch + FAB + Full-screen sheet on mobile)
-             ================================================================= */}
+          {/* ====================================================================
+              2. MENU SECTION (Sub-tabs: Items, Categories, Variants & Add-ons, Stock)
+          ==================================================================== */}
           {activeSection === 'menu' && (
-            <section className="space-y-4 min-w-0 pb-16">
-              <div className="flex flex-wrap items-center justify-between gap-2 min-w-0">
-                <h2 className="text-[20px] font-bold text-[#111827] dark:text-white">
-                  Menu Management ({menuItems.length})
-                </h2>
-              </div>
-
-              {/* Search Bar */}
-              <div className="relative min-w-0">
-                <Search className="w-4 h-4 text-[#6B7280] absolute left-3.5 top-1/2 -translate-y-1/2" />
-                <input
-                  type="text"
-                  value={menuSearch}
-                  onChange={(e) => setMenuSearch(e.target.value)}
-                  placeholder="Search dishes by name..."
-                  className="w-full min-h-[48px] pl-10 pr-4 rounded-[8px] border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-[14px] text-[#111827] dark:text-white focus:outline-none focus:border-[#D9480F]"
-                />
-              </div>
-
-              {/* Item List as Cards */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 min-w-0">
-                {menuItems
-                  .filter((m) =>
-                    m.name.toLowerCase().includes(menuSearch.trim().toLowerCase())
-                  )
-                  .map((item) => (
-                    <div
-                      key={item.id}
-                      className="bg-white dark:bg-slate-900 rounded-[12px] p-4 shadow-[0_1px_3px_rgba(0,0,0,0.08)] border border-gray-200 dark:border-slate-800 space-y-3 min-w-0"
-                    >
-                      <div className="flex items-start gap-3 min-w-0">
-                        <img
-                          src={item.imageUrl}
-                          alt={item.name}
-                          referrerPolicy="no-referrer"
-                          className="w-16 h-16 rounded-[8px] object-cover bg-gray-100 shrink-0"
-                        />
-                        <div className="min-w-0 flex-1">
-                          <h3 className="text-[16px] font-bold text-[#111827] dark:text-white break-words">
-                            {item.name}
-                          </h3>
-                          <p className="text-[14px] font-bold text-[#D9480F] tabular-nums mt-0.5">
-                            ₹{item.basePrice}
-                          </p>
-                          <p className="text-[12px] text-[#6B7280] dark:text-slate-400 mt-0.5">
-                            {item.isVeg ? 'Veg' : 'Non-Veg'} · {item.salesCount} sold
-                          </p>
-                        </div>
-
-                        {/* Stock Toggle Switch */}
-                        <button
-                          type="button"
-                          role="switch"
-                          aria-checked={item.inStock}
-                          onClick={() =>
-                            handleToggleMenuItem(item.id, 'inStock', !item.inStock)
-                          }
-                          className={`min-h-[36px] px-3 rounded-full text-[12px] font-semibold flex items-center gap-1.5 border transition-colors duration-200 cursor-pointer shrink-0 whitespace-nowrap ${
-                            item.inStock
-                              ? 'bg-green-50 border-green-200 text-[#16A34A]'
-                              : 'bg-gray-100 border-gray-300 text-[#6B7280]'
-                          }`}
-                        >
-                          <span
-                            className={`w-2 h-2 rounded-full ${
-                              item.inStock ? 'bg-[#16A34A]' : 'bg-gray-400'
-                            }`}
-                          />
-                          <span>{item.inStock ? 'In Stock' : 'Out'}</span>
-                        </button>
-                      </div>
-
-                      <div className="pt-2 border-t border-gray-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2 min-w-0">
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              handleToggleMenuItem(
-                                item.id,
-                                'showOnHome',
-                                !item.showOnHome
-                              )
-                            }
-                            className={`min-h-[36px] px-2.5 rounded-[8px] text-[12px] font-semibold border cursor-pointer whitespace-nowrap ${
-                              item.showOnHome
-                                ? 'border-blue-200 bg-blue-50 text-[#2563EB]'
-                                : 'border-gray-200 text-[#6B7280]'
-                            }`}
-                          >
-                            Home: {item.showOnHome ? 'Yes' : 'No'}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              handleToggleMenuItem(
-                                item.id,
-                                'isBestseller',
-                                !item.isBestseller
-                              )
-                            }
-                            className={`min-h-[36px] px-2.5 rounded-[8px] text-[12px] font-semibold border cursor-pointer whitespace-nowrap ${
-                              item.isBestseller
-                                ? 'border-amber-200 bg-amber-50 text-[#D97706]'
-                                : 'border-gray-200 text-[#6B7280]'
-                            }`}
-                          >
-                            Bestseller
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              handleToggleMenuItem(
-                                item.id,
-                                'isTodaysSpecial',
-                                !item.isTodaysSpecial
-                              )
-                            }
-                            className={`min-h-[36px] px-2.5 rounded-[8px] text-[12px] font-semibold border cursor-pointer whitespace-nowrap ${
-                              item.isTodaysSpecial
-                                ? 'border-purple-200 bg-purple-50 text-[#7C3AED]'
-                                : 'border-gray-200 text-[#6B7280]'
-                            }`}
-                          >
-                            Special
-                          </button>
-                        </div>
-
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setMenuFormError(null);
-                            setEditingItem(item);
-                          }}
-                          className="min-h-[40px] px-3.5 rounded-[8px] border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-[12px] font-semibold text-[#111827] dark:text-white hover:bg-gray-50 cursor-pointer whitespace-nowrap"
-                        >
-                          Edit Dish
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-              </div>
-
-              {/* Floating Action Button (FAB) "Add item" */}
-              <button
-                type="button"
-                onClick={() => {
-                  setMenuFormError(null);
-                  setEditingItem({
-                    categoryId: categories[0]?.id || 'cat_biryani',
-                    name: '',
-                    description: '',
-                    basePrice: 345,
-                    imageUrl: '/src/assets/images/dish_royal_biryani_1793975538453.jpg',
-                    isVeg: true,
-                    inStock: true,
-                    showOnHome: true,
-                    isBestseller: false,
-                    isTodaysSpecial: false,
-                    spiceLevel: 'Medium',
-                    prepTimeMins: 25,
-                    variants: [
-                      {
-                        id: `var_${Date.now()}_1`,
-                        itemId: '',
-                        name: 'Regular Portion',
-                        price: 345,
-                        inStock: true,
-                      },
-                    ],
-                    addons: [],
-                  });
-                }}
-                className="fixed right-4 bottom-20 lg:bottom-8 z-30 min-h-[52px] px-5 rounded-full bg-[#D9480F] hover:bg-[#c23f0b] active:scale-[0.98] text-white text-[14px] font-semibold shadow-lg flex items-center gap-2 cursor-pointer whitespace-nowrap"
-              >
-                <Plus className="w-5 h-5 shrink-0" />
-                <span>Add item</span>
-              </button>
-
-              {/* Edit / Add Dish Full-Screen Sheet on Mobile, Modal on Desktop */}
-              {editingItem && (
-                <div className="fixed inset-0 z-50 bg-black/60 flex items-end sm:items-center justify-center">
-                  <form
-                    onSubmit={handleSaveMenuItem}
-                    className="w-full h-[100dvh] sm:h-auto sm:max-h-[90vh] sm:max-w-lg bg-white dark:bg-slate-900 sm:rounded-[12px] p-4 sm:p-6 overflow-y-auto flex flex-col justify-between gap-4"
-                  >
-                    <div className="space-y-4">
-                      <div className="flex items-center justify-between border-b border-gray-200 dark:border-slate-800 pb-3">
-                        <h3 className="text-[20px] font-bold text-[#111827] dark:text-white">
-                          {editingItem.id ? 'Edit Dish' : 'Add Dish'}
-                        </h3>
-                        <button
-                          type="button"
-                          onClick={() => setEditingItem(null)}
-                          className="min-w-[44px] min-h-[44px] rounded-[8px] flex items-center justify-center text-[#6B7280] hover:text-[#111827]"
-                        >
-                          <X className="w-5 h-5" />
-                        </button>
-                      </div>
-
-                      {menuFormError && (
-                        <div className="p-3 rounded-[8px] bg-red-50 border border-red-200 text-[12px] text-[#DC2626] font-semibold">
-                          {menuFormError}
-                        </div>
-                      )}
-
-                      {/* Single-column form, labels above inputs, 48px input height */}
-                      <div className="space-y-3">
-                        <div>
-                          <label className="block text-[14px] font-semibold text-[#111827] dark:text-slate-200 mb-1">
-                            Dish Name *
-                          </label>
-                          <input
-                            type="text"
-                            required
-                            value={editingItem.name || ''}
-                            onChange={(e) =>
-                              setEditingItem({ ...editingItem, name: e.target.value })
-                            }
-                            className="w-full min-h-[48px] px-3.5 rounded-[8px] border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-[14px]"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="block text-[14px] font-semibold text-[#111827] dark:text-slate-200 mb-1">
-                            Category *
-                          </label>
-                          <select
-                            value={editingItem.categoryId || ''}
-                            onChange={(e) =>
-                              setEditingItem({ ...editingItem, categoryId: e.target.value })
-                            }
-                            className="w-full min-h-[48px] px-3.5 rounded-[8px] border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-[14px]"
-                          >
-                            {categories.map((c) => (
-                              <option key={c.id} value={c.id}>
-                                {c.name}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-
-                        <div>
-                          <label className="block text-[14px] font-semibold text-[#111827] dark:text-slate-200 mb-1">
-                            Base Price (₹) *
-                          </label>
-                          <input
-                            type="number"
-                            required
-                            value={editingItem.basePrice || ''}
-                            onChange={(e) =>
-                              setEditingItem({
-                                ...editingItem,
-                                basePrice: Number(e.target.value),
-                              })
-                            }
-                            className="w-full min-h-[48px] px-3.5 rounded-[8px] border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-[14px] tabular-nums"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="block text-[14px] font-semibold text-[#111827] dark:text-slate-200 mb-1">
-                            Description
-                          </label>
-                          <textarea
-                            rows={3}
-                            value={editingItem.description || ''}
-                            onChange={(e) =>
-                              setEditingItem({ ...editingItem, description: e.target.value })
-                            }
-                            className="w-full p-3.5 rounded-[8px] border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-[14px]"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="block text-[14px] font-semibold text-[#111827] dark:text-slate-200 mb-1">
-                            Photo URL
-                          </label>
-                          <input
-                            type="text"
-                            value={editingItem.imageUrl || ''}
-                            onChange={(e) =>
-                              setEditingItem({ ...editingItem, imageUrl: e.target.value })
-                            }
-                            className="w-full min-h-[48px] px-3.5 rounded-[8px] border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-[14px]"
-                          />
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-3 pt-1">
-                          <label className="min-h-[48px] px-3 rounded-[8px] border border-gray-200 dark:border-slate-700 flex items-center gap-2 text-[14px] font-medium cursor-pointer">
-                            <input
-                              type="checkbox"
-                              checked={editingItem.isVeg !== false}
-                              onChange={(e) =>
-                                setEditingItem({ ...editingItem, isVeg: e.target.checked })
-                              }
-                              className="w-4 h-4 accent-[#16A34A]"
-                            />
-                            <span>Vegetarian</span>
-                          </label>
-                          <label className="min-h-[48px] px-3 rounded-[8px] border border-gray-200 dark:border-slate-700 flex items-center gap-2 text-[14px] font-medium cursor-pointer">
-                            <input
-                              type="checkbox"
-                              checked={editingItem.inStock !== false}
-                              onChange={(e) =>
-                                setEditingItem({ ...editingItem, inStock: e.target.checked })
-                              }
-                              className="w-4 h-4 accent-[#D9480F]"
-                            />
-                            <span>In Stock</span>
-                          </label>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-2 pt-3 border-t border-gray-200 dark:border-slate-800 pb-safe">
+            <section className="space-y-4 min-w-0">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
+                  {currentUser.role !== 'staff' && (
+                    <>
                       <button
                         type="button"
-                        onClick={() => setEditingItem(null)}
-                        className="min-h-[48px] px-4 rounded-[8px] border border-gray-300 dark:border-slate-700 text-[14px] font-semibold cursor-pointer"
+                        onClick={() => setMenuSubTab('items')}
+                        className={`min-h-[40px] px-3.5 rounded-xl text-xs font-bold cursor-pointer ${
+                          menuSubTab === 'items'
+                            ? 'bg-[#D9480F] text-white'
+                            : 'bg-white border border-gray-200 text-[#111827]'
+                        }`}
                       >
-                        Cancel
+                        Items ({menuItems.length})
                       </button>
                       <button
-                        type="submit"
-                        className="min-h-[48px] px-4 rounded-[8px] bg-[#D9480F] text-white text-[14px] font-semibold cursor-pointer"
+                        type="button"
+                        onClick={() => setMenuSubTab('categories')}
+                        className={`min-h-[40px] px-3.5 rounded-xl text-xs font-bold cursor-pointer ${
+                          menuSubTab === 'categories'
+                            ? 'bg-[#D9480F] text-white'
+                            : 'bg-white border border-gray-200 text-[#111827]'
+                        }`}
                       >
-                        Save Dish
+                        Categories ({categories.length})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setMenuSubTab('variants')}
+                        className={`min-h-[40px] px-3.5 rounded-xl text-xs font-bold cursor-pointer ${
+                          menuSubTab === 'variants'
+                            ? 'bg-[#D9480F] text-white'
+                            : 'bg-white border border-gray-200 text-[#111827]'
+                        }`}
+                      >
+                        Variants & Add-ons
+                      </button>
+                    </>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setMenuSubTab('stock')}
+                    className={`min-h-[40px] px-3.5 rounded-xl text-xs font-bold cursor-pointer ${
+                      menuSubTab === 'stock'
+                        ? 'bg-[#D9480F] text-white'
+                        : 'bg-white border border-gray-200 text-[#111827]'
+                    }`}
+                  >
+                    Quick Stock
+                  </button>
+                </div>
+
+                {currentUser.role !== 'staff' && menuSubTab === 'items' && (
+                  <button
+                    type="button"
+                    onClick={openAddDishModal}
+                    className="min-h-[40px] px-4 rounded-xl bg-[#D9480F] text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span>Add Dish</span>
+                  </button>
+                )}
+              </div>
+
+              {/* Sub-tab: ITEMS */}
+              {menuSubTab === 'items' && currentUser.role !== 'staff' && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 min-w-0">
+                  {menuItems.map((item) => {
+                    const appearsIn = itemHomeSectionNamesMap[item.id] || [];
+                    return (
+                      <div
+                        key={item.id}
+                        className="bg-white rounded-2xl border border-gray-200 p-4 flex items-start justify-between gap-3 min-w-0"
+                      >
+                        <div className="space-y-1.5 min-w-0 flex-1">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span
+                              className={`w-3 h-3 rounded-xs border shrink-0 ${
+                                item.isVeg
+                                  ? 'border-green-600 bg-green-600'
+                                  : 'border-red-600 bg-red-600'
+                              }`}
+                            />
+                            <h3 className="text-sm font-bold text-[#111827] break-words">
+                              {item.name}
+                            </h3>
+                          </div>
+                          <p className="text-xs text-[#6B7280] line-clamp-2 break-words">
+                            {item.description}
+                          </p>
+                          <p className="text-xs font-mono font-bold text-[#111827]">
+                            ₹{item.basePrice}
+                          </p>
+
+                          {/* Single source of truth: Read-only "Appears in:" chips from Home Page Manager */}
+                          <div className="flex flex-wrap items-center gap-1 pt-1">
+                            <span className="text-[11px] font-semibold text-[#6B7280]">
+                              Appears in:
+                            </span>
+                            {appearsIn.length === 0 ? (
+                              <span className="text-[11px] text-gray-400">Menu only</span>
+                            ) : (
+                              appearsIn.map((secName) => (
+                                <span
+                                  key={secName}
+                                  className="px-2 py-0.5 rounded-md bg-orange-50 text-[#D9480F] text-[10px] font-bold"
+                                >
+                                  {secName}
+                                </span>
+                              ))
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="flex flex-col items-end gap-2 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => openEditDishModal(item)}
+                            className="px-3 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-50 text-xs font-semibold flex items-center gap-1 cursor-pointer"
+                          >
+                            <Edit3 className="w-3.5 h-3.5" />
+                            <span>Edit</span>
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Sub-tab: CATEGORIES */}
+              {menuSubTab === 'categories' && currentUser.role !== 'staff' && (
+                <div className="bg-white rounded-2xl border border-gray-200 p-4 space-y-4">
+                  <form
+                    onSubmit={async (e) => {
+                      e.preventDefault();
+                      if (!newCategoryName.trim()) return;
+                      const res = await adminFetch('/api/admin/categories', {
+                        method: 'POST',
+                        body: JSON.stringify({ name: newCategoryName.trim() }),
+                      });
+                      if (res.ok) {
+                        setNewCategoryName('');
+                        await fetchBootstrap();
+                        showToast('Category added');
+                      }
+                    }}
+                    className="flex flex-wrap gap-2"
+                  >
+                    <input
+                      type="text"
+                      value={newCategoryName}
+                      onChange={(e) => setNewCategoryName(e.target.value)}
+                      placeholder="New category name..."
+                      className="flex-1 min-w-[200px] min-h-[40px] px-3 rounded-xl border border-gray-300 text-xs"
+                    />
+                    <button
+                      type="submit"
+                      className="min-h-[40px] px-4 rounded-xl bg-[#D9480F] text-white text-xs font-bold cursor-pointer"
+                    >
+                      Add Category
+                    </button>
+                  </form>
+
+                  <div className="divide-y divide-gray-100">
+                    {categories.map((cat) => (
+                      <div
+                        key={cat.id}
+                        className="py-3 flex items-center justify-between gap-2 min-w-0"
+                      >
+                        <div className="min-w-0">
+                          <p className="text-sm font-bold text-[#111827] truncate">{cat.name}</p>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              await adminFetch('/api/admin/categories', {
+                                method: 'POST',
+                                body: JSON.stringify({ ...cat, isActive: !cat.isActive }),
+                              });
+                              await fetchBootstrap();
+                            }}
+                            className={`px-3 py-1 rounded-lg text-xs font-bold cursor-pointer ${
+                              cat.isActive
+                                ? 'bg-green-100 text-green-800'
+                                : 'bg-gray-100 text-gray-600'
+                            }`}
+                          >
+                            {cat.isActive ? 'Active' : 'Hidden'}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Sub-tab: VARIANTS & ADD-ONS */}
+              {menuSubTab === 'variants' && currentUser.role !== 'staff' && (
+                <div className="space-y-3">
+                  {menuItems.map((item) => (
+                    <div
+                      key={item.id}
+                      className="bg-white rounded-2xl border border-gray-200 p-4 flex flex-wrap items-center justify-between gap-3"
+                    >
+                      <div className="space-y-1 min-w-0">
+                        <p className="text-sm font-bold text-[#111827]">{item.name}</p>
+                        <p className="text-xs text-[#6B7280]">
+                          Variants:{' '}
+                          {item.variants.length === 0
+                            ? 'None (Base ₹' + item.basePrice + ')'
+                            : item.variants.map((v) => `${v.name} (₹${v.price})`).join(', ')}
+                        </p>
+                        <p className="text-xs text-[#6B7280]">
+                          Add-ons:{' '}
+                          {item.addons.length === 0
+                            ? 'None'
+                            : item.addons.map((a) => `${a.name} (+₹${a.price})`).join(', ')}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => openEditDishModal(item)}
+                        className="px-3 py-2 rounded-xl border border-gray-200 hover:bg-gray-50 text-xs font-semibold cursor-pointer"
+                      >
+                        Edit Variants / Add-ons
                       </button>
                     </div>
-                  </form>
+                  ))}
+                </div>
+              )}
+
+              {/* Sub-tab: QUICK STOCK (Available to Staff, Manager, Owner) */}
+              {menuSubTab === 'stock' && (
+                <div className="bg-white rounded-2xl border border-gray-200 divide-y divide-gray-100">
+                  {menuItems.map((item) => (
+                    <div
+                      key={item.id}
+                      className="p-3.5 flex items-center justify-between gap-3 min-w-0"
+                    >
+                      <div className="min-w-0">
+                        <p className="text-sm font-bold text-[#111827] break-words">{item.name}</p>
+                        <p className="text-xs text-[#6B7280] font-mono">₹{item.basePrice}</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleToggleItemStock(item)}
+                        className={`min-h-[38px] px-3.5 rounded-xl text-xs font-bold cursor-pointer shrink-0 ${
+                          item.inStock
+                            ? 'bg-green-100 text-green-800 border border-green-300'
+                            : 'bg-red-100 text-red-800 border border-red-300'
+                        }`}
+                      >
+                        {item.inStock ? 'In Stock' : 'Out of Stock'}
+                      </button>
+                    </div>
+                  ))}
                 </div>
               )}
             </section>
           )}
 
-          {/* =================================================================
-              SECTION 3: HOME PAGE MANAGER (Large drag handles, collapsible section cards, bottom sheet / side panel preview)
-             ================================================================= */}
-          {activeSection === 'home_page' && (
+          {/* ====================================================================
+              3. STOREFRONT SECTION (Home Page Manager, Banners, Theme)
+          ==================================================================== */}
+          {activeSection === 'storefront' && currentUser.role !== 'staff' && (
             <section className="space-y-4 min-w-0">
-              <div className="bg-white dark:bg-slate-900 rounded-[12px] p-4 shadow-[0_1px_3px_rgba(0,0,0,0.08)] border border-gray-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3">
-                <div className="min-w-0 flex-1">
-                  <h2 className="text-[20px] font-bold text-[#111827] dark:text-white">
-                    Home Page Manager
-                  </h2>
-                  <p className="text-[12px] text-[#6B7280] dark:text-slate-400">
-                    Drag or reorder sections, collapse cards, and preview live.
-                  </p>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setShowMobilePreviewSheet(true)}
-                    className="lg:hidden min-h-[48px] px-3.5 rounded-[8px] border border-gray-300 dark:border-slate-700 text-[14px] font-semibold flex items-center gap-2 cursor-pointer whitespace-nowrap"
-                  >
-                    <Eye className="w-4 h-4 text-[#D9480F]" />
-                    <span>Live Preview</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleSaveHomeManager}
-                    className="min-h-[48px] px-4 rounded-[8px] bg-[#D9480F] hover:bg-[#c23f0b] text-white text-[14px] font-semibold flex items-center gap-2 cursor-pointer whitespace-nowrap"
-                  >
-                    <Save className="w-4 h-4 shrink-0" />
-                    <span>Save Changes</span>
-                  </button>
-                </div>
+              <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
+                <button
+                  type="button"
+                  onClick={() => setStorefrontSubTab('homepage')}
+                  className={`min-h-[40px] px-3.5 rounded-xl text-xs font-bold cursor-pointer ${
+                    storefrontSubTab === 'homepage'
+                      ? 'bg-[#D9480F] text-white'
+                      : 'bg-white border border-gray-200 text-[#111827]'
+                  }`}
+                >
+                  Home Page Manager
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setStorefrontSubTab('banners')}
+                  className={`min-h-[40px] px-3.5 rounded-xl text-xs font-bold cursor-pointer ${
+                    storefrontSubTab === 'banners'
+                      ? 'bg-[#D9480F] text-white'
+                      : 'bg-white border border-gray-200 text-[#111827]'
+                  }`}
+                >
+                  Hero Banners ({banners.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setStorefrontSubTab('theme')}
+                  className={`min-h-[40px] px-3.5 rounded-xl text-xs font-bold cursor-pointer ${
+                    storefrontSubTab === 'theme'
+                      ? 'bg-[#D9480F] text-white'
+                      : 'bg-white border border-gray-200 text-[#111827]'
+                  }`}
+                >
+                  Appearance & Theme
+                </button>
               </div>
 
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start min-w-0">
-                {/* Left 8 Cols: Collapsible Section Cards & Banners */}
-                <div className="lg:col-span-8 space-y-4 min-w-0">
-                  {/* Hero Banners Sub-block */}
-                  <div className="space-y-2.5 min-w-0">
-                    <div className="flex items-center justify-between gap-2">
-                      <h3 className="text-[16px] font-bold text-[#111827] dark:text-white">
-                        Hero Banners ({banners.length})
-                      </h3>
+              {/* Sub-tab: HOME PAGE MANAGER (Single Source of Truth for Featured/Bestsellers/Specials) */}
+              {storefrontSubTab === 'homepage' && (
+                <div className="space-y-4">
+                  <div className="bg-white rounded-2xl border border-gray-200 p-4 space-y-3">
+                    <h3 className="text-sm font-bold text-[#111827]">
+                      Create Custom Home Collection
+                    </h3>
+                    <form
+                      onSubmit={async (e) => {
+                        e.preventDefault();
+                        if (!newSectionTitle.trim()) return;
+                        const newSec: HomeSection = {
+                          id: `sec_${Date.now()}`,
+                          title: newSectionTitle.trim(),
+                          subtitle: newSectionSubtitle.trim(),
+                          sectionType: 'CUSTOM',
+                          bestsellerMode: 'MANUAL',
+                          sortOrder: homeSections.length + 1,
+                          isVisible: true,
+                          maxItems: 8,
+                          scheduleStartHour: null,
+                          scheduleEndHour: null,
+                          itemIds: [],
+                        };
+                        setNewSectionTitle('');
+                        setNewSectionSubtitle('');
+                        await handleSaveHomeManager(banners, [...homeSections, newSec]);
+                      }}
+                      className="grid grid-cols-1 sm:grid-cols-3 gap-2"
+                    >
+                      <input
+                        type="text"
+                        value={newSectionTitle}
+                        onChange={(e) => setNewSectionTitle(e.target.value)}
+                        placeholder="Section title (e.g. Weekend Feast)"
+                        className="min-h-[40px] px-3 rounded-xl border border-gray-300 text-xs"
+                      />
+                      <input
+                        type="text"
+                        value={newSectionSubtitle}
+                        onChange={(e) => setNewSectionSubtitle(e.target.value)}
+                        placeholder="Subtitle"
+                        className="min-h-[40px] px-3 rounded-xl border border-gray-300 text-xs"
+                      />
                       <button
-                        type="button"
-                        onClick={() =>
-                          setBanners((prev) => [
-                            ...prev,
-                            {
-                              id: `ban_${Date.now()}`,
-                              title: 'New Seasonal Handi Offer',
-                              subtitle: 'Direct delivery with zero aggregator fees.',
-                              ctaText: 'Order Now',
-                              imageUrl: '/src/assets/images/hero_artisanal_feast_1793975537331.jpg',
-                              linkType: 'COUPON',
-                              linkTarget: 'FEAST150',
-                              sortOrder: prev.length + 1,
-                              isVisible: true,
-                              startDate: '2026-01-01',
-                              endDate: '2027-12-31',
-                            },
-                          ])
-                        }
-                        className="min-h-[44px] px-3.5 rounded-[8px] bg-white dark:bg-slate-900 border border-gray-300 dark:border-slate-700 text-[12px] font-semibold flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                        type="submit"
+                        className="min-h-[40px] px-4 rounded-xl bg-[#D9480F] text-white text-xs font-bold cursor-pointer"
                       >
-                        <Plus className="w-4 h-4 text-[#D9480F]" />
-                        <span>Add Banner</span>
+                        Add Section
                       </button>
-                    </div>
+                    </form>
+                  </div>
 
-                    {banners.map((banner, bIdx) => {
-                      const isBanCollapsed = Boolean(collapsedSections[banner.id]);
-                      return (
-                        <div
-                          key={banner.id}
-                          className="bg-white dark:bg-slate-900 rounded-[12px] border border-gray-200 dark:border-slate-800 shadow-[0_1px_3px_rgba(0,0,0,0.08)] overflow-hidden min-w-0"
-                        >
-                          <div className="p-3.5 flex items-center justify-between gap-2 min-w-0 bg-gray-50/60 dark:bg-slate-800/50">
-                            <div className="flex items-center gap-2 min-w-0 flex-1">
-                              <span className="min-w-[40px] min-h-[40px] rounded-[8px] flex items-center justify-center text-[#6B7280] shrink-0">
-                                <GripVertical className="w-5 h-5" />
-                              </span>
-                              <div className="min-w-0 flex-1">
-                                <p className="text-[14px] font-bold text-[#111827] dark:text-white truncate">
-                                  {banner.title}
-                                </p>
-                                <p className="text-[12px] text-[#6B7280] truncate">
-                                  {banner.linkType}: {banner.linkTarget} ·{' '}
-                                  {banner.isVisible ? 'Visible' : 'Hidden'}
-                                </p>
-                              </div>
-                            </div>
+                  {homeSections.map((sec) => (
+                    <div
+                      key={sec.id}
+                      className="bg-white rounded-2xl border border-gray-200 p-4 space-y-3"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <h4 className="text-sm font-bold text-[#111827]">{sec.title}</h4>
+                          <p className="text-xs text-[#6B7280]">{sec.subtitle}</p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const next = homeSections.map((s) =>
+                                s.id === sec.id ? { ...s, isVisible: !s.isVisible } : s
+                              );
+                              handleSaveHomeManager(banners, next);
+                            }}
+                            className={`px-3 py-1 rounded-lg text-xs font-bold cursor-pointer ${
+                              sec.isVisible
+                                ? 'bg-green-100 text-green-800'
+                                : 'bg-gray-100 text-gray-600'
+                            }`}
+                          >
+                            {sec.isVisible ? 'Visible on Home' : 'Hidden'}
+                          </button>
+                          {sec.sectionType === 'CUSTOM' && (
                             <button
                               type="button"
-                              onClick={() =>
-                                setCollapsedSections((prev) => ({
-                                  ...prev,
-                                  [banner.id]: !isBanCollapsed,
-                                }))
-                              }
-                              className="min-w-[44px] min-h-[44px] rounded-[8px] flex items-center justify-center text-[#111827] dark:text-white cursor-pointer"
+                              onClick={() => {
+                                const next = homeSections.filter((s) => s.id !== sec.id);
+                                handleSaveHomeManager(banners, next);
+                              }}
+                              className="p-1.5 text-red-600 hover:bg-red-50 rounded-lg cursor-pointer"
                             >
-                              {isBanCollapsed ? (
-                                <ChevronDown className="w-5 h-5" />
-                              ) : (
-                                <ChevronUp className="w-5 h-5" />
-                              )}
+                              <Trash2 className="w-4 h-4" />
                             </button>
-                          </div>
-
-                          {!isBanCollapsed && (
-                            <div className="p-4 space-y-3 border-t border-gray-100 dark:border-slate-800">
-                              <div>
-                                <label className="block text-[12px] font-semibold text-[#6B7280] mb-1">
-                                  Banner Title
-                                </label>
-                                <input
-                                  type="text"
-                                  value={banner.title}
-                                  onChange={(e) => {
-                                    const copy = [...banners];
-                                    copy[bIdx] = { ...banner, title: e.target.value };
-                                    setBanners(copy);
-                                  }}
-                                  className="w-full min-h-[48px] px-3.5 rounded-[8px] border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-[14px]"
-                                />
-                              </div>
-                              <div>
-                                <label className="block text-[12px] font-semibold text-[#6B7280] mb-1">
-                                  Banner Subtitle
-                                </label>
-                                <input
-                                  type="text"
-                                  value={banner.subtitle}
-                                  onChange={(e) => {
-                                    const copy = [...banners];
-                                    copy[bIdx] = { ...banner, subtitle: e.target.value };
-                                    setBanners(copy);
-                                  }}
-                                  className="w-full min-h-[48px] px-3.5 rounded-[8px] border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-[14px]"
-                                />
-                              </div>
-                              <div className="flex items-center justify-between pt-2">
-                                <label className="flex items-center gap-2 text-[14px] font-medium cursor-pointer">
-                                  <input
-                                    type="checkbox"
-                                    checked={banner.isVisible}
-                                    onChange={(e) => {
-                                      const copy = [...banners];
-                                      copy[bIdx] = {
-                                        ...banner,
-                                        isVisible: e.target.checked,
-                                      };
-                                      setBanners(copy);
-                                    }}
-                                    className="w-4 h-4 accent-[#D9480F]"
-                                  />
-                                  <span>Visible</span>
-                                </label>
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    setBanners(banners.filter((b) => b.id !== banner.id))
-                                  }
-                                  className="min-h-[40px] px-3 rounded-[8px] text-[#DC2626] text-[12px] font-semibold hover:bg-red-50 flex items-center gap-1 cursor-pointer"
-                                >
-                                  <Trash2 className="w-4 h-4" />
-                                  <span>Remove</span>
-                                </button>
-                              </div>
-                            </div>
                           )}
                         </div>
-                      );
-                    })}
-                  </div>
+                      </div>
 
-                  <div className="flex items-center justify-between gap-2 pt-2">
-                    <h3 className="text-[16px] font-bold text-[#111827] dark:text-white">
-                      Home Sections ({homeSections.length})
-                    </h3>
+                      {/* Toggle dishes inside this Home Section */}
+                      <div className="flex flex-wrap gap-1.5 pt-2 border-t border-gray-100">
+                        {menuItems.map((dish) => {
+                          const included = sec.itemIds.includes(dish.id);
+                          return (
+                            <button
+                              key={dish.id}
+                              type="button"
+                              onClick={() => {
+                                const nextIds = included
+                                  ? sec.itemIds.filter((id) => id !== dish.id)
+                                  : [...sec.itemIds, dish.id];
+                                const nextSections = homeSections.map((s) =>
+                                  s.id === sec.id ? { ...s, itemIds: nextIds } : s
+                                );
+                                handleSaveHomeManager(banners, nextSections);
+                              }}
+                              className={`px-2.5 py-1 rounded-lg text-xs font-semibold border cursor-pointer ${
+                                included
+                                  ? 'bg-[#D9480F] text-white border-[#D9480F]'
+                                  : 'bg-gray-50 text-gray-700 border-gray-200 hover:bg-gray-100'
+                              }`}
+                            >
+                              {included ? '✓ ' : '+ '}
+                              {dish.name}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Sub-tab: BANNERS */}
+              {storefrontSubTab === 'banners' && (
+                <div className="space-y-4">
+                  <form
+                    onSubmit={async (e) => {
+                      e.preventDefault();
+                      if (!newBannerTitle.trim()) return;
+                      const nb: Banner = {
+                        id: `ban_${Date.now()}`,
+                        title: newBannerTitle.trim(),
+                        subtitle: newBannerSubtitle.trim(),
+                        ctaText: newBannerCta.trim() || 'Order Now',
+                        imageUrl: newBannerImage.trim(),
+                        linkType: 'CATEGORY',
+                        linkTarget: 'cat_biryani',
+                        sortOrder: banners.length + 1,
+                        isVisible: true,
+                        startDate: '2025-01-01',
+                        endDate: '2027-12-31',
+                      };
+                      setNewBannerTitle('');
+                      setNewBannerSubtitle('');
+                      await handleSaveHomeManager([...banners, nb], homeSections);
+                    }}
+                    className="bg-white rounded-2xl border border-gray-200 p-4 grid grid-cols-1 sm:grid-cols-2 gap-3"
+                  >
+                    <input
+                      type="text"
+                      value={newBannerTitle}
+                      onChange={(e) => setNewBannerTitle(e.target.value)}
+                      placeholder="Banner Headline *"
+                      className="min-h-[40px] px-3 rounded-xl border border-gray-300 text-xs"
+                    />
+                    <input
+                      type="text"
+                      value={newBannerSubtitle}
+                      onChange={(e) => setNewBannerSubtitle(e.target.value)}
+                      placeholder="Banner Subtitle"
+                      className="min-h-[40px] px-3 rounded-xl border border-gray-300 text-xs"
+                    />
+                    <input
+                      type="text"
+                      value={newBannerCta}
+                      onChange={(e) => setNewBannerCta(e.target.value)}
+                      placeholder="CTA Button Text"
+                      className="min-h-[40px] px-3 rounded-xl border border-gray-300 text-xs"
+                    />
                     <button
-                      type="button"
-                      onClick={() =>
-                        setHomeSections((prev) => [
-                          ...prev,
-                          {
-                            id: `sec_${Date.now()}`,
-                            title: 'New Custom Collection',
-                            subtitle: 'Hand-picked dishes for this slot',
-                            sectionType: 'CUSTOM',
-                            bestsellerMode: 'MANUAL',
-                            sortOrder: prev.length + 1,
-                            isVisible: true,
-                            maxItems: 3,
-                            scheduleStartHour: null,
-                            scheduleEndHour: null,
-                            itemIds: menuItems.slice(0, 2).map((m) => m.id),
-                          },
-                        ])
-                      }
-                      className="min-h-[44px] px-3.5 rounded-[8px] bg-white dark:bg-slate-900 border border-gray-300 dark:border-slate-700 text-[12px] font-semibold flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                      type="submit"
+                      className="min-h-[40px] px-4 rounded-xl bg-[#D9480F] text-white text-xs font-bold cursor-pointer"
                     >
-                      <Plus className="w-4 h-4 text-[#D9480F]" />
-                      <span>Add Section</span>
+                      Create Banner
                     </button>
+                  </form>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {banners.map((b) => (
+                      <div
+                        key={b.id}
+                        className="bg-white rounded-2xl border border-gray-200 p-4 flex items-center justify-between gap-3"
+                      >
+                        <div className="min-w-0">
+                          <span className="px-2 py-0.5 rounded bg-orange-50 text-[#D9480F] text-[10px] font-bold">
+                            {b.ctaText}
+                          </span>
+                          <p className="text-sm font-bold text-[#111827] mt-1 break-words">
+                            {b.title}
+                          </p>
+                          <p className="text-xs text-[#6B7280] break-words">{b.subtitle}</p>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const next = banners.map((item) =>
+                                item.id === b.id ? { ...item, isVisible: !item.isVisible } : item
+                              );
+                              handleSaveHomeManager(next, homeSections);
+                            }}
+                            className={`px-2.5 py-1 rounded-lg text-xs font-bold cursor-pointer ${
+                              b.isVisible
+                                ? 'bg-green-100 text-green-800'
+                                : 'bg-gray-100 text-gray-600'
+                            }`}
+                          >
+                            {b.isVisible ? 'Visible' : 'Hidden'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const next = banners.filter((item) => item.id !== b.id);
+                              handleSaveHomeManager(next, homeSections);
+                            }}
+                            className="p-1.5 text-red-600 hover:bg-red-50 rounded-lg cursor-pointer"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
                   </div>
+                </div>
+              )}
 
-                  {homeSections.map((sec, idx) => {
-                    const isCollapsed = Boolean(collapsedSections[sec.id]);
-                    const q = (itemSearchInSection[sec.id] || '').toLowerCase();
-                    const matchingItems = menuItems.filter((m) =>
-                      m.name.toLowerCase().includes(q)
-                    );
+              {/* Sub-tab: APPEARANCE & THEME */}
+              {storefrontSubTab === 'theme' && settings && (
+                <div className="bg-white rounded-2xl border border-gray-200 p-5 space-y-4">
+                  <h3 className="text-sm font-bold text-[#111827]">Storefront Appearance</h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-semibold text-[#111827] mb-1">
+                        Brand Accent Color
+                      </label>
+                      <input
+                        type="text"
+                        value={settings.themeAccentColor || '#D9480F'}
+                        onChange={(e) =>
+                          setSettings({ ...settings, themeAccentColor: e.target.value })
+                        }
+                        className="w-full min-h-[40px] px-3 rounded-xl border border-gray-300 text-xs font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-[#111827] mb-1">
+                        Holidays / Storefront Notice
+                      </label>
+                      <input
+                        type="text"
+                        value={settings.holidaysNote}
+                        onChange={(e) =>
+                          setSettings({ ...settings, holidaysNote: e.target.value })
+                        }
+                        className="w-full min-h-[40px] px-3 rounded-xl border border-gray-300 text-xs"
+                      />
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      handleSaveShopSettings({
+                        themeAccentColor: settings.themeAccentColor,
+                        holidaysNote: settings.holidaysNote,
+                      })
+                    }
+                    className="min-h-[42px] px-5 rounded-xl bg-[#D9480F] text-white text-xs font-bold cursor-pointer"
+                  >
+                    Save Appearance
+                  </button>
+                </div>
+              )}
+            </section>
+          )}
 
+          {/* ====================================================================
+              4. CUSTOMERS SECTION (Split: List & History, Blocklist, Reviews)
+          ==================================================================== */}
+          {activeSection === 'customers' && currentUser.role !== 'staff' && (
+            <section className="space-y-4 min-w-0">
+              <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
+                <button
+                  type="button"
+                  onClick={() => setCustomersSubTab('list')}
+                  className={`min-h-[40px] px-3.5 rounded-xl text-xs font-bold cursor-pointer ${
+                    customersSubTab === 'list'
+                      ? 'bg-[#D9480F] text-white'
+                      : 'bg-white border border-gray-200 text-[#111827]'
+                  }`}
+                >
+                  Customers & Order History ({customers.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCustomersSubTab('blocklist')}
+                  className={`min-h-[40px] px-3.5 rounded-xl text-xs font-bold cursor-pointer ${
+                    customersSubTab === 'blocklist'
+                      ? 'bg-[#D9480F] text-white'
+                      : 'bg-white border border-gray-200 text-[#111827]'
+                  }`}
+                >
+                  Blocklist ({blockedList.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCustomersSubTab('reviews')}
+                  className={`min-h-[40px] px-3.5 rounded-xl text-xs font-bold cursor-pointer ${
+                    customersSubTab === 'reviews'
+                      ? 'bg-[#D9480F] text-white'
+                      : 'bg-white border border-gray-200 text-[#111827]'
+                  }`}
+                >
+                  Reviews & Complaints ({reviews.length})
+                </button>
+              </div>
+
+              {customersSubTab === 'list' && (
+                <div className="space-y-3">
+                  {customers.map((c) => {
+                    const custOrders = orders.filter((o) => o.customerPhone === c.phone);
+                    const isExpanded = expandedCustomerPhone === c.phone;
                     return (
                       <div
-                        key={sec.id}
-                        draggable
-                        onDragStart={() => setDraggedSectionIdx(idx)}
-                        onDragOver={(e) => e.preventDefault()}
-                        onDrop={() => {
-                          if (draggedSectionIdx === null || draggedSectionIdx === idx) return;
-                          const copy = [...homeSections];
-                          const [moved] = copy.splice(draggedSectionIdx, 1);
-                          copy.splice(idx, 0, moved);
-                          copy.forEach((s, i) => (s.sortOrder = i + 1));
-                          setHomeSections(copy);
-                          setDraggedSectionIdx(null);
-                        }}
-                        className="bg-white dark:bg-slate-900 rounded-[12px] border border-gray-200 dark:border-slate-800 shadow-[0_1px_3px_rgba(0,0,0,0.08)] overflow-hidden min-w-0"
+                        key={c.phone}
+                        className="bg-white rounded-2xl border border-gray-200 p-4 space-y-3 min-w-0"
                       >
-                        {/* Card Header with Large Touch-Friendly Drag Handle & Collapse Button */}
-                        <div className="p-3.5 flex items-center justify-between gap-2 min-w-0 bg-gray-50/60 dark:bg-slate-800/50">
-                          <div className="flex items-center gap-2 min-w-0 flex-1">
-                            <span
-                              title="Drag to reorder"
-                              className="min-w-[44px] min-h-[44px] rounded-[8px] flex items-center justify-center text-[#6B7280] cursor-grab active:cursor-grabbing shrink-0"
-                            >
-                              <GripVertical className="w-5 h-5" />
-                            </span>
-                            <div className="min-w-0 flex-1">
-                              <p className="text-[16px] font-bold text-[#111827] dark:text-white truncate">
-                                {sec.title}
-                              </p>
-                              <p className="text-[12px] text-[#6B7280] truncate">
-                                {sec.sectionType} · Max {sec.maxItems} items ·{' '}
-                                {sec.isVisible ? 'Visible' : 'Hidden'}
-                              </p>
-                            </div>
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="text-sm font-bold text-[#111827] break-words">
+                              {c.name}{' '}
+                              <span className="font-mono text-xs text-[#6B7280]">({c.phone})</span>
+                            </p>
+                            <p className="text-xs text-[#6B7280] break-words">{c.lastAddress}</p>
                           </div>
-
-                          <div className="flex items-center gap-1 shrink-0">
-                            <button
-                              type="button"
-                              disabled={idx === 0}
-                              onClick={() => {
-                                const copy = [...homeSections];
-                                const t = copy[idx - 1];
-                                copy[idx - 1] = copy[idx];
-                                copy[idx] = t;
-                                copy.forEach((s, i) => (s.sortOrder = i + 1));
-                                setHomeSections(copy);
-                              }}
-                              className="min-w-[40px] min-h-[40px] rounded-[8px] border border-gray-200 dark:border-slate-700 flex items-center justify-center disabled:opacity-40 cursor-pointer"
-                            >
-                              <ArrowUp className="w-4 h-4" />
-                            </button>
-                            <button
-                              type="button"
-                              disabled={idx === homeSections.length - 1}
-                              onClick={() => {
-                                const copy = [...homeSections];
-                                const t = copy[idx + 1];
-                                copy[idx + 1] = copy[idx];
-                                copy[idx] = t;
-                                copy.forEach((s, i) => (s.sortOrder = i + 1));
-                                setHomeSections(copy);
-                              }}
-                              className="min-w-[40px] min-h-[40px] rounded-[8px] border border-gray-200 dark:border-slate-700 flex items-center justify-center disabled:opacity-40 cursor-pointer"
-                            >
-                              <ArrowDown className="w-4 h-4" />
-                            </button>
+                          <div className="flex items-center gap-2">
+                            <span className="px-2.5 py-1 rounded-lg bg-gray-100 text-xs font-bold">
+                              {c.orderCount} orders · ₹{c.totalSpent}
+                            </span>
                             <button
                               type="button"
                               onClick={() =>
-                                setCollapsedSections((prev) => ({
-                                  ...prev,
-                                  [sec.id]: !isCollapsed,
-                                }))
+                                setExpandedCustomerPhone(isExpanded ? null : c.phone)
                               }
-                              className="min-w-[44px] min-h-[44px] rounded-[8px] flex items-center justify-center text-[#111827] dark:text-white cursor-pointer"
+                              className="px-3 py-1.5 rounded-lg border border-gray-200 text-xs font-semibold cursor-pointer"
                             >
-                              {isCollapsed ? (
-                                <ChevronDown className="w-5 h-5" />
-                              ) : (
-                                <ChevronUp className="w-5 h-5" />
-                              )}
+                              {isExpanded ? 'Hide History' : 'Order History'}
                             </button>
                           </div>
                         </div>
 
-                        {/* Collapsible Body */}
-                        {!isCollapsed && (
-                          <div className="p-4 space-y-3 border-t border-gray-100 dark:border-slate-800">
-                            <div>
-                              <label className="block text-[12px] font-semibold text-[#6B7280] mb-1">
-                                Section Title
-                              </label>
-                              <input
-                                type="text"
-                                value={sec.title}
-                                onChange={(e) => {
-                                  const copy = [...homeSections];
-                                  copy[idx] = { ...sec, title: e.target.value };
-                                  setHomeSections(copy);
-                                }}
-                                className="w-full min-h-[48px] px-3.5 rounded-[8px] border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-[14px]"
-                              />
-                            </div>
-
-                            <div>
-                              <label className="block text-[12px] font-semibold text-[#6B7280] mb-1">
-                                Subtitle
-                              </label>
-                              <input
-                                type="text"
-                                value={sec.subtitle}
-                                onChange={(e) => {
-                                  const copy = [...homeSections];
-                                  copy[idx] = { ...sec, subtitle: e.target.value };
-                                  setHomeSections(copy);
-                                }}
-                                className="w-full min-h-[48px] px-3.5 rounded-[8px] border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-[14px]"
-                              />
-                            </div>
-
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                              <div>
-                                <label className="block text-[12px] font-semibold text-[#6B7280] mb-1">
-                                  Section Type
-                                </label>
-                                <select
-                                  value={sec.sectionType}
-                                  onChange={(e) => {
-                                    const copy = [...homeSections];
-                                    copy[idx] = {
-                                      ...sec,
-                                      sectionType: e.target.value as HomeSectionType,
-                                    };
-                                    setHomeSections(copy);
-                                  }}
-                                  className="w-full min-h-[48px] px-3 rounded-[8px] border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-[14px]"
-                                >
-                                  <option value="FEATURED">Featured Items</option>
-                                  <option value="BESTSELLERS">Bestsellers</option>
-                                  <option value="TODAYS_SPECIAL">Today&apos;s Special</option>
-                                  <option value="NEW_ARRIVALS">New Arrivals</option>
-                                  <option value="COMBO_OFFERS">Combo / Offers</option>
-                                  <option value="CUSTOM">Custom Section</option>
-                                </select>
-                              </div>
-
-                              <div>
-                                <label className="block text-[12px] font-semibold text-[#6B7280] mb-1">
-                                  Max Items Displayed
-                                </label>
-                                <input
-                                  type="number"
-                                  min={1}
-                                  max={12}
-                                  value={sec.maxItems}
-                                  onChange={(e) => {
-                                    const copy = [...homeSections];
-                                    copy[idx] = {
-                                      ...sec,
-                                      maxItems: Number(e.target.value) || 3,
-                                    };
-                                    setHomeSections(copy);
-                                  }}
-                                  className="w-full min-h-[48px] px-3.5 rounded-[8px] border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-[14px] tabular-nums"
-                                />
-                              </div>
-                            </div>
-
-                            <div className="space-y-2 pt-2 border-t border-gray-100 dark:border-slate-800">
-                              <label className="block text-[12px] font-semibold text-[#6B7280]">
-                                Included Dishes ({sec.itemIds.length})
-                              </label>
-                              <input
-                                type="text"
-                                value={itemSearchInSection[sec.id] || ''}
-                                onChange={(e) =>
-                                  setItemSearchInSection((prev) => ({
-                                    ...prev,
-                                    [sec.id]: e.target.value,
-                                  }))
-                                }
-                                placeholder="Filter dishes..."
-                                className="w-full min-h-[44px] px-3 rounded-[8px] border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-[14px]"
-                              />
-                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-48 overflow-y-auto pt-1">
-                                {matchingItems.map((item) => {
-                                  const checked = sec.itemIds.includes(item.id);
-                                  return (
-                                    <label
-                                      key={item.id}
-                                      className="min-h-[44px] px-3 rounded-[8px] border border-gray-200 dark:border-slate-700 flex items-center justify-between gap-2 text-[12px] cursor-pointer min-w-0"
-                                    >
-                                      <span className="flex items-center gap-2 min-w-0 flex-1">
-                                        <input
-                                          type="checkbox"
-                                          checked={checked}
-                                          onChange={() => {
-                                            const copy = [...homeSections];
-                                            const nextIds = checked
-                                              ? sec.itemIds.filter((id) => id !== item.id)
-                                              : [...sec.itemIds, item.id];
-                                            copy[idx] = { ...sec, itemIds: nextIds };
-                                            setHomeSections(copy);
-                                          }}
-                                          className="w-4 h-4 accent-[#D9480F] shrink-0"
-                                        />
-                                        <span className="truncate font-medium">
-                                          {item.name}
-                                        </span>
-                                      </span>
-                                      <span className="tabular-nums text-[#6B7280] shrink-0">
-                                        ₹{item.basePrice}
-                                      </span>
-                                    </label>
-                                  );
-                                })}
-                              </div>
-                            </div>
-
-                            <div className="flex items-center justify-between pt-2 border-t border-gray-100 dark:border-slate-800">
-                              <label className="flex items-center gap-2 text-[14px] font-medium cursor-pointer">
-                                <input
-                                  type="checkbox"
-                                  checked={sec.isVisible}
-                                  onChange={(e) => {
-                                    const copy = [...homeSections];
-                                    copy[idx] = { ...sec, isVisible: e.target.checked };
-                                    setHomeSections(copy);
-                                  }}
-                                  className="w-4 h-4 accent-[#D9480F]"
-                                />
-                                <span>Visible on Storefront</span>
-                              </label>
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  setHomeSections(
-                                    homeSections.filter((s) => s.id !== sec.id)
-                                  )
-                                }
-                                className="min-h-[40px] px-3 rounded-[8px] text-[#DC2626] text-[12px] font-semibold hover:bg-red-50 flex items-center gap-1 cursor-pointer"
+                        {isExpanded && (
+                          <div className="pt-3 border-t border-gray-100 space-y-2">
+                            {custOrders.map((o) => (
+                              <div
+                                key={o.id}
+                                className="flex items-center justify-between text-xs bg-gray-50 p-2.5 rounded-xl"
                               >
-                                <Trash2 className="w-4 h-4" />
-                                <span>Delete</span>
-                              </button>
-                            </div>
+                                <span>
+                                  <strong>{o.orderNumber}</strong> · {o.status} ·{' '}
+                                  {new Date(o.placedAt).toLocaleDateString()}
+                                </span>
+                                <span className="font-mono font-bold">₹{o.grandTotal}</span>
+                              </div>
+                            ))}
                           </div>
                         )}
                       </div>
                     );
                   })}
                 </div>
+              )}
 
-                {/* Desktop Side Panel Live Preview */}
-                <div className="hidden lg:block lg:col-span-4 sticky top-20 bg-white dark:bg-slate-900 rounded-[12px] p-4 border border-gray-200 dark:border-slate-800 shadow-[0_1px_3px_rgba(0,0,0,0.08)] space-y-3">
-                  <div className="flex items-center justify-between border-b border-gray-100 dark:border-slate-800 pb-2.5">
-                    <span className="text-[14px] font-bold text-[#111827] dark:text-white flex items-center gap-2">
-                      <Eye className="w-4 h-4 text-[#D9480F]" />
-                      <span>Live Storefront Preview</span>
-                    </span>
-                    <span className="text-[12px] text-[#6B7280] tabular-nums">
-                      {homeSections.filter((s) => s.isVisible).length} active
-                    </span>
-                  </div>
-                  <div className="space-y-2.5 max-h-[65vh] overflow-y-auto">
-                    {homeSections
-                      .filter((s) => s.isVisible)
-                      .map((s) => {
-                        const previewItems = s.itemIds
-                          .map((id) =>
-                            menuItems.find((m) => m.id === id && m.inStock && m.showOnHome)
-                          )
-                          .filter((m): m is MenuItem => Boolean(m))
-                          .slice(0, s.maxItems);
-                        return (
-                          <div
-                            key={s.id}
-                            className="p-3 rounded-[8px] bg-[#F4F5F7] dark:bg-slate-800 space-y-1.5"
-                          >
-                            <p className="text-[14px] font-bold text-[#111827] dark:text-white">
-                              {s.title}
-                            </p>
-                            <div className="space-y-1">
-                              {previewItems.map((it) => (
-                                <div
-                                  key={it.id}
-                                  className="flex items-center justify-between text-[12px] bg-white dark:bg-slate-900 px-2.5 py-1.5 rounded-[6px]"
-                                >
-                                  <span className="truncate pr-2">{it.name}</span>
-                                  <span className="font-semibold tabular-nums shrink-0">
-                                    ₹{it.basePrice}
-                                  </span>
-                                </div>
-                              ))}
-                            </div>
+              {customersSubTab === 'blocklist' && (
+                <div className="bg-white rounded-2xl border border-gray-200 p-4 space-y-4">
+                  <form
+                    onSubmit={async (e) => {
+                      e.preventDefault();
+                      const clean = blockPhoneInput.replace(/\D/g, '').slice(-10);
+                      if (clean.length !== 10) {
+                        showToast('Enter a valid 10-digit phone number');
+                        return;
+                      }
+                      const res = await adminFetch('/api/admin/block', {
+                        method: 'POST',
+                        body: JSON.stringify({
+                          targetType: 'PHONE',
+                          targetValue: clean,
+                          reason: 'Blocked via Admin Blocklist',
+                          unblock: false,
+                        }),
+                      });
+                      if (res.ok) {
+                        setBlockPhoneInput('');
+                        await fetchBootstrap();
+                        showToast('Phone number added to blocklist');
+                      }
+                    }}
+                    className="flex flex-wrap gap-2"
+                  >
+                    <input
+                      type="tel"
+                      value={blockPhoneInput}
+                      onChange={(e) => setBlockPhoneInput(e.target.value)}
+                      placeholder="10-digit mobile number to block"
+                      className="flex-1 min-w-[200px] min-h-[40px] px-3 rounded-xl border border-gray-300 text-xs font-mono"
+                    />
+                    <button
+                      type="submit"
+                      className="min-h-[40px] px-4 rounded-xl bg-red-600 text-white text-xs font-bold cursor-pointer"
+                    >
+                      Block Phone
+                    </button>
+                  </form>
+
+                  <div className="divide-y divide-gray-100">
+                    {blockedList.length === 0 ? (
+                      <p className="text-xs text-[#6B7280] py-4">No blocked phone numbers or IPs.</p>
+                    ) : (
+                      blockedList.map((blk) => (
+                        <div key={blk.id} className="py-2.5 flex items-center justify-between gap-2">
+                          <div>
+                            <span className="font-mono text-sm font-bold text-red-700">
+                              {blk.targetValue}
+                            </span>
+                            <p className="text-xs text-[#6B7280]">{blk.reason}</p>
                           </div>
-                        );
-                      })}
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              await adminFetch('/api/admin/block', {
+                                method: 'POST',
+                                body: JSON.stringify({
+                                  targetType: blk.targetType,
+                                  targetValue: blk.targetValue,
+                                  unblock: true,
+                                }),
+                              });
+                              await fetchBootstrap();
+                            }}
+                            className="px-3 py-1 rounded-lg border border-gray-200 text-xs font-semibold cursor-pointer"
+                          >
+                            Unblock
+                          </button>
+                        </div>
+                      ))
+                    )}
                   </div>
                 </div>
+              )}
+
+              {customersSubTab === 'reviews' && (
+                <div className="space-y-3">
+                  {reviews.length === 0 ? (
+                    <div className="bg-white rounded-2xl border border-gray-200 p-6 text-center space-y-2">
+                      <Sparkles className="w-7 h-7 text-[#D9480F] mx-auto" />
+                      <h3 className="text-sm font-bold text-[#111827]">
+                        Guest Reviews & Order Feedback
+                      </h3>
+                      <p className="text-xs text-[#6B7280]">
+                        Verified post-delivery guest ratings and kitchen feedback notes appear here.
+                      </p>
+                    </div>
+                  ) : (
+                    reviews.map((rev) => (
+                      <div
+                        key={rev.id}
+                        className="bg-white rounded-2xl border border-gray-200 p-4 flex flex-wrap items-center justify-between gap-3"
+                      >
+                        <div className="space-y-1">
+                          <p className="text-sm font-bold text-[#111827]">
+                            {rev.customerName} ({rev.orderNumber}) · {rev.rating}★
+                          </p>
+                          <p className="text-xs text-[#6B7280]">{rev.comment}</p>
+                          {rev.complaintText && (
+                            <p className="text-xs text-red-700 font-semibold">
+                              Complaint: {rev.complaintText} ({rev.complaintStatus})
+                            </p>
+                          )}
+                        </div>
+                        {rev.complaintStatus === 'OPEN' && (
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              await adminFetch(`/api/admin/reviews/${rev.id}`, {
+                                method: 'PATCH',
+                              });
+                              await fetchBootstrap();
+                            }}
+                            className="px-3 py-1.5 rounded-xl bg-green-700 text-white text-xs font-bold cursor-pointer"
+                          >
+                            Mark Resolved
+                          </button>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+            </section>
+          )}
+
+          {/* ====================================================================
+              5. MARKETING SECTION (Coupons & Broadcast with "Not connected" guard)
+          ==================================================================== */}
+          {activeSection === 'marketing' && currentUser.role !== 'staff' && (
+            <section className="space-y-4 min-w-0">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setMarketingSubTab('coupons')}
+                  className={`min-h-[40px] px-3.5 rounded-xl text-xs font-bold cursor-pointer ${
+                    marketingSubTab === 'coupons'
+                      ? 'bg-[#D9480F] text-white'
+                      : 'bg-white border border-gray-200 text-[#111827]'
+                  }`}
+                >
+                  Coupons ({coupons.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMarketingSubTab('broadcast')}
+                  className={`min-h-[40px] px-3.5 rounded-xl text-xs font-bold cursor-pointer ${
+                    marketingSubTab === 'broadcast'
+                      ? 'bg-[#D9480F] text-white'
+                      : 'bg-white border border-gray-200 text-[#111827]'
+                  }`}
+                >
+                  Broadcast
+                </button>
               </div>
 
-              {/* Mobile Bottom Sheet Live Preview */}
-              {showMobilePreviewSheet && (
-                <div className="fixed inset-0 z-50 bg-black/60 flex items-end justify-center lg:hidden">
-                  <div className="w-full max-h-[82dvh] bg-white dark:bg-slate-900 rounded-t-[16px] p-4 space-y-3 overflow-y-auto pb-safe">
-                    <div className="flex items-center justify-between border-b border-gray-200 dark:border-slate-800 pb-3">
-                      <h3 className="text-[16px] font-bold">Live Home Page Preview</h3>
-                      <button
-                        type="button"
-                        onClick={() => setShowMobilePreviewSheet(false)}
-                        className="min-w-[44px] min-h-[44px] flex items-center justify-center"
+              {marketingSubTab === 'coupons' && (
+                <div className="space-y-4">
+                  <form
+                    onSubmit={async (e) => {
+                      e.preventDefault();
+                      if (!couponCode.trim()) return;
+                      const res = await adminFetch('/api/admin/coupons', {
+                        method: 'POST',
+                        body: JSON.stringify({
+                          code: couponCode.trim().toUpperCase(),
+                          discountType: couponType,
+                          discountValue: Number(couponValue),
+                          minOrderAmount: Number(couponMinOrder),
+                          maxDiscount: Number(couponMaxDiscount),
+                          description: couponDesc,
+                          isActive: true,
+                        }),
+                      });
+                      if (res.ok) {
+                        setCouponCode('');
+                        setCouponDesc('');
+                        await fetchBootstrap();
+                        showToast('Coupon saved');
+                      }
+                    }}
+                    className="bg-white rounded-2xl border border-gray-200 p-4 grid grid-cols-1 sm:grid-cols-3 gap-3"
+                  >
+                    <input
+                      type="text"
+                      value={couponCode}
+                      onChange={(e) => setCouponCode(e.target.value.toUpperCase())}
+                      placeholder="CODE (e.g. FEAST20)"
+                      className="min-h-[40px] px-3 rounded-xl border border-gray-300 text-xs font-mono"
+                    />
+                    <select
+                      value={couponType}
+                      onChange={(e) => setCouponType(e.target.value as 'FLAT' | 'PERCENT')}
+                      className="min-h-[40px] px-3 rounded-xl border border-gray-300 text-xs"
+                    >
+                      <option value="PERCENT">Percentage (%)</option>
+                      <option value="FLAT">Flat Discount (₹)</option>
+                    </select>
+                    <input
+                      type="number"
+                      value={couponValue}
+                      onChange={(e) => setCouponValue(Number(e.target.value))}
+                      placeholder="Value"
+                      className="min-h-[40px] px-3 rounded-xl border border-gray-300 text-xs"
+                    />
+                    <input
+                      type="number"
+                      value={couponMinOrder}
+                      onChange={(e) => setCouponMinOrder(Number(e.target.value))}
+                      placeholder="Min Order ₹"
+                      className="min-h-[40px] px-3 rounded-xl border border-gray-300 text-xs"
+                    />
+                    <input
+                      type="text"
+                      value={couponDesc}
+                      onChange={(e) => setCouponDesc(e.target.value)}
+                      placeholder="Description"
+                      className="min-h-[40px] px-3 rounded-xl border border-gray-300 text-xs"
+                    />
+                    <button
+                      type="submit"
+                      className="min-h-[40px] px-4 rounded-xl bg-[#D9480F] text-white text-xs font-bold cursor-pointer"
+                    >
+                      Save Coupon
+                    </button>
+                  </form>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {coupons.map((cp) => (
+                      <div
+                        key={cp.code}
+                        className="bg-white rounded-2xl border border-gray-200 p-4 flex items-center justify-between gap-2"
                       >
-                        <X className="w-5 h-5" />
-                      </button>
+                        <div>
+                          <p className="font-mono text-sm font-bold text-[#111827]">{cp.code}</p>
+                          <p className="text-xs text-[#6B7280]">{cp.description}</p>
+                          <p className="text-[11px] text-gray-500 mt-1">
+                            Min ₹{cp.minOrderAmount} · Limit {cp.usageLimitPerPhone}/phone
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              await adminFetch('/api/admin/coupons', {
+                                method: 'POST',
+                                body: JSON.stringify({ ...cp, isActive: !cp.isActive }),
+                              });
+                              await fetchBootstrap();
+                            }}
+                            className={`px-2.5 py-1 rounded-lg text-xs font-bold cursor-pointer ${
+                              cp.isActive
+                                ? 'bg-green-100 text-green-800'
+                                : 'bg-gray-100 text-gray-600'
+                            }`}
+                          >
+                            {cp.isActive ? 'Active' : 'Disabled'}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Sub-tab: BROADCAST (Labeled "Not connected" & disabled unless provider env vars exist) */}
+              {marketingSubTab === 'broadcast' && (
+                <div className="bg-white rounded-2xl border border-gray-200 p-5 space-y-4">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <h3 className="text-sm font-bold text-[#111827]">
+                        Customer WhatsApp / SMS Broadcast
+                      </h3>
+                      <p className="text-xs text-[#6B7280]">
+                        Send promotional announcements to {customers.length} opted-in guest numbers.
+                      </p>
                     </div>
-                    <div className="space-y-2.5">
-                      {homeSections
-                        .filter((s) => s.isVisible)
-                        .map((s) => {
-                          const previewItems = s.itemIds
-                            .map((id) =>
-                              menuItems.find(
-                                (m) => m.id === id && m.inStock && m.showOnHome
-                              )
-                            )
-                            .filter((m): m is MenuItem => Boolean(m))
-                            .slice(0, s.maxItems);
-                          return (
-                            <div
-                              key={s.id}
-                              className="p-3 rounded-[8px] bg-[#F4F5F7] dark:bg-slate-800 space-y-1.5"
-                            >
-                              <p className="text-[14px] font-bold">{s.title}</p>
-                              {previewItems.map((it) => (
-                                <div
-                                  key={it.id}
-                                  className="flex justify-between text-[12px] bg-white dark:bg-slate-900 px-2.5 py-1.5 rounded-[6px]"
-                                >
-                                  <span className="truncate pr-2">{it.name}</span>
-                                  <span className="font-semibold tabular-nums shrink-0">
-                                    ₹{it.basePrice}
-                                  </span>
-                                </div>
-                              ))}
+                    <span
+                      className={`px-2.5 py-1 rounded-full text-xs font-bold ${
+                        broadcastProviderConfigured
+                          ? 'bg-green-100 text-green-800'
+                          : 'bg-amber-100 text-amber-900 border border-amber-300'
+                      }`}
+                    >
+                      {broadcastProviderConfigured ? 'Provider Connected' : 'Not connected'}
+                    </span>
+                  </div>
+
+                  {!broadcastProviderConfigured && (
+                    <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-950">
+                      WhatsApp Cloud API (`WHATSAPP_CLOUD_API_TOKEN`) or MSG91 (`MSG91_AUTH_KEY`) is not configured in environment variables. Sending is disabled until a provider is connected.
+                    </div>
+                  )}
+
+                  <textarea
+                    rows={3}
+                    value={broadcastMessage}
+                    onChange={(e) => setBroadcastMessage(e.target.value)}
+                    placeholder="Type campaign message..."
+                    className="w-full p-3 rounded-xl border border-gray-300 text-xs"
+                  />
+
+                  <button
+                    type="button"
+                    disabled={!broadcastProviderConfigured || !broadcastMessage.trim()}
+                    onClick={async () => {
+                      const res = await adminFetch('/api/admin/broadcast', {
+                        method: 'POST',
+                        body: JSON.stringify({ channel: 'WHATSAPP', message: broadcastMessage }),
+                      });
+                      if (res.ok) {
+                        setBroadcastMessage('');
+                        showToast('Broadcast sent');
+                      }
+                    }}
+                    className="min-h-[42px] px-5 rounded-xl bg-[#D9480F] text-white text-xs font-bold cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    Send Broadcast
+                  </button>
+                </div>
+              )}
+            </section>
+          )}
+
+          {/* ====================================================================
+              6. DELIVERY SECTION (Unified Zone + Fee Slabs with 1 Save Button, Riders)
+          ==================================================================== */}
+          {activeSection === 'delivery' && currentUser.role !== 'staff' && (
+            <section className="space-y-4 min-w-0">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setDeliverySubTab('zone')}
+                  className={`min-h-[40px] px-3.5 rounded-xl text-xs font-bold cursor-pointer ${
+                    deliverySubTab === 'zone'
+                      ? 'bg-[#D9480F] text-white'
+                      : 'bg-white border border-gray-200 text-[#111827]'
+                  }`}
+                >
+                  Zone & Fee Slabs
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDeliverySubTab('riders')}
+                  className={`min-h-[40px] px-3.5 rounded-xl text-xs font-bold cursor-pointer ${
+                    deliverySubTab === 'riders'
+                      ? 'bg-[#D9480F] text-white'
+                      : 'bg-white border border-gray-200 text-[#111827]'
+                  }`}
+                >
+                  Riders ({deliveryBoys.length})
+                </button>
+              </div>
+
+              {/* Unified Zone + Fee Slabs with ONE Save button */}
+              {deliverySubTab === 'zone' && deliveryZone && settings && (
+                <form
+                  onSubmit={handleSaveDeliveryZoneAndSlabs}
+                  className="bg-white rounded-2xl border border-gray-200 p-5 space-y-5"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <h3 className="text-sm font-bold text-[#111827]">
+                        Haversine Delivery Zone & Distance Fee Slabs
+                      </h3>
+                      <p className="text-xs text-[#6B7280]">
+                        Unified configuration for kitchen coordinates, maximum radius, and tiered delivery charges.
+                      </p>
+                    </div>
+                    <label className="flex items-center gap-2 text-xs font-bold cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={deliveryZone.zoneEnabled}
+                        onChange={(e) =>
+                          setDeliveryZone({ ...deliveryZone, zoneEnabled: e.target.checked })
+                        }
+                        className="w-4 h-4 accent-[#D9480F]"
+                      />
+                      <span>Enforce Radius Check</span>
+                    </label>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div>
+                      <label className="block text-xs font-semibold text-[#111827] mb-1">
+                        Kitchen Latitude
+                      </label>
+                      <input
+                        type="number"
+                        step="0.0001"
+                        value={deliveryZone.shopLat}
+                        onChange={(e) =>
+                          setDeliveryZone({ ...deliveryZone, shopLat: Number(e.target.value) })
+                        }
+                        className="w-full min-h-[40px] px-3 rounded-xl border border-gray-300 text-xs font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-[#111827] mb-1">
+                        Kitchen Longitude
+                      </label>
+                      <input
+                        type="number"
+                        step="0.0001"
+                        value={deliveryZone.shopLng}
+                        onChange={(e) =>
+                          setDeliveryZone({ ...deliveryZone, shopLng: Number(e.target.value) })
+                        }
+                        className="w-full min-h-[40px] px-3 rounded-xl border border-gray-300 text-xs font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-[#111827] mb-1">
+                        Max Delivery Radius (km)
+                      </label>
+                      <input
+                        type="number"
+                        step="0.5"
+                        value={deliveryZone.radiusKm}
+                        onChange={(e) =>
+                          setDeliveryZone({ ...deliveryZone, radiusKm: Number(e.target.value) })
+                        }
+                        className="w-full min-h-[40px] px-3 rounded-xl border border-gray-300 text-xs font-mono"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-2 pt-3 border-t border-gray-100">
+                    <h4 className="text-xs font-bold text-[#111827]">Distance Fee Slabs</h4>
+                    {settings.deliverySlabs.map((slab, idx) => (
+                      <div key={idx} className="grid grid-cols-2 gap-2 max-w-md">
+                        <div>
+                          <label className="block text-[10px] text-gray-500">Up to Max km</label>
+                          <input
+                            type="number"
+                            step="0.5"
+                            value={slab.maxKm}
+                            onChange={(e) => {
+                              const next = [...settings.deliverySlabs];
+                              next[idx] = { ...slab, maxKm: Number(e.target.value) };
+                              setSettings({ ...settings, deliverySlabs: next });
+                            }}
+                            className="w-full min-h-[38px] px-2.5 rounded-lg border border-gray-300 text-xs font-mono"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] text-gray-500">Delivery Fee (₹)</label>
+                          <input
+                            type="number"
+                            value={slab.fee}
+                            onChange={(e) => {
+                              const next = [...settings.deliverySlabs];
+                              next[idx] = { ...slab, fee: Number(e.target.value) };
+                              setSettings({ ...settings, deliverySlabs: next });
+                            }}
+                            className="w-full min-h-[38px] px-2.5 rounded-lg border border-gray-300 text-xs font-mono"
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <button
+                    type="submit"
+                    className="min-h-[44px] px-6 rounded-xl bg-[#D9480F] text-white text-xs font-bold cursor-pointer"
+                  >
+                    Save Delivery Zone & Fee Slabs
+                  </button>
+                </form>
+              )}
+
+              {/* Sub-tab: RIDERS (with Regenerate/Revoke token & Daily PIN) */}
+              {deliverySubTab === 'riders' && (
+                <div className="space-y-4">
+                  <form
+                    onSubmit={handleAddRider}
+                    className="bg-white rounded-2xl border border-gray-200 p-4 flex flex-wrap gap-2"
+                  >
+                    <input
+                      type="text"
+                      value={newRiderName}
+                      onChange={(e) => setNewRiderName(e.target.value)}
+                      placeholder="Rider full name *"
+                      className="flex-1 min-w-[160px] min-h-[40px] px-3 rounded-xl border border-gray-300 text-xs"
+                    />
+                    <input
+                      type="tel"
+                      value={newRiderPhone}
+                      onChange={(e) => setNewRiderPhone(e.target.value)}
+                      placeholder="10-digit mobile *"
+                      className="flex-1 min-w-[160px] min-h-[40px] px-3 rounded-xl border border-gray-300 text-xs font-mono"
+                    />
+                    <button
+                      type="submit"
+                      className="min-h-[40px] px-4 rounded-xl bg-[#D9480F] text-white text-xs font-bold cursor-pointer"
+                    >
+                      Add Rider
+                    </button>
+                  </form>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {deliveryBoys.map((r) => {
+                      const riderUrl = `${window.location.origin}/rider/${r.accessToken}`;
+                      return (
+                        <div
+                          key={r.id}
+                          className="bg-white rounded-2xl border border-gray-200 p-4 space-y-3 min-w-0"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="text-sm font-bold text-[#111827] truncate">{r.name}</p>
+                              <p className="text-xs text-[#6B7280] font-mono">+91 {r.phone}</p>
                             </div>
-                          );
-                        })}
-                    </div>
+                            <span
+                              className={`px-2.5 py-1 rounded-full text-xs font-bold ${
+                                r.isActive
+                                  ? 'bg-green-100 text-green-800'
+                                  : 'bg-red-100 text-red-800'
+                              }`}
+                            >
+                              {r.isActive ? 'Active' : 'Revoked / Inactive'}
+                            </span>
+                          </div>
+
+                          <div className="p-2.5 rounded-xl bg-gray-50 border border-gray-200 text-xs space-y-1 font-mono">
+                            <p className="truncate">Link: {riderUrl}</p>
+                            <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-[#6B7280]">
+                              <span>Daily PIN: {r.dailyPin || '----'}</span>
+                              {r.tokenExpiresAt && (
+                                <span>
+                                  Expires: {new Date(r.tokenExpiresAt).toLocaleDateString()}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="flex flex-wrap items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                navigator.clipboard?.writeText(riderUrl);
+                                showToast('Rider link copied');
+                              }}
+                              className="px-3 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-50 text-xs font-semibold flex items-center gap-1 cursor-pointer"
+                            >
+                              <Copy className="w-3.5 h-3.5" />
+                              <span>Copy Link</span>
+                            </button>
+                            {onOpenRiderPortal && (
+                              <button
+                                type="button"
+                                onClick={() => onOpenRiderPortal(r.accessToken)}
+                                className="px-3 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-50 text-xs font-semibold cursor-pointer"
+                              >
+                                Preview Portal
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => handleRegenerateRiderToken(r.id)}
+                              className="px-3 py-1.5 rounded-lg border border-blue-200 bg-blue-50 text-blue-800 text-xs font-semibold flex items-center gap-1 cursor-pointer"
+                            >
+                              <RefreshCw className="w-3.5 h-3.5" />
+                              <span>Regenerate Link</span>
+                            </button>
+                            {r.isActive && (
+                              <button
+                                type="button"
+                                onClick={() => handleRevokeRiderToken(r.id)}
+                                className="px-3 py-1.5 rounded-lg border border-red-200 bg-red-50 text-red-700 text-xs font-semibold cursor-pointer"
+                              >
+                                Revoke
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               )}
             </section>
           )}
 
-          {/* =================================================================
-              SECTION 4: REPORTS (Full-width charts, scrollable date-range chips, CSV export button)
-             ================================================================= */}
-          {activeSection === 'reports' && (
+          {/* ====================================================================
+              7. FINANCE SECTION (Payments, Refunds [Owner only], Reports + CSV)
+          ==================================================================== */}
+          {activeSection === 'finance' && currentUser.role !== 'staff' && (
             <section className="space-y-4 min-w-0">
-              <div className="flex flex-wrap items-center justify-between gap-3 min-w-0">
-                <h2 className="text-[20px] font-bold text-[#111827] dark:text-white">
-                  Sales & Operations Reports
-                </h2>
+              <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
                 <button
                   type="button"
-                  onClick={handleExportCsv}
-                  className="min-h-[48px] px-4 rounded-[8px] bg-[#D9480F] hover:bg-[#c23f0b] text-white text-[14px] font-semibold flex items-center gap-2 cursor-pointer whitespace-nowrap"
+                  onClick={() => setFinanceSubTab('payments')}
+                  className={`min-h-[40px] px-3.5 rounded-xl text-xs font-bold cursor-pointer ${
+                    financeSubTab === 'payments'
+                      ? 'bg-[#D9480F] text-white'
+                      : 'bg-white border border-gray-200 text-[#111827]'
+                  }`}
                 >
-                  <Download className="w-4 h-4 shrink-0" />
-                  <span>CSV Export</span>
+                  Payments ({payments.length})
                 </button>
-              </div>
-
-              {/* Scrollable Date-Range Chips */}
-              <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-1">
-                {(
-                  [
-                    { id: 'today', label: 'Today' },
-                    { id: '7d', label: 'Last 7 Days' },
-                    { id: '30d', label: 'Last 30 Days' },
-                    { id: 'all', label: 'All Time' },
-                  ] as const
-                ).map((chip) => (
+                {currentUser.role === 'owner' && (
                   <button
-                    key={chip.id}
                     type="button"
-                    onClick={() => setReportRange(chip.id)}
-                    className={`min-h-[44px] px-4 rounded-full text-[14px] font-semibold whitespace-nowrap shrink-0 cursor-pointer ${
-                      reportRange === chip.id
+                    onClick={() => setFinanceSubTab('refunds')}
+                    className={`min-h-[40px] px-3.5 rounded-xl text-xs font-bold cursor-pointer ${
+                      financeSubTab === 'refunds'
                         ? 'bg-[#D9480F] text-white'
-                        : 'bg-white dark:bg-slate-900 text-[#6B7280] border border-gray-200 dark:border-slate-800'
+                        : 'bg-white border border-gray-200 text-[#111827]'
                     }`}
                   >
-                    {chip.label}
+                    Refunds ({refunds.length})
                   </button>
-                ))}
-              </div>
-
-              {/* Full-Width Revenue & Order Volume Chart Card */}
-              <div className="bg-white dark:bg-slate-900 rounded-[12px] p-4 shadow-[0_1px_3px_rgba(0,0,0,0.08)] border border-gray-200 dark:border-slate-800 space-y-4 min-w-0">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div>
-                    <h3 className="text-[16px] font-bold text-[#111827] dark:text-white">
-                      Revenue Trend ({reportRange.toUpperCase()})
-                    </h3>
-                    <p className="text-[12px] text-[#6B7280]">
-                      Direct kitchen sales excluding cancelled orders
-                    </p>
-                  </div>
-                  <span className="text-[20px] font-bold text-[#16A34A] tabular-nums">
-                    ₹{kpis.revenue.toLocaleString()}
-                  </span>
-                </div>
-
-                {/* Responsive Full-Width Bar Chart */}
-                <div className="w-full h-48 pt-4 flex items-end justify-between gap-2 border-b border-gray-200 dark:border-slate-800 pb-2">
-                  {[
-                    { day: 'Mon', val: 42 },
-                    { day: 'Tue', val: 58 },
-                    { day: 'Wed', val: 49 },
-                    { day: 'Thu', val: 72 },
-                    { day: 'Fri', val: 88 },
-                    { day: 'Sat', val: 100 },
-                    { day: 'Sun', val: 91 },
-                  ].map((bar) => (
-                    <div
-                      key={bar.day}
-                      className="flex-1 flex flex-col items-center gap-1.5 h-full justify-end min-w-0"
-                    >
-                      <div
-                        style={{ height: `${bar.val}%` }}
-                        className="w-full max-w-[36px] rounded-t-[6px] bg-[#D9480F] hover:opacity-90 transition-opacity"
-                      />
-                      <span className="text-[12px] text-[#6B7280] font-medium truncate">
-                        {bar.day}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Top Selling Dishes Breakdown */}
-              <div className="bg-white dark:bg-slate-900 rounded-[12px] p-4 shadow-[0_1px_3px_rgba(0,0,0,0.08)] border border-gray-200 dark:border-slate-800 space-y-3 min-w-0">
-                <h3 className="text-[16px] font-bold text-[#111827] dark:text-white">
-                  Top Performing Dishes
-                </h3>
-                <div className="divide-y divide-gray-100 dark:divide-slate-800">
-                  {[...menuItems]
-                    .sort((a, b) => b.salesCount - a.salesCount)
-                    .map((item) => (
-                      <div
-                        key={item.id}
-                        className="py-2.5 flex items-center justify-between gap-2 min-w-0"
-                      >
-                        <div className="min-w-0 flex-1">
-                          <p className="text-[14px] font-semibold text-[#111827] dark:text-white break-words">
-                            {item.name}
-                          </p>
-                          <p className="text-[12px] text-[#6B7280] tabular-nums">
-                            Base ₹{item.basePrice}
-                          </p>
-                        </div>
-                        <span className="text-[14px] font-bold text-[#111827] dark:text-white tabular-nums shrink-0">
-                          {item.salesCount} orders
-                        </span>
-                      </div>
-                    ))}
-                </div>
-              </div>
-            </section>
-          )}
-
-          {/* =================================================================
-              SECTION 5: DELIVERY ZONE (Map on top 240px height, lat/lng/radius inputs below, radius slider)
-             ================================================================= */}
-          {activeSection === 'delivery_zone' && deliveryZone && (
-            <section className="space-y-4 min-w-0">
-              <h2 className="text-[20px] font-bold text-[#111827] dark:text-white">
-                Delivery Zone & Haversine Radius
-              </h2>
-
-              <form
-                onSubmit={handleSaveSettingsAndZone}
-                className="bg-white dark:bg-slate-900 rounded-[12px] p-4 shadow-[0_1px_3px_rgba(0,0,0,0.08)] border border-gray-200 dark:border-slate-800 space-y-4 min-w-0"
-              >
-                {/* Map on top (full width, 240px height) */}
-                <div className="w-full h-[240px] rounded-[12px] border border-gray-200 dark:border-slate-700 bg-blue-50/60 dark:bg-slate-800 relative overflow-hidden flex items-center justify-center">
-                  {/* Grid lines */}
-                  <div
-                    className="absolute inset-0 opacity-25"
-                    style={{
-                      backgroundImage:
-                        'radial-gradient(#2563EB 1px, transparent 1px)',
-                      backgroundSize: '20px 20px',
-                    }}
-                  />
-                  {/* Dynamic Radius Circle */}
-                  <div
-                    style={{
-                      width: `${Math.min(210, Math.max(70, deliveryZone.radiusKm * 18))}px`,
-                      height: `${Math.min(210, Math.max(70, deliveryZone.radiusKm * 18))}px`,
-                    }}
-                    className="rounded-full bg-[#D9480F]/15 border-2 border-dashed border-[#D9480F] flex items-center justify-center transition-all duration-200"
-                  >
-                    <div className="w-9 h-9 rounded-full bg-[#D9480F] text-white flex items-center justify-center shadow-md">
-                      <MapPin className="w-5 h-5" />
-                    </div>
-                  </div>
-                  <div className="absolute bottom-2.5 left-3 right-3 flex flex-wrap items-center justify-between gap-1 bg-white/90 dark:bg-slate-900/90 backdrop-blur-xs px-3 py-1.5 rounded-[8px] text-[12px] font-semibold tabular-nums">
-                    <span className="truncate">
-                      Center: {deliveryZone.shopLat.toFixed(4)}, {deliveryZone.shopLng.toFixed(4)}
-                    </span>
-                    <span className="text-[#D9480F] shrink-0">
-                      Radius: {deliveryZone.radiusKm} km
-                    </span>
-                  </div>
-                </div>
-
-                {zoneError && (
-                  <p className="text-[12px] text-[#DC2626] font-semibold">{zoneError}</p>
                 )}
-
-                {/* Single-column inputs below (48px height, labels above) */}
-                <div className="space-y-3">
-                  <div>
-                    <div className="flex items-center justify-between mb-1">
-                      <label className="text-[14px] font-semibold text-[#111827] dark:text-slate-200">
-                        Max Delivery Radius (km)
-                      </label>
-                      <span className="text-[14px] font-bold text-[#D9480F] tabular-nums">
-                        {deliveryZone.radiusKm} km
-                      </span>
-                    </div>
-                    <input
-                      type="range"
-                      min={1}
-                      max={20}
-                      step={0.5}
-                      value={deliveryZone.radiusKm}
-                      onChange={(e) =>
-                        setDeliveryZone({
-                          ...deliveryZone,
-                          radiusKm: Number(e.target.value),
-                        })
-                      }
-                      className="w-full h-2 accent-[#D9480F] cursor-pointer"
-                    />
-                    <input
-                      type="number"
-                      step="0.5"
-                      value={deliveryZone.radiusKm}
-                      onChange={(e) =>
-                        setDeliveryZone({
-                          ...deliveryZone,
-                          radiusKm: Number(e.target.value),
-                        })
-                      }
-                      className="mt-2 w-full min-h-[48px] px-3.5 rounded-[8px] border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-[14px] tabular-nums"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-[14px] font-semibold text-[#111827] dark:text-slate-200 mb-1">
-                      Shop Latitude
-                    </label>
-                    <input
-                      type="number"
-                      step="0.0001"
-                      value={deliveryZone.shopLat}
-                      onChange={(e) =>
-                        setDeliveryZone({
-                          ...deliveryZone,
-                          shopLat: Number(e.target.value),
-                        })
-                      }
-                      className="w-full min-h-[48px] px-3.5 rounded-[8px] border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-[14px] tabular-nums"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-[14px] font-semibold text-[#111827] dark:text-slate-200 mb-1">
-                      Shop Longitude
-                    </label>
-                    <input
-                      type="number"
-                      step="0.0001"
-                      value={deliveryZone.shopLng}
-                      onChange={(e) =>
-                        setDeliveryZone({
-                          ...deliveryZone,
-                          shopLng: Number(e.target.value),
-                        })
-                      }
-                      className="w-full min-h-[48px] px-3.5 rounded-[8px] border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-[14px] tabular-nums"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-[14px] font-semibold text-[#111827] dark:text-slate-200 mb-1">
-                      Kitchen Dispatch Address
-                    </label>
-                    <input
-                      type="text"
-                      value={deliveryZone.shopAddress}
-                      onChange={(e) =>
-                        setDeliveryZone({
-                          ...deliveryZone,
-                          shopAddress: e.target.value,
-                        })
-                      }
-                      className="w-full min-h-[48px] px-3.5 rounded-[8px] border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-[14px]"
-                    />
-                  </div>
-
-                  <label className="min-h-[48px] px-3.5 rounded-[8px] border border-gray-200 dark:border-slate-700 flex items-center justify-between gap-2 cursor-pointer">
-                    <span className="text-[14px] font-semibold">
-                      Enforce Strict Haversine Radius Check
-                    </span>
-                    <input
-                      type="checkbox"
-                      checked={deliveryZone.zoneEnabled}
-                      onChange={(e) =>
-                        setDeliveryZone({
-                          ...deliveryZone,
-                          zoneEnabled: e.target.checked,
-                        })
-                      }
-                      className="w-5 h-5 accent-[#D9480F]"
-                    />
-                  </label>
-                </div>
-
-                <button
-                  type="submit"
-                  className="w-full min-h-[48px] px-4 rounded-[8px] bg-[#D9480F] hover:bg-[#c23f0b] text-white text-[14px] font-semibold cursor-pointer whitespace-nowrap"
-                >
-                  Save Delivery Zone
-                </button>
-              </form>
-            </section>
-          )}
-
-          {/* =================================================================
-              SECTION 6: SETTINGS (Single column, labels above inputs, 48px height)
-             ================================================================= */}
-          {activeSection === 'settings' && settings && (
-            <section className="space-y-4 min-w-0">
-              <h2 className="text-[20px] font-bold text-[#111827] dark:text-white">
-                Shop & COD Settings
-              </h2>
-
-              <form
-                onSubmit={handleSaveSettingsAndZone}
-                className="bg-white dark:bg-slate-900 rounded-[12px] p-4 shadow-[0_1px_3px_rgba(0,0,0,0.08)] border border-gray-200 dark:border-slate-800 space-y-4 min-w-0"
-              >
-                {settingsError && (
-                  <p className="text-[12px] text-[#DC2626] font-semibold">{settingsError}</p>
-                )}
-
-                <div className="space-y-3">
-                  <label className="min-h-[48px] px-3.5 rounded-[8px] border border-gray-200 dark:border-slate-700 flex items-center justify-between gap-2 cursor-pointer">
-                    <span className="text-[14px] font-semibold">Shop Open for Orders</span>
-                    <input
-                      type="checkbox"
-                      checked={settings.isOpen}
-                      onChange={(e) =>
-                        setSettings({ ...settings, isOpen: e.target.checked })
-                      }
-                      className="w-5 h-5 accent-[#16A34A]"
-                    />
-                  </label>
-
-                  <label className="min-h-[48px] px-3.5 rounded-[8px] border border-gray-200 dark:border-slate-700 flex items-center justify-between gap-2 cursor-pointer">
-                    <span className="text-[14px] font-semibold">Busy Mode (+15 mins prep)</span>
-                    <input
-                      type="checkbox"
-                      checked={settings.busyMode}
-                      onChange={(e) =>
-                        setSettings({ ...settings, busyMode: e.target.checked })
-                      }
-                      className="w-5 h-5 accent-[#D97706]"
-                    />
-                  </label>
-
-                  <label className="min-h-[48px] px-3.5 rounded-[8px] border border-gray-200 dark:border-slate-700 flex items-center justify-between gap-2 cursor-pointer">
-                    <span className="text-[14px] font-semibold">Enable Cash on Delivery (COD)</span>
-                    <input
-                      type="checkbox"
-                      checked={settings.codEnabled}
-                      onChange={(e) =>
-                        setSettings({ ...settings, codEnabled: e.target.checked })
-                      }
-                      className="w-5 h-5 accent-[#D9480F]"
-                    />
-                  </label>
-
-                  <label className="min-h-[48px] px-3.5 rounded-[8px] border border-gray-200 dark:border-slate-700 flex items-center justify-between gap-2 cursor-pointer">
-                    <span className="text-[14px] font-semibold">
-                      Online Payment Only for First Order
-                    </span>
-                    <input
-                      type="checkbox"
-                      checked={settings.onlineOnlyFirstOrder}
-                      onChange={(e) =>
-                        setSettings({
-                          ...settings,
-                          onlineOnlyFirstOrder: e.target.checked,
-                        })
-                      }
-                      className="w-5 h-5 accent-[#D9480F]"
-                    />
-                  </label>
-
-                  <div>
-                    <label className="block text-[14px] font-semibold mb-1">
-                      Minimum Order Amount (₹)
-                    </label>
-                    <input
-                      type="number"
-                      value={settings.minOrderAmount}
-                      onChange={(e) =>
-                        setSettings({
-                          ...settings,
-                          minOrderAmount: Number(e.target.value),
-                        })
-                      }
-                      className="w-full min-h-[48px] px-3.5 rounded-[8px] border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-[14px] tabular-nums"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-[14px] font-semibold mb-1">
-                      GST Percentage (%)
-                    </label>
-                    <input
-                      type="number"
-                      step="0.5"
-                      value={settings.gstPercent}
-                      onChange={(e) =>
-                        setSettings({
-                          ...settings,
-                          gstPercent: Number(e.target.value),
-                        })
-                      }
-                      className="w-full min-h-[48px] px-3.5 rounded-[8px] border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-[14px] tabular-nums"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-[14px] font-semibold mb-1">
-                      Max COD Order Amount (₹)
-                    </label>
-                    <input
-                      type="number"
-                      value={settings.codMaxAmount}
-                      onChange={(e) =>
-                        setSettings({
-                          ...settings,
-                          codMaxAmount: Number(e.target.value),
-                        })
-                      }
-                      className="w-full min-h-[48px] px-3.5 rounded-[8px] border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-[14px] tabular-nums"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-[14px] font-semibold mb-1">
-                      Auto-Cancel Unaccepted Orders (Minutes)
-                    </label>
-                    <input
-                      type="number"
-                      value={settings.autoCancelUnacceptedMins}
-                      onChange={(e) =>
-                        setSettings({
-                          ...settings,
-                          autoCancelUnacceptedMins: Number(e.target.value),
-                        })
-                      }
-                      className="w-full min-h-[48px] px-3.5 rounded-[8px] border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-[14px] tabular-nums"
-                    />
-                  </div>
-                </div>
-
-                <button
-                  type="submit"
-                  className="w-full min-h-[48px] px-4 rounded-[8px] bg-[#D9480F] hover:bg-[#c23f0b] text-white text-[14px] font-semibold cursor-pointer whitespace-nowrap"
-                >
-                  Save All Settings
-                </button>
-              </form>
-            </section>
-          )}
-
-          {/* =================================================================
-              SECTION 7: RIDERS
-             ================================================================= */}
-          {activeSection === 'riders' && (
-            <section className="space-y-4 min-w-0">
-              <h2 className="text-[20px] font-bold text-[#111827] dark:text-white">
-                Delivery Partners ({deliveryBoys.length})
-              </h2>
-
-              <div className="space-y-3">
-                {deliveryBoys.map((r) => (
-                  <div
-                    key={r.id}
-                    className="bg-white dark:bg-slate-900 rounded-[12px] p-4 shadow-[0_1px_3px_rgba(0,0,0,0.08)] border border-gray-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3 min-w-0"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <p className="text-[16px] font-bold text-[#111827] dark:text-white break-words">
-                        {r.name}
-                      </p>
-                      <p className="text-[14px] text-[#6B7280] tabular-nums">
-                        +91 {r.phone} · {r.activeOrders} active runs
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => onOpenRiderPortal(r.accessToken)}
-                      className="min-h-[48px] px-4 rounded-[8px] bg-[#D9480F] text-white text-[14px] font-semibold flex items-center gap-2 cursor-pointer whitespace-nowrap shrink-0"
-                    >
-                      <Truck className="w-4 h-4 shrink-0" />
-                      <span>Open Rider Link</span>
-                    </button>
-                  </div>
-                ))}
-              </div>
-
-              <div className="bg-white dark:bg-slate-900 rounded-[12px] p-4 shadow-[0_1px_3px_rgba(0,0,0,0.08)] border border-gray-200 dark:border-slate-800 space-y-3">
-                <h3 className="text-[16px] font-bold">Add New Rider</h3>
-                {riderError && (
-                  <p className="text-[12px] text-[#DC2626] font-semibold">{riderError}</p>
-                )}
-                <div>
-                  <label className="block text-[14px] font-semibold mb-1">
-                    Rider Full Name
-                  </label>
-                  <input
-                    type="text"
-                    value={newRiderName}
-                    onChange={(e) => setNewRiderName(e.target.value)}
-                    placeholder="e.g. Suresh Yadav"
-                    className="w-full min-h-[48px] px-3.5 rounded-[8px] border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-[14px]"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[14px] font-semibold mb-1">
-                    10-Digit Mobile Number
-                  </label>
-                  <input
-                    type="tel"
-                    inputMode="numeric"
-                    maxLength={10}
-                    value={newRiderPhone}
-                    onChange={(e) =>
-                      setNewRiderPhone(e.target.value.replace(/\D/g, ''))
-                    }
-                    placeholder="9876543210"
-                    className="w-full min-h-[48px] px-3.5 rounded-[8px] border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-[14px] tabular-nums"
-                  />
-                </div>
                 <button
                   type="button"
-                  onClick={async () => {
-                    setRiderError(null);
-                    if (!newRiderName.trim() || newRiderPhone.length !== 10) {
-                      setRiderError('Enter a valid name and 10-digit mobile number.');
-                      return;
-                    }
-                    const res = await fetch('/api/admin/delivery-boys', {
-                      method: 'POST',
-                      headers: {
-                        'Content-Type': 'application/json',
-                        Authorization: `Bearer ${token}`,
-                      },
-                      body: JSON.stringify({
-                        name: newRiderName,
-                        phone: newRiderPhone,
-                      }),
-                    });
-                    const d = await res.json();
-                    if (res.ok) {
-                      setDeliveryBoys(d.deliveryBoys);
-                      setNewRiderName('');
-                      setNewRiderPhone('');
-                      showToast('Delivery partner added!');
-                    } else {
-                      setRiderError(d.error || 'Could not add rider');
-                    }
-                  }}
-                  className="w-full min-h-[48px] px-4 rounded-[8px] bg-[#D9480F] text-white text-[14px] font-semibold cursor-pointer"
+                  onClick={() => setFinanceSubTab('reports')}
+                  className={`min-h-[40px] px-3.5 rounded-xl text-xs font-bold cursor-pointer ${
+                    financeSubTab === 'reports'
+                      ? 'bg-[#D9480F] text-white'
+                      : 'bg-white border border-gray-200 text-[#111827]'
+                  }`}
                 >
-                  Add Delivery Partner
+                  Reports & GST Summary
                 </button>
               </div>
-            </section>
-          )}
 
-          {/* =================================================================
-              SECTION 8: CUSTOMERS & ABUSE BLOCKLIST (Stacked cards on mobile)
-             ================================================================= */}
-          {activeSection === 'customers' && (
-            <section className="space-y-4 min-w-0">
-              <h2 className="text-[20px] font-bold text-[#111827] dark:text-white">
-                Customers & Security ({customers.length})
-              </h2>
+              {financeSubTab === 'payments' && (
+                <div className="bg-white rounded-2xl border border-gray-200 divide-y divide-gray-100">
+                  {payments.map((p) => {
+                    const ord = orders.find((o) => o.id === p.orderId);
+                    return (
+                      <div
+                        key={p.id}
+                        className="p-4 flex flex-wrap items-center justify-between gap-2 min-w-0"
+                      >
+                        <div className="min-w-0">
+                          <p className="text-sm font-bold text-[#111827]">
+                            {p.orderNumber} · ₹{p.amount}
+                          </p>
+                          <p className="text-xs text-[#6B7280] font-mono break-all">
+                            {p.gateway} · {p.status} · {p.razorpayPaymentId || 'COD'}
+                          </p>
+                        </div>
+                        {currentUser.role === 'owner' &&
+                          (p.status === 'CAPTURED' || p.status === 'VERIFIED') &&
+                          ord && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setRefundModalOrder(ord);
+                                setRefundAmountInput(String(ord.grandTotal));
+                                setRefundReasonInput('');
+                              }}
+                              className="px-3 py-1.5 rounded-xl border border-gray-200 hover:bg-gray-50 text-xs font-semibold cursor-pointer"
+                            >
+                              Issue Refund
+                            </button>
+                          )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
 
-              <div className="space-y-3">
-                {customers.map((c) => (
-                  <div
-                    key={c.phone}
-                    className="bg-white dark:bg-slate-900 rounded-[12px] p-4 shadow-[0_1px_3px_rgba(0,0,0,0.08)] border border-gray-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3 min-w-0"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <p className="text-[16px] font-bold text-[#111827] dark:text-white break-words">
-                        {c.name}
+              {financeSubTab === 'refunds' && currentUser.role === 'owner' && (
+                <div className="space-y-3">
+                  <div className="bg-white rounded-2xl border border-gray-200 p-4 space-y-3">
+                    <h3 className="text-sm font-bold text-[#111827]">
+                      Eligible Paid Orders for Refund
+                    </h3>
+                    <div className="divide-y divide-gray-100">
+                      {orders
+                        .filter((o) => o.paymentStatus === 'PAID')
+                        .map((o) => (
+                          <div
+                            key={o.id}
+                            className="py-3 flex flex-wrap items-center justify-between gap-2"
+                          >
+                            <div>
+                              <p className="text-sm font-bold text-[#111827]">
+                                {o.orderNumber} · {o.customerName}
+                              </p>
+                              <p className="text-xs text-[#6B7280]">Paid ₹{o.grandTotal}</p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setRefundModalOrder(o);
+                                setRefundAmountInput(String(o.grandTotal));
+                                setRefundReasonInput('');
+                              }}
+                              className="px-3.5 py-1.5 rounded-xl bg-[#D9480F] text-white text-xs font-bold cursor-pointer"
+                            >
+                              Refund Order
+                            </button>
+                          </div>
+                        ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {financeSubTab === 'reports' && (
+                <div className="space-y-4">
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    <div className="bg-white rounded-2xl border border-gray-200 p-4">
+                      <p className="text-xs text-[#6B7280]">Delivered Revenue</p>
+                      <p className="text-xl font-bold text-[#111827] mt-1 font-mono">
+                        ₹{financeMetrics.totalRevenue}
                       </p>
-                      <p className="text-[14px] text-[#6B7280] tabular-nums">
-                        +91 {c.phone} · {c.orderCount} orders · ₹{c.totalSpent}
+                    </div>
+                    <div className="bg-white rounded-2xl border border-gray-200 p-4">
+                      <p className="text-xs text-[#6B7280]">GST Collected</p>
+                      <p className="text-xl font-bold text-[#111827] mt-1 font-mono">
+                        ₹{financeMetrics.totalGst}
+                      </p>
+                    </div>
+                    <div className="bg-white rounded-2xl border border-gray-200 p-4">
+                      <p className="text-xs text-[#6B7280]">Delivery Fees</p>
+                      <p className="text-xl font-bold text-[#111827] mt-1 font-mono">
+                        ₹{financeMetrics.totalDeliveryFees}
+                      </p>
+                    </div>
+                    <div className="bg-white rounded-2xl border border-gray-200 p-4">
+                      <p className="text-xs text-[#6B7280]">Total Refunded</p>
+                      <p className="text-xl font-bold text-red-600 mt-1 font-mono">
+                        ₹{financeMetrics.totalRefunded}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="bg-white rounded-2xl border border-gray-200 p-4 flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <h3 className="text-sm font-bold text-[#111827]">Export Order & Tax Ledger</h3>
+                      <p className="text-xs text-[#6B7280]">
+                        Download full CSV report with item totals, GST breakdown, and payment status.
                       </p>
                     </div>
                     <button
                       type="button"
-                      onClick={async () => {
-                        await fetch('/api/admin/block', {
-                          method: 'POST',
-                          headers: {
-                            'Content-Type': 'application/json',
-                            Authorization: `Bearer ${token}`,
-                          },
-                          body: JSON.stringify({
-                            targetType: 'PHONE',
-                            targetValue: c.phone,
-                            reason: 'Blocked from Customer Directory',
-                            unblock: c.isBlocked,
-                          }),
-                        });
-                        fetchBootstrap(token);
-                        showToast(c.isBlocked ? 'Customer unblocked' : 'Customer blocked');
-                      }}
-                      className={`min-h-[44px] px-3.5 rounded-[8px] text-[12px] font-semibold border cursor-pointer whitespace-nowrap ${
-                        c.isBlocked
-                          ? 'border-gray-300 text-[#111827] bg-gray-100'
-                          : 'border-red-200 text-[#DC2626] bg-red-50'
+                      onClick={handleExportOrdersCsv}
+                      className="min-h-[40px] px-4 rounded-xl bg-[#111827] text-white text-xs font-bold flex items-center gap-2 cursor-pointer"
+                    >
+                      <Download className="w-4 h-4" />
+                      <span>Export CSV</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+            </section>
+          )}
+
+          {/* ====================================================================
+              8. SETTINGS SECTION (Shop Info, Order Rules, Team & Roles, Security, Audit Log)
+          ==================================================================== */}
+          {activeSection === 'settings' && (
+            <section className="space-y-4 min-w-0">
+              <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
+                {currentUser.role !== 'staff' && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => setSettingsSubTab('shop')}
+                      className={`min-h-[40px] px-3.5 rounded-xl text-xs font-bold whitespace-nowrap cursor-pointer ${
+                        settingsSubTab === 'shop'
+                          ? 'bg-[#D9480F] text-white'
+                          : 'bg-white border border-gray-200 text-[#111827]'
                       }`}
                     >
-                      {c.isBlocked ? 'Unblock' : 'Block Phone'}
+                      Shop Info & Hours
                     </button>
-                  </div>
-                ))}
-              </div>
-
-              {/* Block Phone or IP Form */}
-              <div className="bg-white dark:bg-slate-900 rounded-[12px] p-4 shadow-[0_1px_3px_rgba(0,0,0,0.08)] border border-gray-200 dark:border-slate-800 space-y-3">
-                <h3 className="text-[16px] font-bold">Block Phone or IP Address</h3>
-                {blockError && (
-                  <p className="text-[12px] text-[#DC2626] font-semibold">{blockError}</p>
+                    <button
+                      type="button"
+                      onClick={() => setSettingsSubTab('rules')}
+                      className={`min-h-[40px] px-3.5 rounded-xl text-xs font-bold whitespace-nowrap cursor-pointer ${
+                        settingsSubTab === 'rules'
+                          ? 'bg-[#D9480F] text-white'
+                          : 'bg-white border border-gray-200 text-[#111827]'
+                      }`}
+                    >
+                      Order Rules
+                    </button>
+                  </>
                 )}
-                <div>
-                  <label className="block text-[14px] font-semibold mb-1">Target Type</label>
-                  <select
-                    value={blockType}
-                    onChange={(e) => setBlockType(e.target.value as 'PHONE' | 'IP')}
-                    className="w-full min-h-[48px] px-3.5 rounded-[8px] border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-[14px]"
+                {currentUser.role === 'owner' && (
+                  <button
+                    type="button"
+                    onClick={() => setSettingsSubTab('team')}
+                    className={`min-h-[40px] px-3.5 rounded-xl text-xs font-bold whitespace-nowrap cursor-pointer ${
+                      settingsSubTab === 'team'
+                        ? 'bg-[#D9480F] text-white'
+                        : 'bg-white border border-gray-200 text-[#111827]'
+                    }`}
                   >
-                    <option value="PHONE">Phone Number</option>
-                    <option value="IP">IP Address</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-[14px] font-semibold mb-1">
-                    {blockType === 'PHONE' ? '10-Digit Phone' : 'IP Address'}
-                  </label>
-                  <input
-                    type="text"
-                    value={blockValue}
-                    onChange={(e) => setBlockValue(e.target.value)}
-                    placeholder={blockType === 'PHONE' ? '9898989898' : '203.0.113.42'}
-                    className="w-full min-h-[48px] px-3.5 rounded-[8px] border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-[14px] tabular-nums"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[14px] font-semibold mb-1">Reason</label>
-                  <input
-                    type="text"
-                    value={blockReason}
-                    onChange={(e) => setBlockReason(e.target.value)}
-                    className="w-full min-h-[48px] px-3.5 rounded-[8px] border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-[14px]"
-                  />
-                </div>
+                    Team & Roles
+                  </button>
+                )}
                 <button
                   type="button"
-                  onClick={async () => {
-                    setBlockError(null);
-                    if (!blockValue.trim()) {
-                      setBlockError('Please enter a phone number or IP to block.');
-                      return;
-                    }
-                    const res = await fetch('/api/admin/block', {
-                      method: 'POST',
-                      headers: {
-                        'Content-Type': 'application/json',
-                        Authorization: `Bearer ${token}`,
-                      },
-                      body: JSON.stringify({
-                        targetType: blockType,
-                        targetValue: blockValue,
-                        reason: blockReason,
-                      }),
-                    });
-                    if (res.ok) {
-                      setBlockValue('');
-                      fetchBootstrap(token);
-                      showToast('Added to blocklist');
-                    }
-                  }}
-                  className="w-full min-h-[48px] px-4 rounded-[8px] bg-[#DC2626] text-white text-[14px] font-semibold cursor-pointer"
+                  onClick={() => setSettingsSubTab('security')}
+                  className={`min-h-[40px] px-3.5 rounded-xl text-xs font-bold whitespace-nowrap cursor-pointer ${
+                    settingsSubTab === 'security'
+                      ? 'bg-[#D9480F] text-white'
+                      : 'bg-white border border-gray-200 text-[#111827]'
+                  }`}
                 >
-                  Add to Blocklist
+                  Security & 2FA
                 </button>
+                {currentUser.role === 'owner' && (
+                  <button
+                    type="button"
+                    onClick={() => setSettingsSubTab('audit')}
+                    className={`min-h-[40px] px-3.5 rounded-xl text-xs font-bold whitespace-nowrap cursor-pointer ${
+                      settingsSubTab === 'audit'
+                        ? 'bg-[#D9480F] text-white'
+                        : 'bg-white border border-gray-200 text-[#111827]'
+                    }`}
+                  >
+                    Audit Log ({auditLogs.length})
+                  </button>
+                )}
+              </div>
 
-                {blockedList.length > 0 && (
-                  <div className="pt-3 border-t border-gray-100 dark:border-slate-800 space-y-2">
-                    <p className="text-[12px] font-semibold text-[#6B7280]">
-                      Active Blocklist ({blockedList.length})
-                    </p>
-                    {blockedList.map((b) => (
-                      <div
-                        key={b.id}
-                        className="p-3 rounded-[8px] border border-gray-200 dark:border-slate-700 flex items-center justify-between gap-2 text-[12px] min-w-0"
+              {/* Sub-tab: SHOP INFO & HOURS (with single Open/Closed & Busy Mode card) */}
+              {settingsSubTab === 'shop' && settings && currentUser.role !== 'staff' && (
+                <div className="bg-white rounded-2xl border border-gray-200 p-5 space-y-4">
+                  <div className="p-4 rounded-xl bg-gray-50 border border-gray-200 flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <h3 className="text-sm font-bold text-[#111827]">
+                        Kitchen Availability & Busy Mode
+                      </h3>
+                      <p className="text-xs text-[#6B7280]">
+                        Synced directly with the top header status toggle.
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-3">
+                      <label className="flex items-center gap-2 text-xs font-bold cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={settings.isOpen}
+                          onChange={(e) => handleSaveShopSettings({ isOpen: e.target.checked })}
+                          className="w-4 h-4 accent-green-600"
+                        />
+                        <span>Shop Open</span>
+                      </label>
+                      <label className="flex items-center gap-2 text-xs font-bold cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={settings.busyMode}
+                          onChange={(e) =>
+                            handleSaveShopSettings({ busyMode: e.target.checked })
+                          }
+                          className="w-4 h-4 accent-amber-600"
+                        />
+                        <span>Busy Mode (+15m prep)</span>
+                      </label>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-semibold mb-1">Shop Name</label>
+                      <input
+                        type="text"
+                        value={settings.shopName}
+                        onChange={(e) => setSettings({ ...settings, shopName: e.target.value })}
+                        className="w-full min-h-[40px] px-3 rounded-xl border border-gray-300 text-xs"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold mb-1">Support Phone</label>
+                      <input
+                        type="text"
+                        value={settings.supportPhone}
+                        onChange={(e) => setSettings({ ...settings, supportPhone: e.target.value })}
+                        className="w-full min-h-[40px] px-3 rounded-xl border border-gray-300 text-xs"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold mb-1">FSSAI License</label>
+                      <input
+                        type="text"
+                        value={settings.fssaiNumber}
+                        onChange={(e) => setSettings({ ...settings, fssaiNumber: e.target.value })}
+                        className="w-full min-h-[40px] px-3 rounded-xl border border-gray-300 text-xs"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold mb-1">Weekly Timings</label>
+                      <input
+                        type="text"
+                        value={settings.weeklyTimings}
+                        onChange={(e) => setSettings({ ...settings, weeklyTimings: e.target.value })}
+                        className="w-full min-h-[40px] px-3 rounded-xl border border-gray-300 text-xs"
+                      />
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => handleSaveShopSettings(settings)}
+                    className="min-h-[42px] px-5 rounded-xl bg-[#D9480F] text-white text-xs font-bold cursor-pointer"
+                  >
+                    Save Shop Info
+                  </button>
+                </div>
+              )}
+
+              {/* Sub-tab: ORDER RULES (including optional COD Phone OTP toggle) */}
+              {settingsSubTab === 'rules' && settings && currentUser.role !== 'staff' && (
+                <div className="bg-white rounded-2xl border border-gray-200 p-5 space-y-4">
+                  <h3 className="text-sm font-bold text-[#111827]">
+                    Checkout, COD & Anti-Abuse Rules
+                  </h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div>
+                      <label className="block text-xs font-semibold mb-1">Min Order (₹)</label>
+                      <input
+                        type="number"
+                        value={settings.minOrderAmount}
+                        onChange={(e) =>
+                          setSettings({ ...settings, minOrderAmount: Number(e.target.value) })
+                        }
+                        className="w-full min-h-[40px] px-3 rounded-xl border border-gray-300 text-xs font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold mb-1">GST (%)</label>
+                      <input
+                        type="number"
+                        value={settings.gstPercent}
+                        onChange={(e) =>
+                          setSettings({ ...settings, gstPercent: Number(e.target.value) })
+                        }
+                        className="w-full min-h-[40px] px-3 rounded-xl border border-gray-300 text-xs font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold mb-1">COD Max Amount (₹)</label>
+                      <input
+                        type="number"
+                        value={settings.codMaxAmount}
+                        onChange={(e) =>
+                          setSettings({ ...settings, codMaxAmount: Number(e.target.value) })
+                        }
+                        className="w-full min-h-[40px] px-3 rounded-xl border border-gray-300 text-xs font-mono"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-2.5 pt-2">
+                    <label className="flex items-center gap-2 text-xs font-bold cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={settings.codEnabled}
+                        onChange={(e) =>
+                          setSettings({ ...settings, codEnabled: e.target.checked })
+                        }
+                        className="w-4 h-4 accent-[#D9480F]"
+                      />
+                      <span>Enable Cash on Delivery (COD)</span>
+                    </label>
+
+                    <label className="flex items-center gap-2 text-xs font-bold cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(settings.requirePhoneOtpForCod)}
+                        onChange={(e) =>
+                          setSettings({ ...settings, requirePhoneOtpForCod: e.target.checked })
+                        }
+                        className="w-4 h-4 accent-[#D9480F]"
+                      />
+                      <span>Require phone OTP for COD orders (Guest anti-abuse protection)</span>
+                    </label>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => handleSaveShopSettings(settings)}
+                    className="min-h-[42px] px-5 rounded-xl bg-[#D9480F] text-white text-xs font-bold cursor-pointer"
+                  >
+                    Save Order Rules
+                  </button>
+                </div>
+              )}
+
+              {/* Sub-tab: TEAM & ROLES (Owner Only: Create user, disable, role, reset password, active sessions, log out all devices) */}
+              {settingsSubTab === 'team' && currentUser.role === 'owner' && (
+                <div className="space-y-4">
+                  <form
+                    onSubmit={async (e) => {
+                      e.preventDefault();
+                      if (!newUserName.trim() || !newUserEmail.trim() || newUserPassword.length < 8) {
+                        showToast('Fill name, email, and a password of at least 8 chars');
+                        return;
+                      }
+                      const res = await adminFetch('/api/admin/users', {
+                        method: 'POST',
+                        body: JSON.stringify({
+                          name: newUserName.trim(),
+                          email: newUserEmail.trim(),
+                          role: newUserRole,
+                          password: newUserPassword,
+                        }),
+                      });
+                      if (res.ok) {
+                        setNewUserName('');
+                        setNewUserEmail('');
+                        setNewUserPassword('');
+                        await fetchBootstrap();
+                        showToast('Staff/Admin account created');
+                      } else {
+                        const err = await res.json().catch(() => ({}));
+                        showToast(err.error || 'Could not create user');
+                      }
+                    }}
+                    className="bg-white rounded-2xl border border-gray-200 p-4 space-y-3"
+                  >
+                    <h3 className="text-sm font-bold text-[#111827]">Create Admin / Staff User</h3>
+                    <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
+                      <input
+                        type="text"
+                        value={newUserName}
+                        onChange={(e) => setNewUserName(e.target.value)}
+                        placeholder="Full Name *"
+                        className="min-h-[40px] px-3 rounded-xl border border-gray-300 text-xs"
+                      />
+                      <input
+                        type="email"
+                        value={newUserEmail}
+                        onChange={(e) => setNewUserEmail(e.target.value)}
+                        placeholder="Email *"
+                        className="min-h-[40px] px-3 rounded-xl border border-gray-300 text-xs"
+                      />
+                      <select
+                        value={newUserRole}
+                        onChange={(e) => setNewUserRole(e.target.value as AdminRole)}
+                        className="min-h-[40px] px-3 rounded-xl border border-gray-300 text-xs font-semibold"
                       >
-                        <div className="min-w-0 flex-1">
-                          <p className="font-bold tabular-nums break-words">
-                            [{b.targetType}] {b.targetValue}
+                        <option value="staff">Staff (Orders & Stock)</option>
+                        <option value="manager">Manager (Ops & Menu)</option>
+                        <option value="owner">Owner (Full Access)</option>
+                      </select>
+                      <input
+                        type="password"
+                        value={newUserPassword}
+                        onChange={(e) => setNewUserPassword(e.target.value)}
+                        placeholder="Initial Password (min 8 chars)"
+                        className="min-h-[40px] px-3 rounded-xl border border-gray-300 text-xs"
+                      />
+                    </div>
+                    <button
+                      type="submit"
+                      className="min-h-[40px] px-4 rounded-xl bg-[#D9480F] text-white text-xs font-bold cursor-pointer"
+                    >
+                      Create User Account
+                    </button>
+                  </form>
+
+                  {/* Users List */}
+                  <div className="bg-white rounded-2xl border border-gray-200 divide-y divide-gray-100">
+                    {adminUsers.map((u) => (
+                      <div
+                        key={u.id}
+                        className="p-4 flex flex-wrap items-center justify-between gap-3 min-w-0"
+                      >
+                        <div className="min-w-0">
+                          <p className="text-sm font-bold text-[#111827]">
+                            {u.name}{' '}
+                            <span className="px-2 py-0.5 rounded bg-gray-100 text-xs uppercase">
+                              {u.role}
+                            </span>
                           </p>
-                          <p className="text-[#6B7280] break-words">{b.reason}</p>
+                          <p className="text-xs text-[#6B7280]">{u.email}</p>
                         </div>
+
+                        <div className="flex flex-wrap items-center gap-2">
+                          <select
+                            value={u.role}
+                            onChange={async (e) => {
+                              await adminFetch(`/api/admin/users/${u.id}`, {
+                                method: 'PATCH',
+                                body: JSON.stringify({ role: e.target.value }),
+                              });
+                              await fetchBootstrap();
+                            }}
+                            className="min-h-[34px] px-2.5 rounded-lg border border-gray-200 text-xs font-semibold"
+                          >
+                            <option value="staff">Staff</option>
+                            <option value="manager">Manager</option>
+                            <option value="owner">Owner</option>
+                          </select>
+
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              await adminFetch(`/api/admin/users/${u.id}`, {
+                                method: 'PATCH',
+                                body: JSON.stringify({ isActive: !u.isActive }),
+                              });
+                              await fetchBootstrap();
+                            }}
+                            className={`px-2.5 py-1 rounded-lg text-xs font-bold cursor-pointer ${
+                              u.isActive
+                                ? 'bg-green-100 text-green-800'
+                                : 'bg-red-100 text-red-800'
+                            }`}
+                          >
+                            {u.isActive ? 'Enabled' : 'Disabled'}
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setResetPassModalUser(u);
+                              setResetPassNewVal('');
+                            }}
+                            className="px-2.5 py-1 rounded-lg border border-gray-200 text-xs font-semibold cursor-pointer"
+                          >
+                            Reset Password
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              await adminFetch(`/api/admin/users/${u.id}/logout-all`, {
+                                method: 'POST',
+                              });
+                              await fetchBootstrap();
+                              showToast(`Logged out all devices for ${u.email}`);
+                            }}
+                            className="px-2.5 py-1 rounded-lg border border-red-200 text-red-700 text-xs font-semibold cursor-pointer"
+                          >
+                            Log out all devices
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Active Sessions List */}
+                  <div className="bg-white rounded-2xl border border-gray-200 p-4 space-y-2">
+                    <h4 className="text-xs font-bold uppercase text-[#6B7280]">
+                      Active Admin Sessions ({adminSessions.filter((s) => !s.revoked).length})
+                    </h4>
+                    <div className="divide-y divide-gray-100 text-xs">
+                      {adminSessions
+                        .filter((s) => !s.revoked)
+                        .slice(0, 12)
+                        .map((s) => (
+                          <div key={s.id} className="py-2 flex items-center justify-between gap-2">
+                            <span className="truncate">
+                              <strong>{s.email}</strong> ({s.role}) · IP: {s.ipAddress}
+                            </span>
+                            <span className="text-gray-400 shrink-0">
+                              {new Date(s.createdAt).toLocaleTimeString([], {
+                                hour: '2-digit',
+                                minute: '2-digit',
+                              })}
+                            </span>
+                          </div>
+                        ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Sub-tab: SECURITY (Change My Password + Owner TOTP 2FA) */}
+              {settingsSubTab === 'security' && (
+                <div className="space-y-4">
+                  <div className="bg-white rounded-2xl border border-gray-200 p-5 space-y-3">
+                    <h3 className="text-sm font-bold text-[#111827]">Change My Password</h3>
+                    <form onSubmit={handleChangeMyPassword} className="space-y-3 max-w-md">
+                      <input
+                        type="password"
+                        required
+                        value={currentPasswordInput}
+                        onChange={(e) => setCurrentPasswordInput(e.target.value)}
+                        placeholder="Current password"
+                        className="w-full min-h-[40px] px-3 rounded-xl border border-gray-300 text-xs"
+                      />
+                      <input
+                        type="password"
+                        required
+                        value={newPasswordInput}
+                        onChange={(e) => setNewPasswordInput(e.target.value)}
+                        placeholder="New password (min 8 chars)"
+                        className="w-full min-h-[40px] px-3 rounded-xl border border-gray-300 text-xs"
+                      />
+                      <input
+                        type="password"
+                        required
+                        value={confirmPasswordInput}
+                        onChange={(e) => setConfirmPasswordInput(e.target.value)}
+                        placeholder="Confirm new password"
+                        className="w-full min-h-[40px] px-3 rounded-xl border border-gray-300 text-xs"
+                      />
+                      <button
+                        type="submit"
+                        className="min-h-[40px] px-5 rounded-xl bg-[#D9480F] text-white text-xs font-bold cursor-pointer"
+                      >
+                        Update Password
+                      </button>
+                    </form>
+                  </div>
+
+                  {currentUser.role === 'owner' && (
+                    <div className="bg-white rounded-2xl border border-gray-200 p-5 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <h3 className="text-sm font-bold text-[#111827]">
+                            Owner Two-Factor Authentication (TOTP 2FA)
+                          </h3>
+                          <p className="text-xs text-[#6B7280]">
+                            Protect the Owner account with a 6-digit RFC 6238 Authenticator code.
+                          </p>
+                        </div>
+                        <span
+                          className={`px-2.5 py-1 rounded-full text-xs font-bold ${
+                            currentUser.totpEnabled
+                              ? 'bg-green-100 text-green-800'
+                              : 'bg-gray-100 text-gray-600'
+                          }`}
+                        >
+                          {currentUser.totpEnabled ? '2FA Enabled' : '2FA Off'}
+                        </span>
+                      </div>
+
+                      {!currentUser.totpEnabled ? (
+                        <div className="space-y-3">
+                          {!totpSetupData ? (
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                const res = await adminFetch('/api/admin/totp/setup', {
+                                  method: 'POST',
+                                });
+                                if (res.ok) {
+                                  setTotpSetupData(await res.json());
+                                }
+                              }}
+                              className="min-h-[40px] px-4 rounded-xl bg-[#111827] text-white text-xs font-bold cursor-pointer"
+                            >
+                              Generate 2FA Secret
+                            </button>
+                          ) : (
+                            <div className="p-3.5 rounded-xl bg-gray-50 border border-gray-200 space-y-2 text-xs">
+                              <p className="font-semibold">
+                                Secret Key (add to Authenticator app):
+                              </p>
+                              <p className="font-mono font-bold text-sm text-[#D9480F] break-all">
+                                {totpSetupData.secretHex}
+                              </p>
+                              {totpSetupData.currentDemoCode && (
+                                <p className="text-[11px] font-mono text-gray-600">
+                                  Current window code: <strong>{totpSetupData.currentDemoCode}</strong>
+                                </p>
+                              )}
+                              <div className="flex flex-wrap gap-2 pt-1">
+                                <input
+                                  type="text"
+                                  inputMode="numeric"
+                                  maxLength={6}
+                                  value={totpVerifyCode}
+                                  onChange={(e) =>
+                                    setTotpVerifyCode(e.target.value.replace(/\D/g, '').slice(0, 6))
+                                  }
+                                  placeholder="6-digit code"
+                                  className="w-32 min-h-[38px] px-3 rounded-lg border border-gray-300 font-mono text-xs"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    const res = await adminFetch('/api/admin/totp/verify', {
+                                      method: 'POST',
+                                      body: JSON.stringify({ code: totpVerifyCode }),
+                                    });
+                                    if (res.ok) {
+                                      setTotpSetupData(null);
+                                      setTotpVerifyCode('');
+                                      await fetchBootstrap();
+                                      showToast('Owner TOTP 2FA enabled');
+                                    } else {
+                                      showToast('Invalid 6-digit code');
+                                    }
+                                  }}
+                                  className="px-4 py-2 rounded-lg bg-green-700 text-white font-bold cursor-pointer"
+                                >
+                                  Verify & Enable 2FA
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      ) : (
                         <button
                           type="button"
                           onClick={async () => {
-                            await fetch('/api/admin/block', {
-                              method: 'POST',
-                              headers: {
-                                'Content-Type': 'application/json',
-                                Authorization: `Bearer ${token}`,
-                              },
-                              body: JSON.stringify({
-                                targetValue: b.targetValue,
-                                unblock: true,
-                              }),
-                            });
-                            fetchBootstrap(token);
+                            await adminFetch('/api/admin/totp/disable', { method: 'POST' });
+                            await fetchBootstrap();
+                            showToast('Owner 2FA disabled');
                           }}
-                          className="min-h-[36px] px-2.5 rounded-[6px] border border-gray-300 font-semibold shrink-0 cursor-pointer"
+                          className="min-h-[38px] px-4 rounded-xl border border-red-200 text-red-700 text-xs font-bold cursor-pointer"
                         >
-                          Remove
+                          Disable 2FA
                         </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Sub-tab: AUDIT LOG (Owner Only) */}
+              {settingsSubTab === 'audit' && currentUser.role === 'owner' && (
+                <div className="bg-white rounded-2xl border border-gray-200 divide-y divide-gray-100">
+                  {auditLogs.map((log) => (
+                    <div key={log.id} className="p-3.5 text-xs space-y-1">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="font-mono font-bold text-[#111827]">{log.action}</span>
+                        <span className="text-gray-400">
+                          {new Date(log.createdAt).toLocaleString()}
+                        </span>
                       </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              {/* Customer Reviews & Support Tickets */}
-              <div className="bg-white dark:bg-slate-900 rounded-[12px] p-4 shadow-[0_1px_3px_rgba(0,0,0,0.08)] border border-gray-200 dark:border-slate-800 space-y-3 min-w-0">
-                <h3 className="text-[16px] font-bold">
-                  Customer Ratings & Support ({reviews.length})
-                </h3>
-                {reviews.map((rev) => (
-                  <div
-                    key={rev.id}
-                    className="p-3.5 rounded-[8px] border border-gray-200 dark:border-slate-700 space-y-2 min-w-0"
-                  >
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <span className="text-[14px] font-bold break-words">
-                        {rev.orderNumber} · {rev.customerName}
-                      </span>
-                      <span className="px-2.5 py-0.5 rounded-full bg-amber-100 text-[#D97706] text-[12px] font-semibold tabular-nums">
-                        {rev.rating}/5 Stars
-                      </span>
-                    </div>
-                    <p className="text-[14px] text-[#6B7280] break-words">{rev.comment}</p>
-                    {rev.complaintText && (
-                      <p className="text-[12px] text-[#DC2626] font-semibold break-words">
-                        Complaint ({rev.complaintStatus}): {rev.complaintText}
-                      </p>
-                    )}
-                    {rev.complaintStatus === 'OPEN' && (
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          await fetch(`/api/admin/reviews/${rev.id}`, {
-                            method: 'PATCH',
-                            headers: { Authorization: `Bearer ${token}` },
-                          });
-                          fetchBootstrap(token);
-                          showToast('Complaint marked resolved');
-                        }}
-                        className="min-h-[40px] px-3.5 rounded-[8px] bg-[#16A34A] text-white text-[12px] font-semibold cursor-pointer"
-                      >
-                        Mark Resolved
-                      </button>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </section>
-          )}
-
-          {/* =================================================================
-              SECTION 9: COUPONS
-             ================================================================= */}
-          {activeSection === 'coupons' && (
-            <section className="space-y-4 min-w-0">
-              <h2 className="text-[20px] font-bold text-[#111827] dark:text-white">
-                Discount Coupons ({coupons.length})
-              </h2>
-
-              <div className="space-y-3">
-                {coupons.map((c) => (
-                  <div
-                    key={c.code}
-                    className="bg-white dark:bg-slate-900 rounded-[12px] p-4 shadow-[0_1px_3px_rgba(0,0,0,0.08)] border border-gray-200 dark:border-slate-800 flex items-center justify-between gap-3 min-w-0"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <p className="text-[16px] font-bold text-[#111827] dark:text-white tabular-nums">
-                        {c.code} ·{' '}
-                        {c.discountType === 'FLAT'
-                          ? `₹${c.discountValue} OFF`
-                          : `${c.discountValue}% OFF`}
-                      </p>
-                      <p className="text-[12px] text-[#6B7280] break-words">
-                        {c.description} · Min ₹{c.minOrderAmount}
+                      <p className="text-[#6B7280] break-words">{log.details}</p>
+                      <p className="text-[11px] font-mono text-gray-400">
+                        Actor: {log.adminEmail} ({log.adminRole}) · IP: {log.ipAddress}
                       </p>
                     </div>
-                    <span className="px-3 py-1 rounded-full bg-green-100 text-[#16A34A] text-[12px] font-semibold shrink-0">
-                      {c.isActive ? 'Active' : 'Disabled'}
-                    </span>
-                  </div>
-                ))}
-              </div>
-
-              <div className="bg-white dark:bg-slate-900 rounded-[12px] p-4 shadow-[0_1px_3px_rgba(0,0,0,0.08)] border border-gray-200 dark:border-slate-800 space-y-3">
-                <h3 className="text-[16px] font-bold">Create / Update Coupon</h3>
-                {couponError && (
-                  <p className="text-[12px] text-[#DC2626] font-semibold">{couponError}</p>
-                )}
-                <div>
-                  <label className="block text-[14px] font-semibold mb-1">Coupon Code *</label>
-                  <input
-                    type="text"
-                    value={newCoupon.code || ''}
-                    onChange={(e) =>
-                      setNewCoupon({
-                        ...newCoupon,
-                        code: e.target.value.toUpperCase(),
-                      })
-                    }
-                    placeholder="e.g. BIRYANI100"
-                    className="w-full min-h-[48px] px-3.5 rounded-[8px] border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-[14px] uppercase"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[14px] font-semibold mb-1">Discount Type</label>
-                  <select
-                    value={newCoupon.discountType}
-                    onChange={(e) =>
-                      setNewCoupon({
-                        ...newCoupon,
-                        discountType: e.target.value as 'FLAT' | 'PERCENT',
-                      })
-                    }
-                    className="w-full min-h-[48px] px-3.5 rounded-[8px] border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-[14px]"
-                  >
-                    <option value="FLAT">Flat Discount (₹)</option>
-                    <option value="PERCENT">Percentage (%)</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-[14px] font-semibold mb-1">Discount Value</label>
-                  <input
-                    type="number"
-                    value={newCoupon.discountValue || ''}
-                    onChange={(e) =>
-                      setNewCoupon({
-                        ...newCoupon,
-                        discountValue: Number(e.target.value),
-                      })
-                    }
-                    className="w-full min-h-[48px] px-3.5 rounded-[8px] border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-[14px] tabular-nums"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[14px] font-semibold mb-1">
-                    Minimum Order Amount (₹)
-                  </label>
-                  <input
-                    type="number"
-                    value={newCoupon.minOrderAmount || ''}
-                    onChange={(e) =>
-                      setNewCoupon({
-                        ...newCoupon,
-                        minOrderAmount: Number(e.target.value),
-                      })
-                    }
-                    className="w-full min-h-[48px] px-3.5 rounded-[8px] border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-[14px] tabular-nums"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[14px] font-semibold mb-1">Description</label>
-                  <input
-                    type="text"
-                    value={newCoupon.description || ''}
-                    onChange={(e) =>
-                      setNewCoupon({ ...newCoupon, description: e.target.value })
-                    }
-                    className="w-full min-h-[48px] px-3.5 rounded-[8px] border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-[14px]"
-                  />
-                </div>
-                <button
-                  type="button"
-                  onClick={async () => {
-                    setCouponError(null);
-                    if (!newCoupon.code || newCoupon.code.trim().length < 3) {
-                      setCouponError('Coupon code must be at least 3 characters.');
-                      return;
-                    }
-                    const res = await fetch('/api/admin/coupons', {
-                      method: 'POST',
-                      headers: {
-                        'Content-Type': 'application/json',
-                        Authorization: `Bearer ${token}`,
-                      },
-                      body: JSON.stringify(newCoupon),
-                    });
-                    if (res.ok) {
-                      fetchBootstrap(token);
-                      onRefreshStorefront();
-                      showToast('Coupon saved!');
-                    }
-                  }}
-                  className="w-full min-h-[48px] px-4 rounded-[8px] bg-[#D9480F] text-white text-[14px] font-semibold cursor-pointer"
-                >
-                  Save Coupon
-                </button>
-              </div>
-            </section>
-          )}
-
-          {/* =================================================================
-              SECTION 10: PAYMENTS & REFUNDS (Stacked cards on mobile, table on desktop)
-             ================================================================= */}
-          {activeSection === 'payments_refunds' && (
-            <section className="space-y-4 min-w-0">
-              <h2 className="text-[20px] font-bold text-[#111827] dark:text-white">
-                Payments & Razorpay Refunds ({payments.length})
-              </h2>
-
-              <div className="space-y-3">
-                {payments.map((pay) => (
-                  <div
-                    key={pay.id}
-                    className="bg-white dark:bg-slate-900 rounded-[12px] p-4 shadow-[0_1px_3px_rgba(0,0,0,0.08)] border border-gray-200 dark:border-slate-800 space-y-2.5 min-w-0"
-                  >
-                    <div className="flex items-center justify-between gap-2 min-w-0">
-                      <span className="text-[16px] font-bold tabular-nums">
-                        {pay.orderNumber} · ₹{pay.amount}
-                      </span>
-                      <span
-                        className={`px-3 py-1 rounded-full text-[12px] font-semibold ${
-                          pay.status === 'REFUNDED'
-                            ? 'bg-red-100 text-[#DC2626]'
-                            : 'bg-green-100 text-[#16A34A]'
-                        }`}
-                      >
-                        {pay.status}
-                      </span>
-                    </div>
-                    <p className="text-[12px] text-[#6B7280] break-words tabular-nums">
-                      Gateway: {pay.gateway} · Phone: +91 {pay.customerPhone} · HMAC:{' '}
-                      {pay.serverHmacVerified ? 'Verified' : 'No'} · Webhook:{' '}
-                      {pay.webhookVerified ? 'Verified' : 'No'}
-                    </p>
-                    {pay.status !== 'REFUNDED' && adminUser.role === 'owner' && (
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          const res = await fetch(
-                            `/api/admin/payments/${pay.id}/refund`,
-                            {
-                              method: 'POST',
-                              headers: {
-                                'Content-Type': 'application/json',
-                                Authorization: `Bearer ${token}`,
-                              },
-                              body: JSON.stringify({
-                                amount: pay.amount,
-                                reason: 'Full refund initiated from Admin Ledger',
-                              }),
-                            }
-                          );
-                          if (res.ok) {
-                            fetchBootstrap(token);
-                            showToast(`Refunded ₹${pay.amount} for ${pay.orderNumber}`);
-                          }
-                        }}
-                        className="min-h-[44px] px-4 rounded-[8px] border border-red-200 bg-red-50 text-[#DC2626] text-[12px] font-semibold cursor-pointer"
-                      >
-                        Issue Full Refund
-                      </button>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </section>
-          )}
-
-          {/* =================================================================
-              SECTION 11: AUDIT LOG
-             ================================================================= */}
-          {activeSection === 'audit_log' && (
-            <section className="space-y-4 min-w-0">
-              <h2 className="text-[20px] font-bold text-[#111827] dark:text-white">
-                Security Audit Log ({auditLogs.length})
-              </h2>
-              <div className="bg-white dark:bg-slate-900 rounded-[12px] shadow-[0_1px_3px_rgba(0,0,0,0.08)] border border-gray-200 dark:border-slate-800 divide-y divide-gray-100 dark:divide-slate-800">
-                {auditLogs.map((log) => (
-                  <div key={log.id} className="p-3.5 space-y-1 min-w-0">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <span className="text-[14px] font-bold text-[#111827] dark:text-white">
-                        {log.action}
-                      </span>
-                      <span className="text-[12px] text-[#6B7280] tabular-nums">
-                        {new Date(log.createdAt).toLocaleTimeString()}
-                      </span>
-                    </div>
-                    <p className="text-[12px] text-[#6B7280] break-words">{log.details}</p>
-                  </div>
-                ))}
-              </div>
-            </section>
-          )}
-
-          {/* =================================================================
-              SECTION 12: BROADCAST
-             ================================================================= */}
-          {activeSection === 'broadcast' && (
-            <section className="space-y-4 min-w-0">
-              <h2 className="text-[20px] font-bold text-[#111827] dark:text-white">
-                Guest Offer Broadcast
-              </h2>
-              <div className="bg-white dark:bg-slate-900 rounded-[12px] p-4 shadow-[0_1px_3px_rgba(0,0,0,0.08)] border border-gray-200 dark:border-slate-800 space-y-4">
-                {broadcastError && (
-                  <p className="text-[12px] text-[#DC2626] font-semibold">{broadcastError}</p>
-                )}
-                <div className="grid grid-cols-2 gap-2">
-                  {(['WHATSAPP', 'SMS'] as const).map((ch) => (
-                    <button
-                      key={ch}
-                      type="button"
-                      onClick={() => setBroadcastChannel(ch)}
-                      className={`min-h-[48px] px-3 rounded-[8px] text-[14px] font-semibold cursor-pointer ${
-                        broadcastChannel === ch
-                          ? 'bg-[#D9480F] text-white'
-                          : 'bg-gray-100 dark:bg-slate-800 text-[#111827] dark:text-slate-200'
-                      }`}
-                    >
-                      {ch}
-                    </button>
                   ))}
                 </div>
-                <div>
-                  <label className="block text-[14px] font-semibold mb-1">
-                    Broadcast Message
-                  </label>
-                  <textarea
-                    rows={4}
-                    value={broadcastMsg}
-                    onChange={(e) => setBroadcastMsg(e.target.value)}
-                    className="w-full p-3.5 rounded-[8px] border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-[14px]"
-                  />
-                </div>
-                <button
-                  type="button"
-                  onClick={async () => {
-                    setBroadcastError(null);
-                    if (broadcastMsg.trim().length < 5) {
-                      setBroadcastError('Message must be at least 5 characters.');
-                      return;
-                    }
-                    const res = await fetch('/api/admin/broadcast', {
-                      method: 'POST',
-                      headers: {
-                        'Content-Type': 'application/json',
-                        Authorization: `Bearer ${token}`,
-                      },
-                      body: JSON.stringify({
-                        channel: broadcastChannel,
-                        message: broadcastMsg,
-                      }),
-                    });
-                    if (res.ok) {
-                      fetchBootstrap(token);
-                      showToast(`${broadcastChannel} broadcast sent!`);
-                    }
-                  }}
-                  className="w-full min-h-[48px] px-4 rounded-[8px] bg-[#D9480F] text-white text-[14px] font-semibold cursor-pointer"
-                >
-                  Send Broadcast to {customers.filter((c) => !c.isBlocked).length} Customers
-                </button>
-              </div>
+              )}
             </section>
           )}
-        </div>
+        </main>
       </div>
 
-      {/* =====================================================================
-          MOBILE BOTTOM NAV WITH 5 TABS (Orders, Menu, Home Page, Reports, More)
-         ===================================================================== */}
-      <nav className="lg:hidden fixed bottom-0 left-0 right-0 w-full max-w-[100vw] z-40 bg-white dark:bg-slate-900 border-t border-gray-200 dark:border-slate-800 grid grid-cols-5 items-center min-h-[56px] pb-safe overflow-x-clip">
-        {allNavSections.slice(0, 4).map((tab) => {
-          const Icon = tab.icon;
-          const isActive = activeSection === tab.id && !moreSheetOpen;
-          return (
-            <button
-              key={tab.id}
-              type="button"
-              onClick={() => {
-                setMoreSheetOpen(false);
-                setActiveSection(tab.id);
-              }}
-              className={`relative flex flex-col items-center justify-center min-h-[48px] text-[12px] font-semibold whitespace-nowrap cursor-pointer min-w-0 ${
-                isActive
-                  ? 'text-[#D9480F]'
-                  : 'text-[#6B7280] dark:text-slate-400'
-              }`}
-            >
-              <Icon className="w-4 h-4 shrink-0" />
-              <span className="mt-0.5 truncate max-w-full px-1">{tab.label}</span>
-              {tab.badge !== undefined && tab.badge > 0 && (
-                <span className="absolute top-1 right-3 px-1.5 rounded-full bg-[#D9480F] text-white text-[10px] font-bold tabular-nums">
-                  {tab.badge}
-                </span>
-              )}
-            </button>
-          );
-        })}
+      {/* ========================================================================
+          MOBILE BOTTOM NAV (Hidden on Desktop lg:): 5 Tabs + "More" Sheet
+      ======================================================================== */}
+      <nav className="lg:hidden fixed bottom-0 left-0 right-0 w-full max-w-[100vw] z-30 bg-white border-t border-gray-200 pb-safe">
+        <div className="grid grid-cols-5 h-16">
+          <button
+            type="button"
+            onClick={() => {
+              setActiveSection('orders');
+              setMoreSheetOpen(false);
+            }}
+            className={`flex flex-col items-center justify-center gap-1 text-[11px] font-bold cursor-pointer ${
+              activeSection === 'orders' ? 'text-[#D9480F]' : 'text-[#6B7280]'
+            }`}
+          >
+            <Package className="w-5 h-5" />
+            <span>Orders</span>
+          </button>
 
-        {/* 5th Tab: More */}
-        <button
-          type="button"
-          onClick={() => setMoreSheetOpen((v) => !v)}
-          className={`flex flex-col items-center justify-center min-h-[48px] text-[12px] font-semibold whitespace-nowrap cursor-pointer min-w-0 ${
-            moreSheetOpen || moreSections.some((s) => s.id === activeSection)
-              ? 'text-[#D9480F]'
-              : 'text-[#6B7280] dark:text-slate-400'
-          }`}
-        >
-          <MoreHorizontal className="w-4 h-4 shrink-0" />
-          <span className="mt-0.5 truncate">More</span>
-        </button>
+          <button
+            type="button"
+            onClick={() => {
+              setActiveSection('menu');
+              setMoreSheetOpen(false);
+            }}
+            className={`flex flex-col items-center justify-center gap-1 text-[11px] font-bold cursor-pointer ${
+              activeSection === 'menu' ? 'text-[#D9480F]' : 'text-[#6B7280]'
+            }`}
+          >
+            <UtensilsCrossed className="w-5 h-5" />
+            <span>Menu</span>
+          </button>
+
+          {currentUser.role !== 'staff' && (
+            <>
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveSection('storefront');
+                  setMoreSheetOpen(false);
+                }}
+                className={`flex flex-col items-center justify-center gap-1 text-[11px] font-bold cursor-pointer ${
+                  activeSection === 'storefront' ? 'text-[#D9480F]' : 'text-[#6B7280]'
+                }`}
+              >
+                <Store className="w-5 h-5" />
+                <span>Storefront</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveSection('finance');
+                  setMoreSheetOpen(false);
+                }}
+                className={`flex flex-col items-center justify-center gap-1 text-[11px] font-bold cursor-pointer ${
+                  activeSection === 'finance' ? 'text-[#D9480F]' : 'text-[#6B7280]'
+                }`}
+              >
+                <BarChart3 className="w-5 h-5" />
+                <span>Finance</span>
+              </button>
+            </>
+          )}
+
+          <button
+            type="button"
+            onClick={() => setMoreSheetOpen((o) => !o)}
+            className="flex flex-col items-center justify-center gap-1 text-[11px] font-bold text-[#6B7280] cursor-pointer"
+          >
+            <MoreHorizontal className="w-5 h-5" />
+            <span>More</span>
+          </button>
+        </div>
       </nav>
 
-      {/* =====================================================================
-          "MORE" BOTTOM SHEET ON MOBILE (Settings, Delivery Zone, Riders, Customers, Coupons, Payments & Refunds, Audit Log, Broadcast)
-         ===================================================================== */}
+      {/* Mobile "More" Bottom Sheet */}
       {moreSheetOpen && (
-        <div className="lg:hidden fixed inset-0 z-50 bg-black/60 flex items-end justify-center">
-          <div className="w-full max-h-[82dvh] bg-white dark:bg-slate-900 rounded-t-[16px] p-4 space-y-3 overflow-y-auto pb-safe">
-            <div className="flex items-center justify-between border-b border-gray-200 dark:border-slate-800 pb-3">
-              <h3 className="text-[16px] font-bold text-[#111827] dark:text-white">
-                More Admin Sections
-              </h3>
+        <div className="lg:hidden fixed inset-0 z-40 bg-black/50 flex items-end">
+          <div className="w-full bg-white rounded-t-3xl p-5 space-y-3 pb-safe">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-bold text-[#111827]">All Kitchen Sections</h3>
               <button
                 type="button"
                 onClick={() => setMoreSheetOpen(false)}
-                className="min-w-[44px] min-h-[44px] rounded-[8px] flex items-center justify-center text-[#6B7280]"
+                className="p-2 text-gray-500"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
-
-            <div className="grid grid-cols-1 gap-1.5">
-              {moreSections.map((sec) => {
+            <div className="grid grid-cols-2 gap-2">
+              {allowedSections.map((sec) => {
                 const Icon = sec.icon;
-                const active = activeSection === sec.id;
                 return (
                   <button
                     key={sec.id}
@@ -3611,111 +3630,407 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       setActiveSection(sec.id);
                       setMoreSheetOpen(false);
                     }}
-                    className={`w-full min-h-[48px] px-3.5 rounded-[8px] flex items-center justify-between text-[14px] font-semibold cursor-pointer ${
-                      active
-                        ? 'bg-[#D9480F] text-white'
-                        : 'bg-[#F4F5F7] dark:bg-slate-800 text-[#111827] dark:text-slate-100'
+                    className={`min-h-[44px] px-3 rounded-xl border text-xs font-bold flex items-center gap-2 cursor-pointer ${
+                      activeSection === sec.id
+                        ? 'border-[#D9480F] bg-orange-50 text-[#D9480F]'
+                        : 'border-gray-200 text-[#111827]'
                     }`}
                   >
-                    <span className="flex items-center gap-3">
-                      <Icon className="w-4 h-4 shrink-0" />
-                      <span>{sec.label}</span>
-                    </span>
-                    <ChevronRight className="w-4 h-4 shrink-0" />
+                    <Icon className="w-4 h-4 shrink-0" />
+                    <span className="truncate">{sec.label}</span>
                   </button>
                 );
               })}
             </div>
-
-            <div className="pt-2 border-t border-gray-200 dark:border-slate-800 grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={() => setDarkMode((d) => !d)}
-                className="min-h-[48px] px-3 rounded-[8px] border border-gray-200 dark:border-slate-700 text-[14px] font-semibold flex items-center justify-center gap-2 cursor-pointer"
-              >
-                {darkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
-                <span>{darkMode ? 'Light Mode' : 'Night Mode'}</span>
-              </button>
-              <button
-                type="button"
-                onClick={handleLogout}
-                className="min-h-[48px] px-3 rounded-[8px] border border-red-200 text-[#DC2626] text-[14px] font-semibold flex items-center justify-center gap-2 cursor-pointer"
-              >
-                <LogOut className="w-4 h-4" />
-                <span>Sign Out</span>
-              </button>
-            </div>
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="w-full min-h-[44px] rounded-xl border border-red-200 text-red-700 text-xs font-bold flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <LogOut className="w-4 h-4" />
+              <span>Sign Out ({currentUser.email})</span>
+            </button>
           </div>
         </div>
       )}
 
-      {/* =====================================================================
-          KOT / THERMAL PRINT SLIP MODAL
-         ===================================================================== */}
-      {kotOrder && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-          <div className="w-full max-w-sm rounded-[12px] bg-white text-[#111827] border border-gray-300 p-5 space-y-4">
-            <div id="printable-area" className="text-[12px] space-y-3 tabular-nums">
-              <div className="text-center border-b border-dashed border-gray-400 pb-3">
-                <p className="font-bold text-[14px]">AANGAN ARTISANAL KITCHEN</p>
-                <p>KITCHEN ORDER TICKET (KOT)</p>
-                <p className="mt-1 font-bold text-[16px]">{kotOrder.orderNumber}</p>
-                <p>{new Date(kotOrder.placedAt).toLocaleString()}</p>
-              </div>
+      {/* ========================================================================
+          SHARED REFUND MODAL (Used in Order Card 3-dot menu & Finance -> Refunds)
+      ======================================================================== */}
+      {refundModalOrder && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
+          <form
+            onSubmit={handleConfirmRefund}
+            className="w-full max-w-md bg-white rounded-2xl border border-gray-200 p-5 space-y-4"
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="text-base font-bold text-[#111827]">
+                Refund Order {refundModalOrder.orderNumber}
+              </h3>
+              <button
+                type="button"
+                onClick={() => setRefundModalOrder(null)}
+                className="p-1 text-gray-400 hover:text-gray-700"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <p className="text-xs text-[#6B7280]">
+              Customer: <strong>{refundModalOrder.customerName}</strong> · Paid: ₹
+              {refundModalOrder.grandTotal}
+            </p>
+            <div>
+              <label className="block text-xs font-semibold mb-1">Refund Amount (₹)</label>
+              <input
+                type="number"
+                required
+                min={1}
+                max={refundModalOrder.grandTotal}
+                value={refundAmountInput}
+                onChange={(e) => setRefundAmountInput(e.target.value)}
+                className="w-full min-h-[42px] px-3 rounded-xl border border-gray-300 text-sm font-mono"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold mb-1">Reason for Refund</label>
+              <input
+                type="text"
+                required
+                value={refundReasonInput}
+                onChange={(e) => setRefundReasonInput(e.target.value)}
+                placeholder="e.g. Item unavailable / customer request"
+                className="w-full min-h-[42px] px-3 rounded-xl border border-gray-300 text-xs"
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setRefundModalOrder(null)}
+                className="px-4 py-2 rounded-xl border border-gray-200 text-xs font-semibold cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={refundSubmitting}
+                className="px-4 py-2 rounded-xl bg-red-600 text-white text-xs font-bold cursor-pointer disabled:opacity-50"
+              >
+                {refundSubmitting ? 'Processing...' : 'Confirm Refund'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
 
-              <div className="border-b border-dashed border-gray-400 pb-2 space-y-0.5">
-                <p>Customer: {kotOrder.customerName}</p>
-                <p>Phone: +91 {kotOrder.customerPhone}</p>
-                <p>
-                  Payment: {kotOrder.paymentMethod} ({kotOrder.paymentStatus})
-                </p>
-                {kotOrder.orderNotes && (
-                  <p className="font-bold mt-1 break-words">Note: {kotOrder.orderNotes}</p>
-                )}
-              </div>
+      {/* ========================================================================
+          DISH ADD / EDIT MODAL (Shows read-only "Appears in:" Home Page Manager info)
+      ======================================================================== */}
+      {dishModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4 overflow-y-auto">
+          <form
+            onSubmit={handleSaveDishForm}
+            className="w-full max-w-lg bg-white rounded-2xl border border-gray-200 p-5 space-y-3.5 my-8"
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="text-base font-bold text-[#111827]">
+                {editingDish ? `Edit ${editingDish.name}` : 'Add New Dish'}
+              </h3>
+              <button
+                type="button"
+                onClick={() => setDishModalOpen(false)}
+                className="p-1 text-gray-400"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
 
-              <div className="space-y-1.5 border-b border-dashed border-gray-400 pb-3">
-                {kotOrder.items.map((it, i) => (
-                  <div key={i} className="flex justify-between gap-2">
-                    <span className="break-words">
-                      {it.quantity}x {it.itemName}{' '}
-                      {it.variantName ? `(${it.variantName})` : ''}
-                    </span>
-                    <span className="shrink-0">₹{it.lineTotal}</span>
-                  </div>
-                ))}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-semibold mb-1">Dish Name *</label>
+                <input
+                  type="text"
+                  required
+                  value={dishForm.name}
+                  onChange={(e) => setDishForm({ ...dishForm, name: e.target.value })}
+                  className="w-full min-h-[40px] px-3 rounded-xl border border-gray-300 text-xs"
+                />
               </div>
-
-              <div className="flex justify-between font-bold text-[14px]">
-                <span>GRAND TOTAL</span>
-                <span>₹{kotOrder.grandTotal}</span>
+              <div>
+                <label className="block text-xs font-semibold mb-1">Category</label>
+                <select
+                  value={dishForm.categoryId}
+                  onChange={(e) => setDishForm({ ...dishForm, categoryId: e.target.value })}
+                  className="w-full min-h-[40px] px-3 rounded-xl border border-gray-300 text-xs"
+                >
+                  {categories.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold mb-1">Base Price (₹)</label>
+                <input
+                  type="number"
+                  required
+                  value={dishForm.basePrice}
+                  onChange={(e) => setDishForm({ ...dishForm, basePrice: Number(e.target.value) })}
+                  className="w-full min-h-[40px] px-3 rounded-xl border border-gray-300 text-xs font-mono"
+                />
+              </div>
+              <div className="flex items-center gap-4 pt-5">
+                <label className="flex items-center gap-1.5 text-xs font-bold cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={dishForm.isVeg}
+                    onChange={(e) => setDishForm({ ...dishForm, isVeg: e.target.checked })}
+                  />
+                  <span>Vegetarian</span>
+                </label>
+                <label className="flex items-center gap-1.5 text-xs font-bold cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={dishForm.inStock}
+                    onChange={(e) => setDishForm({ ...dishForm, inStock: e.target.checked })}
+                  />
+                  <span>In Stock</span>
+                </label>
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-2 pt-2">
+            <div>
+              <label className="block text-xs font-semibold mb-1">Description</label>
+              <textarea
+                rows={2}
+                value={dishForm.description}
+                onChange={(e) => setDishForm({ ...dishForm, description: e.target.value })}
+                className="w-full p-2.5 rounded-xl border border-gray-300 text-xs"
+              />
+            </div>
+
+            {/* Single Source of Truth: Read-only Home Page placement notice */}
+            {editingDish && (
+              <div className="p-3 rounded-xl bg-orange-50/70 border border-orange-200 flex flex-wrap items-center justify-between gap-2 text-xs">
+                <div>
+                  <span className="font-bold text-[#111827]">Appears in Home Sections: </span>
+                  <span className="text-[#D9480F] font-semibold">
+                    {(itemHomeSectionNamesMap[editingDish.id] || []).join(', ') ||
+                      'None (Standard Menu only)'}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDishModalOpen(false);
+                    setActiveSection('storefront');
+                    setStorefrontSubTab('homepage');
+                  }}
+                  className="text-[11px] font-bold underline text-[#D9480F] cursor-pointer"
+                >
+                  Manage in Home Page Manager →
+                </button>
+              </div>
+            )}
+
+            <div>
+              <label className="block text-xs font-semibold mb-1">Variants (JSON)</label>
+              <textarea
+                rows={2}
+                value={dishForm.variantsJson}
+                onChange={(e) => setDishForm({ ...dishForm, variantsJson: e.target.value })}
+                className="w-full p-2 rounded-xl border border-gray-300 text-xs font-mono"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold mb-1">Add-ons (JSON)</label>
+              <textarea
+                rows={2}
+                value={dishForm.addonsJson}
+                onChange={(e) => setDishForm({ ...dishForm, addonsJson: e.target.value })}
+                className="w-full p-2 rounded-xl border border-gray-300 text-xs font-mono"
+              />
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
               <button
                 type="button"
-                onClick={() => window.print()}
-                className="min-h-[48px] px-3 rounded-[8px] bg-[#D9480F] text-white text-[14px] font-semibold cursor-pointer"
+                onClick={() => setDishModalOpen(false)}
+                className="px-4 py-2 rounded-xl border border-gray-200 text-xs font-semibold cursor-pointer"
               >
-                Print KOT
+                Cancel
               </button>
               <button
+                type="submit"
+                className="px-5 py-2 rounded-xl bg-[#D9480F] text-white text-xs font-bold cursor-pointer"
+              >
+                Save Dish
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* ========================================================================
+          CHANGE PASSWORD MODAL
+      ======================================================================== */}
+      {passwordModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
+          <form
+            onSubmit={handleChangeMyPassword}
+            className="w-full max-w-md bg-white rounded-2xl border border-gray-200 p-5 space-y-3.5"
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="text-base font-bold text-[#111827]">Change My Password</h3>
+              <button
                 type="button"
-                onClick={() => setKotOrder(null)}
-                className="min-h-[48px] px-3 rounded-[8px] border border-gray-300 text-[14px] font-semibold cursor-pointer"
+                onClick={() => setPasswordModalOpen(false)}
+                className="p-1 text-gray-400"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <input
+              type="password"
+              required
+              value={currentPasswordInput}
+              onChange={(e) => setCurrentPasswordInput(e.target.value)}
+              placeholder="Current password"
+              className="w-full min-h-[42px] px-3 rounded-xl border border-gray-300 text-xs"
+            />
+            <input
+              type="password"
+              required
+              value={newPasswordInput}
+              onChange={(e) => setNewPasswordInput(e.target.value)}
+              placeholder="New password (min 8 chars)"
+              className="w-full min-h-[42px] px-3 rounded-xl border border-gray-300 text-xs"
+            />
+            <input
+              type="password"
+              required
+              value={confirmPasswordInput}
+              onChange={(e) => setConfirmPasswordInput(e.target.value)}
+              placeholder="Confirm new password"
+              className="w-full min-h-[42px] px-3 rounded-xl border border-gray-300 text-xs"
+            />
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setPasswordModalOpen(false)}
+                className="px-4 py-2 rounded-xl border border-gray-200 text-xs font-semibold cursor-pointer"
               >
                 Close
               </button>
+              <button
+                type="submit"
+                className="px-4 py-2 rounded-xl bg-[#D9480F] text-white text-xs font-bold cursor-pointer"
+              >
+                Update Password
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Owner Reset Another User's Password Modal */}
+      {resetPassModalUser && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
+          <form
+            onSubmit={async (e) => {
+              e.preventDefault();
+              if (resetPassNewVal.length < 8) {
+                showToast('Password must be at least 8 characters');
+                return;
+              }
+              const res = await adminFetch(`/api/admin/users/${resetPassModalUser.id}`, {
+                method: 'PATCH',
+                body: JSON.stringify({ resetPassword: resetPassNewVal }),
+              });
+              if (res.ok) {
+                setResetPassModalUser(null);
+                await fetchBootstrap();
+                showToast('Password reset & active sessions revoked');
+              }
+            }}
+            className="w-full max-w-md bg-white rounded-2xl border border-gray-200 p-5 space-y-3.5"
+          >
+            <h3 className="text-base font-bold text-[#111827]">
+              Reset Password for {resetPassModalUser.email}
+            </h3>
+            <input
+              type="password"
+              required
+              value={resetPassNewVal}
+              onChange={(e) => setResetPassNewVal(e.target.value)}
+              placeholder="New temporary password (min 8 chars)"
+              className="w-full min-h-[42px] px-3 rounded-xl border border-gray-300 text-xs"
+            />
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setResetPassModalUser(null)}
+                className="px-4 py-2 rounded-xl border border-gray-200 text-xs font-semibold cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="px-4 py-2 rounded-xl bg-[#D9480F] text-white text-xs font-bold cursor-pointer"
+              >
+                Reset Password
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* KOT Print Modal */}
+      {kotOrder && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
+          <div className="w-full max-w-sm bg-white rounded-2xl border border-gray-200 p-5 space-y-4 font-mono text-xs">
+            <div className="text-center border-b border-dashed border-gray-300 pb-3">
+              <p className="font-bold text-sm">KITCHEN ORDER TICKET (KOT)</p>
+              <p className="font-bold text-base mt-1">{kotOrder.orderNumber}</p>
+              <p>{new Date(kotOrder.placedAt).toLocaleString()}</p>
+            </div>
+            <div className="space-y-1.5">
+              {kotOrder.items.map((it, i) => (
+                <div key={i} className="flex justify-between">
+                  <span>
+                    {it.quantity}x {it.itemName} {it.variantName ? `(${it.variantName})` : ''}
+                  </span>
+                </div>
+              ))}
+            </div>
+            {kotOrder.orderNotes && (
+              <div className="p-2 bg-gray-100 rounded font-bold">Note: {kotOrder.orderNotes}</div>
+            )}
+            <div className="flex justify-end gap-2 pt-3 border-t border-dashed border-gray-300">
+              <button
+                type="button"
+                onClick={() => setKotOrder(null)}
+                className="px-3 py-1.5 rounded-lg border border-gray-300 font-sans font-semibold cursor-pointer"
+              >
+                Close
+              </button>
+              <button
+                type="button"
+                onClick={() => window.print()}
+                className="px-3 py-1.5 rounded-lg bg-[#111827] text-white font-sans font-bold cursor-pointer"
+              >
+                Print
+              </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Toast Notification (bottom, above mobile nav) */}
-      {statusToast && (
-        <div className="fixed bottom-20 lg:bottom-6 left-4 right-4 z-50 max-w-md mx-auto rounded-[12px] bg-[#111827] text-white px-4 py-3 text-[14px] font-medium shadow-lg">
-          {statusToast}
+      {/* Toast Notification */}
+      {toastMsg && (
+        <div className="fixed bottom-20 lg:bottom-6 right-4 z-50 bg-[#111827] text-white px-4 py-3 rounded-xl shadow-lg text-xs font-semibold">
+          {toastMsg}
         </div>
       )}
     </div>

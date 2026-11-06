@@ -2,6 +2,7 @@ export type OrderStatus =
   | 'PLACED'
   | 'ACCEPTED'
   | 'PREPARING'
+  | 'READY'
   | 'OUT_FOR_DELIVERY'
   | 'DELIVERED'
   | 'CANCELLED'
@@ -89,10 +90,13 @@ export interface ShopSettings {
   codMaxAmount: number;
   codMaxActiveOrders: number;
   onlineOnlyFirstOrder: boolean;
+  requirePhoneOtpForCod: boolean;
   maxOrdersPerHourPhone: number;
   maxOrdersPerHourIp: number;
   autoCancelUnacceptedMins: number;
   deliverySlabs: DeliverySlab[];
+  themeAccentColor?: string;
+  themeSurfaceStyle?: 'warm' | 'clean' | 'minimal';
 }
 
 export interface DeliveryZone {
@@ -193,6 +197,7 @@ export interface OrderRecord {
   placedAt: string;
   acceptedAt?: string;
   preparedAt?: string;
+  readyAt?: string;
   outForDeliveryAt?: string;
   deliveredAt?: string;
   cancelledAt?: string;
@@ -252,6 +257,8 @@ export interface DeliveryBoy {
   isActive: boolean;
   activeOrders: number;
   accessToken: string;
+  tokenExpiresAt?: string | null;
+  dailyPin?: string;
 }
 
 export interface ReviewRecord {
@@ -286,6 +293,30 @@ export interface BlockedEntry {
   createdAt: string;
 }
 
+export interface AdminUserPublic {
+  id: string;
+  email: string;
+  name: string;
+  role: AdminRole;
+  isActive: boolean;
+  mustChangePassword: boolean;
+  totpEnabled: boolean;
+  createdAt: string;
+  lastLoginAt?: string;
+}
+
+export interface AdminSessionRecord {
+  id: string;
+  userId: string;
+  email: string;
+  role: AdminRole;
+  userAgent: string;
+  ipAddress: string;
+  createdAt: string;
+  lastSeenAt: string;
+  revoked: boolean;
+}
+
 export interface CheckoutPreviewResponse {
   withinZone: boolean;
   distanceKm: number;
@@ -300,6 +331,7 @@ export interface CheckoutPreviewResponse {
   grandTotal: number;
   codAllowed: boolean;
   codDisallowedReason?: string;
+  requirePhoneOtpForCod?: boolean;
   minOrderMet: boolean;
   minOrderAmount: number;
 }

@@ -3,9 +3,9 @@ import { CartItem } from '../types.ts';
 /**
  * Pluggable Customer Authentication & Device State Layer
  *
- * Currently runs in GUEST MODE (no signup, no login, no OTP required).
- * Designed as an isolated adapter so Phone OTP authentication can be swapped in
- * later by implementing `CustomerAuthAdapter` without changing Checkout or Order components.
+ * Customers are GUEST-ONLY (no signup, no login, no OTP required by default).
+ * Also exposes an optional pluggable COD Phone OTP challenge when the store
+ * admin explicitly enables `requirePhoneOtpForCod` in Order Rules.
  */
 
 export interface GuestProfile {
@@ -28,9 +28,9 @@ export interface CustomerAuthAdapter {
   toggleFavourite: (itemId: string) => string[];
   getRecentOrderTokens: () => string[];
   addRecentOrderToken: (token: string) => string[];
-  // Hook points for future Phone OTP upgrade:
-  requestPhoneOtp?: (phone: string) => Promise<{ sessionId: string }>;
-  verifyPhoneOtp?: (sessionId: string, otp: string) => Promise<{ authToken: string }>;
+  // Optional pluggable COD Phone OTP verification (off by default):
+  requestPhoneOtp: (phone: string) => Promise<{ sessionId: string; demoOtp?: string }>;
+  verifyPhoneOtp: (sessionId: string, otp: string) => Promise<{ verifiedToken: string }>;
 }
 
 const STORAGE_KEYS = {
@@ -53,7 +53,7 @@ export const guestAuthLayer: CustomerAuthAdapter = {
   mode: 'GUEST',
 
   isAuthenticated() {
-    // In Guest mode, customers can always browse and checkout directly
+    // Guest-only storefront: customers always browse and checkout without accounts
     return true;
   },
 
@@ -132,5 +132,31 @@ export const guestAuthLayer: CustomerAuthAdapter = {
       // Ignore
     }
     return next;
+  },
+
+  async requestPhoneOtp(phone: string) {
+    const res = await fetch('/api/guest/cod-otp/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || 'Failed to send COD verification code');
+    }
+    return data as { sessionId: string; demoOtp?: string };
+  },
+
+  async verifyPhoneOtp(sessionId: string, otp: string) {
+    const res = await fetch('/api/guest/cod-otp/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId, otp }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || 'Invalid COD verification code');
+    }
+    return data as { verifiedToken: string };
   },
 };
