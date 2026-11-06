@@ -1,0 +1,6 @@
+{
+  "name": "Aangan Artisanal Kitchen — Direct Food Delivery",
+  "description": "Single-shop artisanal Indian kitchen and direct food delivery PWA with guest checkout, Haversine delivery zone validation, Razorpay double-verified payments, real-time Socket.io order tracking, and full Admin & Home Page Manager.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
