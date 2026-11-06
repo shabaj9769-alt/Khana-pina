@@ -9,16 +9,20 @@ import {
   Clock,
   Flame,
   Home,
+  Languages,
+  Moon,
   ShoppingBag,
+  Sun,
   UtensilsCrossed,
 } from 'lucide-react';
-import { CartItem, OrderRecord } from './types.ts';
+import { CartItem, MenuItem, OrderRecord, StorefrontThemeConfig, ThemeMode } from './types.ts';
 import { guestAuthLayer } from './auth/guestAuthLayer.ts';
 import { CustomerStore } from './components/CustomerStore.tsx';
 import { OrderTrackingView } from './components/OrderTrackingView.tsx';
 import { DeliveryPartnerView } from './components/DeliveryPartnerView.tsx';
 import { AdminPortal } from './components/AdminPortal.tsx';
 import { OfflineIndicator } from './components/PWAInstallBanner.tsx';
+import { applyStorefrontThemeToDocument, DEFAULT_STOREFRONT_THEME } from './utils/themeTokens.ts';
 
 type AppView = 'customer' | 'tracking' | 'rider' | 'admin';
 
@@ -26,16 +30,25 @@ export default function App() {
   const [socket, setSocket] = useState<Socket | null>(null);
   const [activeView, setActiveView] = useState<AppView>('customer');
   const [customerSubTab, setCustomerSubTab] = useState<'home' | 'menu' | 'orders'>('home');
-  // 1.5 No hardcoded default tracking token; set only via /track/<token> or order action
   const [trackingToken, setTrackingToken] = useState<string>('');
   const [riderToken, setRiderToken] = useState<string>('');
   const [cart, setCart] = useState<CartItem[]>(() => guestAuthLayer.getCart());
   const [cartDrawerOpen, setCartDrawerOpen] = useState(false);
   const [storefrontRefreshKey, setStorefrontRefreshKey] = useState(0);
+  const [menuItemsCache, setMenuItemsCache] = useState<MenuItem[]>([]);
+  const [reorderNotice, setReorderNotice] = useState<string | null>(null);
+
+  const [storefrontTheme, setStorefrontTheme] = useState<StorefrontThemeConfig>(DEFAULT_STOREFRONT_THEME);
+  const [guestThemeMode, setGuestThemeMode] = useState<ThemeMode | null>(() =>
+    guestAuthLayer.getGuestThemeMode()
+  );
+  const [lang, setLang] = useState<'en' | 'hi'>(() => guestAuthLayer.getGuestLanguage());
+
   const [headerMeta, setHeaderMeta] = useState({
     shopName: 'Aangan Artisanal Kitchen',
     isOpen: true,
     busyMode: false,
+    logoUrl: '',
   });
 
   // Sync URL path if user navigates directly to /track/<token>, /rider/<token>, or /admin
@@ -61,6 +74,13 @@ export default function App() {
     window.addEventListener('popstate', syncFromUrl);
     return () => window.removeEventListener('popstate', syncFromUrl);
   }, []);
+
+  // Apply storefront theme whenever activeView is customer or tracking
+  useEffect(() => {
+    if (activeView === 'customer' || activeView === 'tracking') {
+      applyStorefrontThemeToDocument(storefrontTheme, guestThemeMode);
+    }
+  }, [activeView, storefrontTheme, guestThemeMode]);
 
   // Initialize Socket.io real-time connection on same origin (Port 3000) with credentials
   useEffect(() => {
@@ -97,21 +117,60 @@ export default function App() {
     navigateView('tracking', `/track/${token}`);
   };
 
-  const handleReorder = (order: OrderRecord) => {
-    const restored: CartItem[] = order.items.map((it, idx) => ({
-      cartLineId: `reorder_${order.id}_${idx}`,
-      menuItemId: it.menuItemId,
-      name: it.itemName,
-      imageUrl: '/src/assets/images/dish_royal_biryani_1793975538453.jpg',
-      isVeg: true,
-      variantName: it.variantName,
-      selectedAddons: it.addons,
-      unitPrice: it.unitPrice,
-      quantity: it.quantity,
-    }));
-    setCart(restored);
-    navigateView('customer', '/');
-    setCartDrawerOpen(true);
+  const toggleGuestDarkLight = () => {
+    const isCurrentlyDark = document.documentElement.classList.contains('dark');
+    const nextMode: ThemeMode = isCurrentlyDark ? 'light' : 'dark';
+    setGuestThemeMode(nextMode);
+    guestAuthLayer.saveGuestThemeMode(nextMode);
+  };
+
+  const toggleLanguage = () => {
+    const nextLang = lang === 'en' ? 'hi' : 'en';
+    setLang(nextLang);
+    guestAuthLayer.saveGuestLanguage(nextLang);
+  };
+
+  // Phase 4: Fix handleReorder so it restores real imageUrl and isVeg from current menu and drops unavailable items with notice
+  const handleReorder = (order: OrderRecord, currentMenu?: MenuItem[]) => {
+    const pool = currentMenu && currentMenu.length > 0 ? currentMenu : menuItemsCache;
+    const restored: CartItem[] = [];
+    const droppedNames: string[] = [];
+
+    order.items.forEach((it, idx) => {
+      const liveItem = pool.find((m) => m.id === it.menuItemId);
+      if (pool.length > 0 && (!liveItem || !liveItem.inStock)) {
+        droppedNames.push(it.itemName);
+        return;
+      }
+      restored.push({
+        cartLineId: `reorder_${order.id}_${idx}`,
+        menuItemId: it.menuItemId,
+        name: liveItem ? liveItem.name : it.itemName,
+        imageUrl: liveItem
+          ? liveItem.imageUrl
+          : '/src/assets/images/dish_royal_biryani_1793975538453.jpg',
+        isVeg: liveItem ? liveItem.isVeg : true,
+        variantId: liveItem?.variants.find((v) => v.name === it.variantName)?.id,
+        variantName: it.variantName,
+        selectedAddons: it.addons,
+        unitPrice: liveItem ? liveItem.basePrice : it.unitPrice,
+        quantity: it.quantity,
+        itemNote: it.itemNote,
+      });
+    });
+
+    if (droppedNames.length > 0) {
+      setReorderNotice(
+        `Unavailable item(s) skipped from reorder: ${droppedNames.join(', ')}`
+      );
+      setTimeout(() => setReorderNotice(null), 6000);
+    }
+
+    if (restored.length > 0) {
+      setCart(restored);
+      navigateView('customer', '/');
+      setCartDrawerOpen(true);
+    }
   };
 
   // ===========================================================================
@@ -119,7 +178,7 @@ export default function App() {
   // ===========================================================================
   if (activeView === 'rider') {
     return (
-      <div className="admin-ops-theme min-h-[100dvh] w-full max-w-[100vw] overflow-x-clip flex flex-col bg-[#F4F5F7] text-[#111827]">
+      <div className="min-h-[100dvh] w-full max-w-[100vw] overflow-x-clip flex flex-col bg-bg text-text">
         <DeliveryPartnerView initialToken={riderToken} />
         <OfflineIndicator />
       </div>
@@ -131,7 +190,7 @@ export default function App() {
   // ===========================================================================
   if (activeView === 'admin') {
     return (
-      <div className="admin-ops-theme min-h-[100dvh] w-full max-w-[100vw] overflow-x-clip flex flex-col bg-[#F4F5F7] dark:bg-slate-950 text-[#111827] dark:text-slate-100">
+      <div className="min-h-[100dvh] w-full max-w-[100vw] overflow-x-clip flex flex-col bg-bg text-text">
         <AdminPortal
           socket={socket}
           onRefreshStorefront={() => setStorefrontRefreshKey((k) => k + 1)}
@@ -153,9 +212,26 @@ export default function App() {
   // CUSTOMER STOREFRONT & ORDER TRACKING LAYOUT (Guest-Only, Zero Admin Link)
   // ===========================================================================
   return (
-    <div className="min-h-[100dvh] w-full max-w-[100vw] overflow-x-clip flex flex-col bg-[#FAF8F5] text-stone-900 pb-16 md:pb-6">
+    <div className="min-h-[100dvh] w-full max-w-[100vw] overflow-x-clip flex flex-col bg-bg text-text pb-16 md:pb-6 transition-colors duration-200">
+      {/* Reorder skipped-items toast */}
+      {reorderNotice && (
+        <div
+          role="status"
+          className="fixed top-16 left-1/2 -translate-x-1/2 z-50 max-w-[92vw] px-4 py-2.5 rounded-xl bg-surface border border-border shadow-lg text-xs font-semibold text-text flex items-center gap-2"
+        >
+          <span>{reorderNotice}</span>
+          <button
+            type="button"
+            onClick={() => setReorderNotice(null)}
+            className="text-muted hover:text-text font-bold ml-2 cursor-pointer"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       {/* STICKY CUSTOMER HEADER — Full shop name visible, no Admin button */}
-      <header className="sticky top-0 left-0 right-0 z-30 w-full max-w-[100vw] bg-white/95 backdrop-blur-md border-b border-stone-200 overflow-x-clip">
+      <header className="sticky top-0 left-0 right-0 z-30 w-full max-w-[100vw] bg-surface/95 backdrop-blur-md border-b border-border overflow-x-clip">
         <div className="w-full max-w-[480px] md:max-w-[1200px] mx-auto px-4 min-h-[56px] py-1.5 flex items-center justify-between gap-2">
           <a
             href="/"
@@ -166,47 +242,64 @@ export default function App() {
             }}
             className="flex items-center gap-2 min-w-0 flex-1"
           >
-            <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-stone-900 text-amber-400 flex items-center justify-center shrink-0">
-              <Flame className="w-4 h-4 sm:w-5 sm:h-5" />
-            </div>
+            {headerMeta.logoUrl ? (
+              <img
+                src={headerMeta.logoUrl}
+                alt={headerMeta.shopName}
+                className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl object-cover border border-border shrink-0"
+              />
+            ) : (
+              <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-primary text-primary-contrast flex items-center justify-center shrink-0">
+                <Flame className="w-4 h-4 sm:w-5 sm:h-5" />
+              </div>
+            )}
             <div className="min-w-0 flex-1">
-              <span className="block text-[14px] sm:text-[17px] leading-snug font-bold text-stone-900 break-words">
+              <span className="block text-[14px] sm:text-[17px] leading-snug font-bold text-text break-words">
                 {headerMeta.shopName}
               </span>
-              <span className="block text-[11px] leading-tight text-stone-500 break-words">
-                25–30 mins ·{' '}
+              <span className="block text-[11px] leading-tight text-muted break-words">
+                {lang === 'hi' ? '25–30 मिनट · ' : '25–30 mins · '}
                 <strong
                   className={
                     headerMeta.isOpen && !headerMeta.busyMode
-                      ? 'text-emerald-700 font-semibold'
+                      ? 'text-emerald-600 font-semibold'
                       : 'text-red-600 font-semibold'
                   }
                 >
                   {headerMeta.isOpen
                     ? headerMeta.busyMode
-                      ? 'Busy mode'
-                      : 'Open now'
-                    : 'Closed'}
+                      ? lang === 'hi'
+                        ? 'व्यस्त (Busy)'
+                        : 'Busy mode'
+                      : lang === 'hi'
+                        ? 'अभी खुला है'
+                        : 'Open now'
+                    : lang === 'hi'
+                      ? 'बंद है'
+                      : 'Closed'}
                 </strong>
               </span>
             </div>
           </a>
 
           {/* Desktop Navigation Links (Only 4 Customer Tabs: Home, Menu, Orders, Cart) */}
-          <nav className="hidden md:flex items-center gap-5 text-sm font-medium text-stone-600 shrink-0">
+          <nav
+            aria-label="Storefront navigation"
+            className="hidden md:flex items-center gap-5 text-sm font-medium text-muted shrink-0"
+          >
             <button
               type="button"
               onClick={() => {
                 setCustomerSubTab('home');
                 navigateView('customer', '/');
               }}
-              className={`hover:text-stone-950 whitespace-nowrap cursor-pointer ${
+              className={`hover:text-text whitespace-nowrap cursor-pointer ${
                 activeView === 'customer' && customerSubTab === 'home'
-                  ? 'text-stone-950 font-semibold underline underline-offset-4 decoration-amber-700'
+                  ? 'text-primary font-semibold underline underline-offset-4 decoration-primary'
                   : ''
               }`}
             >
-              Home
+              {lang === 'hi' ? 'होम' : 'Home'}
             </button>
             <button
               type="button"
@@ -214,13 +307,13 @@ export default function App() {
                 setCustomerSubTab('menu');
                 navigateView('customer', '/');
               }}
-              className={`hover:text-stone-950 whitespace-nowrap cursor-pointer ${
+              className={`hover:text-text whitespace-nowrap cursor-pointer ${
                 activeView === 'customer' && customerSubTab === 'menu'
-                  ? 'text-stone-950 font-semibold underline underline-offset-4 decoration-amber-700'
+                  ? 'text-primary font-semibold underline underline-offset-4 decoration-primary'
                   : ''
               }`}
             >
-              Menu
+              {lang === 'hi' ? 'मेनू' : 'Menu'}
             </button>
             <button
               type="button"
@@ -228,13 +321,13 @@ export default function App() {
                 setCustomerSubTab('orders');
                 navigateView('customer', '/');
               }}
-              className={`hover:text-stone-950 whitespace-nowrap cursor-pointer ${
+              className={`hover:text-text whitespace-nowrap cursor-pointer ${
                 activeView === 'customer' && customerSubTab === 'orders'
-                  ? 'text-stone-950 font-semibold underline underline-offset-4 decoration-amber-700'
+                  ? 'text-primary font-semibold underline underline-offset-4 decoration-primary'
                   : ''
               }`}
             >
-              Orders
+              {lang === 'hi' ? 'ऑर्डर' : 'Orders'}
             </button>
             <button
               type="button"
@@ -242,14 +335,39 @@ export default function App() {
                 navigateView('customer', '/');
                 setCartDrawerOpen(true);
               }}
-              className="hover:text-stone-950 whitespace-nowrap cursor-pointer"
+              className="hover:text-text whitespace-nowrap cursor-pointer"
             >
-              Cart ({totalCartItems})
+              {lang === 'hi' ? 'कार्ट' : 'Cart'} ({totalCartItems})
             </button>
           </nav>
 
-          {/* Right: Cart Bag Button Only (Admin button removed per Phase 2.8) */}
+          {/* Right: Language Toggle (EN/HI), Guest Light/Dark Toggle & Cart Bag Button */}
           <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              onClick={toggleLanguage}
+              aria-label="Toggle Hindi or English language"
+              title="Switch Language (English / हिंदी)"
+              className="min-h-[38px] px-2 rounded-xl border border-border bg-bg hover:bg-surface text-text text-xs font-bold flex items-center gap-1 cursor-pointer"
+            >
+              <Languages className="w-3.5 h-3.5 text-primary shrink-0" />
+              <span>{lang === 'en' ? 'हिं' : 'EN'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={toggleGuestDarkLight}
+              aria-label="Toggle light or dark mode"
+              title="Toggle Light / Dark theme"
+              className="min-h-[38px] w-9 rounded-xl border border-border bg-bg hover:bg-surface text-text flex items-center justify-center cursor-pointer"
+            >
+              {guestThemeMode === 'dark' ? (
+                <Sun className="w-4 h-4 text-accent" />
+              ) : (
+                <Moon className="w-4 h-4 text-muted" />
+              )}
+            </button>
+
             <button
               type="button"
               onClick={() => {
@@ -257,9 +375,9 @@ export default function App() {
                 setCartDrawerOpen(true);
               }}
               aria-label="Open shopping bag"
-              className="relative min-h-[38px] sm:min-h-[42px] px-2.5 sm:px-3 rounded-xl bg-stone-900 hover:bg-amber-800 text-white flex items-center justify-center gap-1.5 shrink-0 transition-colors cursor-pointer"
+              className="relative min-h-[38px] sm:min-h-[42px] px-2.5 sm:px-3 rounded-xl bg-primary text-primary-contrast flex items-center justify-center gap-1.5 shrink-0 transition-opacity hover:opacity-95 cursor-pointer"
             >
-              <ShoppingBag className="w-4 h-4 text-amber-400 shrink-0" />
+              <ShoppingBag className="w-4 h-4 shrink-0" />
               <span className="text-xs font-mono font-bold tabular-nums whitespace-nowrap">
                 {totalCartItems}
               </span>
@@ -280,7 +398,22 @@ export default function App() {
             onOpenTracking={handleOpenTracking}
             cartDrawerOpen={cartDrawerOpen}
             setCartDrawerOpen={setCartDrawerOpen}
-            onHeaderMetaUpdate={setHeaderMeta}
+            lang={lang}
+            onReorder={handleReorder}
+            onHeaderMetaUpdate={(meta) => {
+              setHeaderMeta({
+                shopName: meta.shopName,
+                isOpen: meta.isOpen,
+                busyMode: meta.busyMode,
+                logoUrl: meta.theme?.logoUrl || '',
+              });
+              if (meta.theme) {
+                setStorefrontTheme(meta.theme);
+              }
+              if (meta.allMenuItems) {
+                setMenuItemsCache(meta.allMenuItems);
+              }
+            }}
           />
         )}
 
@@ -292,13 +425,16 @@ export default function App() {
               setCustomerSubTab('home');
               navigateView('customer', '/');
             }}
-            onReorder={handleReorder}
+            onReorder={(ord) => handleReorder(ord, menuItemsCache)}
           />
         )}
       </main>
 
       {/* Customer Mobile Bottom Navigation Bar — ONLY 4 tabs: Home, Menu, Orders, Cart */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 w-full max-w-[100vw] z-40 bg-white/95 backdrop-blur-md border-t border-stone-200 overflow-x-clip">
+      <nav
+        aria-label="Mobile bottom navigation"
+        className="md:hidden fixed bottom-0 left-0 right-0 w-full max-w-[100vw] z-40 bg-surface/95 backdrop-blur-md border-t border-border overflow-x-clip"
+      >
         <div className="w-full max-w-[480px] mx-auto grid grid-cols-4 items-center min-h-[56px] pb-safe">
           <button
             type="button"
@@ -308,12 +444,12 @@ export default function App() {
             }}
             className={`flex flex-col items-center justify-center min-h-[48px] text-[11px] font-medium whitespace-nowrap cursor-pointer min-w-0 ${
               activeView === 'customer' && customerSubTab === 'home'
-                ? 'text-amber-800 font-semibold'
-                : 'text-stone-500'
+                ? 'text-primary font-semibold'
+                : 'text-muted'
             }`}
           >
             <Home className="w-4 h-4 shrink-0" />
-            <span className="mt-0.5 truncate">Home</span>
+            <span className="mt-0.5 truncate">{lang === 'hi' ? 'होम' : 'Home'}</span>
           </button>
 
           <button
@@ -324,12 +460,12 @@ export default function App() {
             }}
             className={`flex flex-col items-center justify-center min-h-[48px] text-[11px] font-medium whitespace-nowrap cursor-pointer min-w-0 ${
               activeView === 'customer' && customerSubTab === 'menu'
-                ? 'text-amber-800 font-semibold'
-                : 'text-stone-500'
+                ? 'text-primary font-semibold'
+                : 'text-muted'
             }`}
           >
             <UtensilsCrossed className="w-4 h-4 shrink-0" />
-            <span className="mt-0.5 truncate">Menu</span>
+            <span className="mt-0.5 truncate">{lang === 'hi' ? 'मेनू' : 'Menu'}</span>
           </button>
 
           <button
@@ -340,12 +476,12 @@ export default function App() {
             }}
             className={`flex flex-col items-center justify-center min-h-[48px] text-[11px] font-medium whitespace-nowrap cursor-pointer min-w-0 ${
               activeView === 'customer' && customerSubTab === 'orders'
-                ? 'text-amber-800 font-semibold'
-                : 'text-stone-500'
+                ? 'text-primary font-semibold'
+                : 'text-muted'
             }`}
           >
             <Clock className="w-4 h-4 shrink-0" />
-            <span className="mt-0.5 truncate">Orders</span>
+            <span className="mt-0.5 truncate">{lang === 'hi' ? 'ऑर्डर' : 'Orders'}</span>
           </button>
 
           <button
@@ -354,17 +490,17 @@ export default function App() {
               navigateView('customer', '/');
               setCartDrawerOpen(true);
             }}
-            className="flex flex-col items-center justify-center min-h-[48px] text-[11px] font-medium whitespace-nowrap cursor-pointer text-stone-500 min-w-0"
+            className="flex flex-col items-center justify-center min-h-[48px] text-[11px] font-medium whitespace-nowrap cursor-pointer text-muted min-w-0"
           >
             <div className="relative">
               <ShoppingBag className="w-4 h-4 shrink-0" />
               {totalCartItems > 0 && (
-                <span className="absolute -top-1.5 -right-2.5 px-1 rounded-full bg-amber-700 text-white text-[9px] font-bold tabular-nums">
+                <span className="absolute -top-1.5 -right-2.5 px-1 rounded-full bg-primary text-primary-contrast text-[9px] font-bold tabular-nums">
                   {totalCartItems}
                 </span>
               )}
             </div>
-            <span className="mt-0.5 truncate">Cart</span>
+            <span className="mt-0.5 truncate">{lang === 'hi' ? 'कार्ट' : 'Cart'}</span>
           </button>
         </div>
       </nav>

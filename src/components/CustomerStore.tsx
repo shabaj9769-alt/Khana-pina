@@ -1,10 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
+  AlertTriangle,
+  ArrowUpDown,
+  CalendarClock,
   Check,
   ChevronRight,
-  Clock,
   Compass,
-  Copy,
   Heart,
   MapPin,
   Minus,
@@ -12,7 +13,6 @@ import {
   RotateCcw,
   Search,
   ShoppingBag,
-  Sparkles,
   Star,
   Tag,
   X,
@@ -29,6 +29,7 @@ import {
   OrderRecord,
   PaymentMethod,
   ShopSettings,
+  StorefrontThemeConfig,
 } from '../types.ts';
 import { guestAuthLayer } from '../auth/guestAuthLayer.ts';
 import { calculateHaversineKm } from '../utils/haversine.ts';
@@ -59,7 +60,15 @@ interface CustomerStoreProps {
   onOpenTracking: (trackingToken: string) => void;
   cartDrawerOpen: boolean;
   setCartDrawerOpen: (open: boolean) => void;
-  onHeaderMetaUpdate?: (meta: { shopName: string; isOpen: boolean; busyMode: boolean }) => void;
+  lang?: 'en' | 'hi';
+  onReorder?: (order: OrderRecord, currentMenu?: MenuItem[]) => void;
+  onHeaderMetaUpdate?: (meta: {
+    shopName: string;
+    isOpen: boolean;
+    busyMode: boolean;
+    theme?: StorefrontThemeConfig;
+    allMenuItems?: MenuItem[];
+  }) => void;
 }
 
 const LOCATION_PRESETS = [
@@ -96,6 +105,32 @@ const CATEGORY_THUMBS: Record<string, string> = {
   cat_desserts: '/src/assets/images/dish_gulab_jamun_dessert_1793975541767.jpg',
 };
 
+function generateShopHourSlots(): { label: string; iso: string }[] {
+  const slots: { label: string; iso: string }[] = [];
+  const now = new Date();
+  const baseDate = new Date(now);
+  const hours = [12, 13, 14, 18, 19, 20, 21, 22];
+
+  for (let dayOffset = 0; dayOffset <= 1; dayOffset++) {
+    const d = new Date(baseDate);
+    d.setDate(d.getDate() + dayOffset);
+    const dayLabel = dayOffset === 0 ? 'Today' : 'Tomorrow';
+
+    for (const hr of hours) {
+      const slotDate = new Date(d);
+      slotDate.setHours(hr, 0, 0, 0);
+      if (slotDate.getTime() > now.getTime() + 30 * 60 * 1000) {
+        const displayHr = hr > 12 ? `${hr - 12}:00 PM` : hr === 12 ? '12:00 PM' : `${hr}:00 AM`;
+        slots.push({
+          label: `${dayLabel} · ${displayHr}`,
+          iso: slotDate.toISOString(),
+        });
+      }
+    }
+  }
+  return slots.slice(0, 8);
+}
+
 export const CustomerStore: React.FC<CustomerStoreProps> = ({
   activeSubTab,
   setActiveSubTab,
@@ -104,20 +139,24 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
   onOpenTracking,
   cartDrawerOpen,
   setCartDrawerOpen,
+  lang = 'en',
+  onReorder,
   onHeaderMetaUpdate,
 }) => {
   const [homeData, setHomeData] = useState<HomePayload | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [activeBannerIdx, setActiveBannerIdx] = useState(0);
   const [copiedCoupon, setCopiedCoupon] = useState<string | null>(null);
 
-  // Menu filters
+  // Menu filters & sort
   const [selectedCategory, setSelectedCategory] = useState<string>('ALL');
   const [dietFilter, setDietFilter] = useState<'ALL' | 'VEG' | 'NON_VEG'>('ALL');
   const [filterUnder350, setFilterUnder350] = useState(false);
   const [filterBestseller, setFilterBestseller] = useState(false);
   const [filterRating4Plus, setFilterRating4Plus] = useState(false);
   const [filterSavedOnly, setFilterSavedOnly] = useState(false);
+  const [sortBy, setSortBy] = useState<'POPULAR' | 'PRICE_ASC' | 'PRICE_DESC'>('POPULAR');
   const [searchQuery, setSearchQuery] = useState('');
   const [favourites, setFavourites] = useState<string[]>(() => guestAuthLayer.getFavourites());
 
@@ -129,14 +168,18 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
   const [selectedVariantId, setSelectedVariantId] = useState<string>('');
   const [selectedAddonIds, setSelectedAddonIds] = useState<string[]>([]);
   const [customQty, setCustomQty] = useState(1);
+  const [customItemNote, setCustomItemNote] = useState('');
 
-  // Guest Checkout State (persisted in localStorage)
+  // Guest Checkout State (persisted in localStorage — starts empty until user pins/selects)
   const initialProfile = useMemo(() => guestAuthLayer.getGuestProfile(), []);
   const [guestName, setGuestName] = useState(initialProfile.name);
   const [guestPhone, setGuestPhone] = useState(initialProfile.phone);
   const [guestAddress, setGuestAddress] = useState(initialProfile.address);
   const [guestLat, setGuestLat] = useState(initialProfile.lat);
   const [guestLng, setGuestLng] = useState(initialProfile.lng);
+  const [locationPinned, setLocationPinned] = useState<boolean>(
+    Boolean(initialProfile.locationPinned || (initialProfile.lat !== 0 && initialProfile.lng !== 0))
+  );
   const [orderNotes, setOrderNotes] = useState('');
   const [isScheduled, setIsScheduled] = useState(false);
   const [scheduledFor, setScheduledFor] = useState('');
@@ -159,7 +202,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
   const [placingOrder, setPlacingOrder] = useState(false);
   const [checkoutError, setCheckoutError] = useState<string | null>(null);
 
-  // Razorpay Double-Verification Interactive Gateway Modal
+  // Razorpay Double-Verification Interactive Gateway Modal & Pending Guard
   const [pendingRazorpayModal, setPendingRazorpayModal] = useState<{
     order: OrderRecord;
     razorpayOrderId: string;
@@ -168,31 +211,51 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
     mode?: 'demo' | 'live';
   } | null>(null);
   const [verifyingPayment, setVerifyingPayment] = useState(false);
+  const [paymentFailureMessage, setPaymentFailureMessage] = useState<string | null>(null);
 
-  // Recent Orders on same device
+  // Recent Orders & "Find My Order" lookup (no login)
   const [recentOrders, setRecentOrders] = useState<OrderRecord[]>([]);
   const [loadingRecent, setLoadingRecent] = useState(false);
+  const [lookupOrderNo, setLookupOrderNo] = useState('');
+  const [lookupPhone, setLookupPhone] = useState('');
+  const [lookupBusy, setLookupBusy] = useState(false);
+  const [lookupError, setLookupError] = useState<string | null>(null);
 
   // Policy Modal
   const [activePolicyModal, setActivePolicyModal] = useState<'privacy' | 'terms' | 'refund' | null>(
     null
   );
 
+  const timeSlots = useMemo(() => generateShopHourSlots(), []);
+
   const fetchHomeData = async () => {
     try {
       setLoading(true);
+      setLoadError(null);
       const res = await fetch('/api/home');
       const data = await res.json();
       if (res.ok) {
         setHomeData(data);
+        if (!data.settings.isOpen && data.settings.allowPreOrdersWhenClosed) {
+          setIsScheduled(true);
+          if (!scheduledFor && timeSlots[0]) {
+            setScheduledFor(timeSlots[0].iso);
+          }
+        }
         if (onHeaderMetaUpdate && data.settings) {
           onHeaderMetaUpdate({
             shopName: data.settings.shopName,
             isOpen: data.settings.isOpen,
             busyMode: data.settings.busyMode,
+            theme: data.settings.theme,
+            allMenuItems: data.allMenuItems,
           });
         }
+      } else {
+        setLoadError(data.error || 'Could not load storefront menu.');
       }
+    } catch {
+      setLoadError('Network error while connecting to kitchen server.');
     } finally {
       setLoading(false);
     }
@@ -211,12 +274,13 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
       landmark: '',
       lat: guestLat,
       lng: guestLng,
+      locationPinned,
     });
-  }, [guestName, guestPhone, guestAddress, guestLat, guestLng]);
+  }, [guestName, guestPhone, guestAddress, guestLat, guestLng, locationPinned]);
 
   // Fetch server-side Haversine & bill preview whenever cart, location, coupon, or phone changes
   useEffect(() => {
-    if (cart.length === 0) {
+    if (cart.length === 0 || !locationPinned || (guestLat === 0 && guestLng === 0)) {
       setBillPreview(null);
       return;
     }
@@ -232,6 +296,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
               variantId: c.variantId,
               addonIds: c.selectedAddons.map((a) => a.id),
               quantity: c.quantity,
+              itemNote: c.itemNote,
             })),
             lat: guestLat,
             lng: guestLng,
@@ -252,7 +317,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
     }, 150);
 
     return () => clearTimeout(timer);
-  }, [cart, guestLat, guestLng, appliedCouponCode, guestPhone]);
+  }, [cart, guestLat, guestLng, locationPinned, appliedCouponCode, guestPhone]);
 
   // Load "My Recent Orders" from localStorage tokens
   const loadRecentOrders = async () => {
@@ -319,7 +384,9 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
 
   // Live Haversine distance check for the slim address bar
   const liveAddressDistance = useMemo(() => {
-    if (!homeData) return { km: 1.2, within: true };
+    if (!homeData || !locationPinned || (guestLat === 0 && guestLng === 0)) {
+      return { km: 0, within: false, pinned: false };
+    }
     const km = calculateHaversineKm(
       homeData.deliveryZone.shopLat,
       homeData.deliveryZone.shopLng,
@@ -328,14 +395,15 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
     );
     const within =
       !homeData.deliveryZone.zoneEnabled || km <= homeData.deliveryZone.radiusKm;
-    return { km, within };
-  }, [homeData, guestLat, guestLng]);
+    return { km, within, pinned: true };
+  }, [homeData, guestLat, guestLng, locationPinned]);
 
   const openCustomizeModal = (item: MenuItem) => {
     setCustomizingItem(item);
     setSelectedVariantId(item.variants[0]?.id || '');
     setSelectedAddonIds([]);
     setCustomQty(1);
+    setCustomItemNote('');
   };
 
   const confirmAddToCart = () => {
@@ -359,6 +427,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
         copy[existingIdx] = {
           ...copy[existingIdx],
           quantity: copy[existingIdx].quantity + customQty,
+          itemNote: customItemNote.trim() || copy[existingIdx].itemNote,
         };
         return copy;
       }
@@ -375,6 +444,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
           selectedAddons: chosenAddons.map((a) => ({ id: a.id, name: a.name, price: a.price })),
           unitPrice,
           quantity: customQty,
+          itemNote: customItemNote.trim() || undefined,
         },
       ];
     });
@@ -392,20 +462,38 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
     );
   };
 
+  const updateCartItemNote = (cartLineId: string, note: string) => {
+    setCart((prev) =>
+      prev.map((item) => (item.cartLineId === cartLineId ? { ...item, itemNote: note } : item))
+    );
+  };
+
   const handleUseCurrentGps = () => {
     if (!navigator.geolocation) {
       setGuestLat(19.0655);
       setGuestLng(72.8262);
+      setLocationPinned(true);
+      if (!guestAddress.trim()) {
+        setGuestAddress('Bandra West, Mumbai (GPS Location)');
+      }
       return;
     }
     navigator.geolocation.getCurrentPosition(
       (pos) => {
         setGuestLat(Number(pos.coords.latitude.toFixed(4)));
         setGuestLng(Number(pos.coords.longitude.toFixed(4)));
+        setLocationPinned(true);
+        if (!guestAddress.trim()) {
+          setGuestAddress('GPS Pinned Location');
+        }
       },
       () => {
         setGuestLat(19.0655);
         setGuestLng(72.8262);
+        setLocationPinned(true);
+        if (!guestAddress.trim()) {
+          setGuestAddress('Bandra West, Mumbai (GPS Location)');
+        }
       }
     );
   };
@@ -420,6 +508,42 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
       // Ignore clipboard permission errors
     }
     setTimeout(() => setCopiedCoupon(null), 2200);
+  };
+
+  const handleFindOrderLookup = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLookupError(null);
+    const cleanPhone = lookupPhone.replace(/\D/g, '');
+    if (!lookupOrderNo.trim() || cleanPhone.length !== 10) {
+      setLookupError('Enter both your Order ID (e.g. AAN-1042) and 10-digit mobile number.');
+      return;
+    }
+    setLookupBusy(true);
+    try {
+      const res = await fetch('/api/orders/lookup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          orderNumber: lookupOrderNo.trim(),
+          phone: cleanPhone,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.order) {
+        setLookupError(data.error || 'Order not found. Please check the Order ID and mobile number.');
+        return;
+      }
+      guestAuthLayer.addRecentOrderToken(data.order.trackingToken);
+      setRecentOrders((prev) => {
+        const exists = prev.some((o) => o.id === data.order.id);
+        return exists ? prev : [data.order, ...prev];
+      });
+      setLookupOrderNo('');
+    } catch {
+      setLookupError('Network error while looking up your order.');
+    } finally {
+      setLookupBusy(false);
+    }
   };
 
   const handleRequestCodOtp = async () => {
@@ -468,11 +592,19 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
     amountPaise: number;
     keyId: string;
   }) => {
-    const RazorpayCtor = (window as unknown as { Razorpay?: new (opts: Record<string, unknown>) => { open: () => void } }).Razorpay;
+    const RazorpayCtor = (
+      window as unknown as {
+        Razorpay?: new (opts: Record<string, unknown>) => {
+          open: () => void;
+          on?: (event: string, cb: (resp: unknown) => void) => void;
+        };
+      }
+    ).Razorpay;
     if (!RazorpayCtor) {
       setCheckoutError('Razorpay Checkout SDK could not be loaded. Please check your connection.');
       return;
     }
+    setPaymentFailureMessage(null);
     const rzp = new RazorpayCtor({
       key: checkoutData.keyId,
       amount: checkoutData.amountPaise,
@@ -506,19 +638,53 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
             setCartDrawerOpen(false);
             onOpenTracking(checkoutData.order.trackingToken);
           } else {
-            setCheckoutError('Payment signature verification failed. Please contact support.');
+            setPaymentFailureMessage(
+              'Payment verification is pending or signature mismatch occurred. Please do not pay twice — check your order status first.'
+            );
           }
         } finally {
           setVerifyingPayment(false);
         }
       },
     });
+    if (rzp.on) {
+      rzp.on('payment.failed', () => {
+        setPaymentFailureMessage(
+          'Your online payment did not go through. You can safely retry payment below or switch to Cash on Delivery.'
+        );
+      });
+    }
     rzp.open();
   };
 
   const handlePlaceOrder = async (e: React.FormEvent) => {
     e.preventDefault();
     setCheckoutError(null);
+    setPaymentFailureMessage(null);
+
+    if (verifyingPayment) {
+      setCheckoutError('Payment verification is already in progress. Please do not pay twice.');
+      return;
+    }
+
+    if (!locationPinned || (guestLat === 0 && guestLng === 0)) {
+      setCheckoutError(
+        'Please select your delivery location using GPS or Map Pin before placing your order.'
+      );
+      setAddressSheetOpen(true);
+      return;
+    }
+
+    if (!homeData?.settings.isOpen) {
+      if (!homeData?.settings.allowPreOrdersWhenClosed) {
+        setCheckoutError('The kitchen is currently closed.');
+        return;
+      }
+      if (!isScheduled || !scheduledFor) {
+        setCheckoutError('Kitchen is currently closed. Please select a pre-order time slot below.');
+        return;
+      }
+    }
 
     if (homeData?.turnstileSiteKey && !turnstileToken) {
       setCheckoutError('Please complete the Cloudflare Turnstile security verification.');
@@ -546,12 +712,13 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
           paymentMethod,
           couponCode: appliedCouponCode,
           captchaToken: turnstileToken || 'demo_bypass_turnstile',
-          codOtpVerifiedToken: codOtpVerifiedToken || undefined,
+          codOtpToken: codOtpVerifiedToken || undefined,
           items: cart.map((c) => ({
             menuItemId: c.menuItemId,
             variantId: c.variantId,
             addonIds: c.selectedAddons.map((a) => a.id),
             quantity: c.quantity,
+            itemNote: c.itemNote,
           })),
         }),
       });
@@ -596,8 +763,9 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
   };
 
   const handleCompleteRazorpayPayment = async (simulateFailure = false) => {
-    if (!pendingRazorpayModal) return;
+    if (!pendingRazorpayModal || verifyingPayment) return;
     setVerifyingPayment(true);
+    setPaymentFailureMessage(null);
     try {
       if (simulateFailure) {
         await fetch('/api/payments/webhook', {
@@ -616,10 +784,9 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
             },
           }),
         });
-        const tok = pendingRazorpayModal.order.trackingToken;
-        setPendingRazorpayModal(null);
-        setCartDrawerOpen(false);
-        onOpenTracking(tok);
+        setPaymentFailureMessage(
+          'Payment failed at gateway. You can retry payment right here without creating a duplicate order.'
+        );
         return;
       }
 
@@ -670,10 +837,10 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
     }
   };
 
-  // Filtered menu items
+  // Filtered and sorted menu items
   const filteredMenuItems = useMemo(() => {
     if (!homeData) return [];
-    return homeData.allMenuItems.filter((item) => {
+    const filtered = homeData.allMenuItems.filter((item) => {
       if (selectedCategory !== 'ALL' && item.categoryId !== selectedCategory) return false;
       if (dietFilter === 'VEG' && !item.isVeg) return false;
       if (dietFilter === 'NON_VEG' && item.isVeg) return false;
@@ -689,6 +856,12 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
       }
       return true;
     });
+
+    return [...filtered].sort((a, b) => {
+      if (sortBy === 'PRICE_ASC') return a.basePrice - b.basePrice;
+      if (sortBy === 'PRICE_DESC') return b.basePrice - a.basePrice;
+      return b.salesCount - a.salesCount;
+    });
   }, [
     homeData,
     selectedCategory,
@@ -699,14 +872,40 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
     filterSavedOnly,
     favourites,
     searchQuery,
+    sortBy,
   ]);
 
-  if (loading || !homeData) {
+  if (loading) {
     return (
-      <div className="w-full max-w-[480px] md:max-w-[1200px] mx-auto px-4 py-4 space-y-4 overflow-x-clip min-w-0">
-        <div className="h-12 w-full rounded-2xl bg-stone-200 animate-pulse" />
-        <div className="h-44 w-full rounded-2xl bg-stone-200 animate-pulse" />
-        <div className="h-32 w-full rounded-2xl bg-stone-200 animate-pulse" />
+      <div
+        aria-busy="true"
+        aria-label="Loading menu"
+        className="w-full max-w-[480px] md:max-w-[1200px] mx-auto px-4 py-4 space-y-4 overflow-x-clip min-w-0"
+      >
+        <div className="h-12 w-full rounded-theme bg-surface border border-border animate-pulse" />
+        <div className="h-44 w-full rounded-theme bg-surface border border-border animate-pulse" />
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div className="h-32 w-full rounded-theme bg-surface border border-border animate-pulse" />
+          <div className="h-32 w-full rounded-theme bg-surface border border-border animate-pulse" />
+        </div>
+      </div>
+    );
+  }
+
+  if (loadError || !homeData) {
+    return (
+      <div className="w-full max-w-[480px] mx-auto px-4 py-12 text-center space-y-4">
+        <AlertTriangle className="w-10 h-10 text-red-600 mx-auto" />
+        <h2 className="text-lg font-bold text-text">Unable to load menu</h2>
+        <p className="text-xs text-muted">{loadError || 'Please check your internet connection.'}</p>
+        <button
+          type="button"
+          onClick={fetchHomeData}
+          className="min-h-[44px] px-5 rounded-theme bg-primary text-primary-contrast text-sm font-semibold inline-flex items-center gap-2 cursor-pointer"
+        >
+          <RotateCcw className="w-4 h-4" />
+          <span>Retry</span>
+        </button>
       </div>
     );
   }
@@ -715,7 +914,6 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
   const totalCartItems = cart.reduce((sum, item) => sum + item.quantity, 0);
   const totalCartAmount = cart.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
 
-  // Veg / Non-Veg standard square culinary indicator
   const renderDietMark = (isVeg: boolean) => (
     <span
       className={`inline-flex items-center justify-center w-4 h-4 rounded-[3px] border shrink-0 ${
@@ -729,147 +927,200 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
     </span>
   );
 
-  // Horizontal Scroll Section Card (for Bestsellers, Today's Special, etc.)
-  const renderHorizontalItemCard = (item: MenuItem) => {
-    const inCartQty = cart
-      .filter((c) => c.menuItemId === item.id)
-      .reduce((sum, c) => sum + c.quantity, 0);
+  // Helper to render either direct quantity stepper (if item in cart) or Add button
+  const renderAddOrStepperButton = (item: MenuItem, compact = false) => {
+    const matchingLines = cart.filter((c) => c.menuItemId === item.id);
+    const inCartQty = matchingLines.reduce((sum, c) => sum + c.quantity, 0);
 
-    return (
-      <div
-        key={item.id}
-        className="w-[210px] sm:w-[240px] shrink-0 snap-start rounded-2xl border border-stone-200 bg-white overflow-hidden flex flex-col justify-between shadow-2xs min-w-0"
-      >
-        <div className="min-w-0">
-          <div className="relative aspect-4/3 w-full bg-stone-900 overflow-hidden">
-            <img
-              src={item.imageUrl}
-              alt={item.name}
-              referrerPolicy="no-referrer"
-              className="w-full h-full object-cover"
-              onError={(e) => {
-                (e.currentTarget as HTMLImageElement).style.display = 'none';
-              }}
-            />
-            <div className="absolute inset-0 bg-gradient-to-t from-black/50 via-transparent to-transparent" />
-            <button
-              type="button"
-              onClick={() => setFavourites(guestAuthLayer.toggleFavourite(item.id))}
-              aria-label="Toggle favourite"
-              className="absolute top-2.5 right-2.5 w-8 h-8 rounded-full bg-white/90 flex items-center justify-center text-stone-700 cursor-pointer"
-            >
-              <Heart
-                className={`w-4 h-4 ${
-                  favourites.includes(item.id) ? 'fill-red-600 text-red-600' : ''
-                }`}
-              />
-            </button>
-            <div className="absolute bottom-2 left-2.5 right-2.5 flex items-center justify-between text-[11px] text-white font-medium">
-              <span className="truncate">{item.prepTimeMins} mins</span>
-              {item.isBestseller && <span className="text-amber-300 shrink-0">Bestseller</span>}
-            </div>
-          </div>
+    if (!item.inStock) {
+      return (
+        <span className="min-h-[40px] px-3 rounded-theme bg-bg border border-border text-muted text-xs font-bold uppercase tracking-wider inline-flex items-center justify-center whitespace-nowrap">
+          {lang === 'hi' ? 'स्टॉक समाप्त' : 'Out of Stock'}
+        </span>
+      );
+    }
 
-          <div className="p-3 min-w-0">
-            <div className="flex items-center gap-1.5 min-w-0">
-              {renderDietMark(item.isVeg)}
-              <h3 className="text-sm font-semibold text-stone-900 truncate min-w-0 flex-1">
-                {item.name}
-              </h3>
-            </div>
-            <p className="mt-1 text-xs text-stone-500 line-clamp-2 leading-relaxed break-words">
-              {item.description}
-            </p>
-          </div>
-        </div>
-
-        <div className="px-3 pb-3 pt-1 flex items-center justify-between gap-2 min-w-0">
-          <div className="min-w-0">
-            <span className="text-[11px] text-stone-400 block">Starts at</span>
-            <span className="text-sm font-bold text-stone-900 font-mono tabular-nums">
-              ₹{item.basePrice}
-            </span>
-          </div>
-
+    if (inCartQty > 0 && matchingLines.length === 1) {
+      const targetLine = matchingLines[0];
+      return (
+        <div
+          className={`${
+            compact ? '' : '-mt-4 relative z-10 w-full'
+          } min-h-[40px] rounded-theme bg-primary text-primary-contrast shadow-md flex items-center justify-between px-1.5`}
+        >
           <button
             type="button"
-            disabled={!item.inStock}
-            onClick={() => openCustomizeModal(item)}
-            className="min-h-[42px] px-3.5 rounded-xl bg-stone-900 hover:bg-amber-800 text-white text-xs sm:text-sm font-semibold whitespace-nowrap shrink-0 transition-colors cursor-pointer disabled:opacity-40"
+            aria-label={`Decrease quantity of ${item.name}`}
+            onClick={() => updateCartQty(targetLine.cartLineId, -1)}
+            className="w-7 h-8 flex items-center justify-center rounded-lg hover:bg-black/15 cursor-pointer"
           >
-            {!item.inStock
-              ? 'Sold Out'
-              : inCartQty > 0
-              ? `Add ₹${item.basePrice} (${inCartQty})`
-              : `Add ₹${item.basePrice}`}
+            <Minus className="w-3.5 h-3.5" />
+          </button>
+          <span className="text-xs font-mono font-bold tabular-nums px-1.5">{inCartQty}</span>
+          <button
+            type="button"
+            aria-label={`Increase quantity of ${item.name}`}
+            onClick={() => {
+              if (item.variants.length > 0 || item.addons.length > 0) {
+                openCustomizeModal(item);
+              } else {
+                updateCartQty(targetLine.cartLineId, 1);
+              }
+            }}
+            className="w-7 h-8 flex items-center justify-center rounded-lg hover:bg-black/15 cursor-pointer"
+          >
+            <Plus className="w-3.5 h-3.5" />
           </button>
         </div>
-      </div>
+      );
+    }
+
+    return (
+      <button
+        type="button"
+        onClick={() => openCustomizeModal(item)}
+        className={`${
+          compact ? 'px-3.5' : '-mt-4 relative z-10 w-full px-2 shadow-md'
+        } min-h-[42px] rounded-theme bg-primary text-primary-contrast text-xs sm:text-sm font-semibold whitespace-nowrap flex items-center justify-center transition-opacity hover:opacity-95 cursor-pointer`}
+      >
+        {inCartQty > 0
+          ? `${lang === 'hi' ? 'जोड़ें' : 'Add'} ₹${item.basePrice} (${inCartQty})`
+          : `${lang === 'hi' ? 'जोड़ें' : 'Add'} ₹${item.basePrice}`}
+      </button>
     );
   };
 
-  // Full Menu Grouped Item Row (Familiar Food-Delivery Card: Text Left + Photo & "Add ₹415" Right)
+  // Horizontal Scroll Section Card
+  const renderHorizontalItemCard = (item: MenuItem) => (
+    <div
+      key={item.id}
+      className="w-[210px] sm:w-[240px] shrink-0 snap-start rounded-theme border border-border bg-surface overflow-hidden flex flex-col justify-between shadow-2xs min-w-0"
+    >
+      <div className="min-w-0">
+        <div className="relative aspect-4/3 w-full bg-bg overflow-hidden">
+          <img
+            src={item.imageUrl}
+            alt={item.name}
+            referrerPolicy="no-referrer"
+            className="w-full h-full object-cover"
+            onError={(e) => {
+              (e.currentTarget as HTMLImageElement).style.display = 'none';
+            }}
+          />
+          <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent" />
+          {!item.inStock && (
+            <span className="absolute top-2.5 left-2.5 px-2 py-0.5 rounded bg-red-600 text-white text-[10px] font-bold uppercase">
+              Out of Stock
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={() => setFavourites(guestAuthLayer.toggleFavourite(item.id))}
+            aria-label={`Save ${item.name} to favourites`}
+            className="absolute top-2.5 right-2.5 w-8 h-8 rounded-full bg-surface/90 flex items-center justify-center text-text cursor-pointer"
+          >
+            <Heart
+              className={`w-4 h-4 ${
+                favourites.includes(item.id) ? 'fill-red-600 text-red-600' : ''
+              }`}
+            />
+          </button>
+          <div className="absolute bottom-2 left-2.5 right-2.5 flex items-center justify-between text-[11px] text-white font-medium">
+            <span className="truncate">{item.prepTimeMins} mins</span>
+            {item.isBestseller && <span className="text-amber-300 shrink-0">Bestseller</span>}
+          </div>
+        </div>
+
+        <div className="p-3 min-w-0">
+          <div className="flex items-center gap-1.5 min-w-0">
+            {renderDietMark(item.isVeg)}
+            <h3 className="text-sm font-semibold text-text truncate min-w-0 flex-1">
+              {item.name}
+            </h3>
+          </div>
+          <p className="mt-1 text-xs text-muted line-clamp-2 leading-relaxed break-words">
+            {item.description}
+          </p>
+        </div>
+      </div>
+
+      <div className="px-3 pb-3 pt-1 flex items-center justify-between gap-2 min-w-0">
+        <div className="min-w-0">
+          <span className="text-[11px] text-muted block">
+            {lang === 'hi' ? 'शुरुआती कीमत' : 'Starts at'}
+          </span>
+          <span className="text-sm font-bold text-text font-mono tabular-nums">
+            ₹{item.basePrice}
+          </span>
+        </div>
+
+        {renderAddOrStepperButton(item, true)}
+      </div>
+    </div>
+  );
+
+  // Full Menu Grouped Item Row
   const renderMenuListRow = (item: MenuItem) => {
-    const inCartQty = cart
-      .filter((c) => c.menuItemId === item.id)
-      .reduce((sum, c) => sum + c.quantity, 0);
     const isFav = favourites.includes(item.id);
 
     return (
       <article
         key={item.id}
-        className={`w-full max-w-full min-w-0 overflow-hidden rounded-2xl border border-stone-200 bg-white p-3 sm:p-4 flex items-start justify-between gap-3 ${
-          !item.inStock ? 'opacity-60' : ''
+        className={`w-full max-w-full min-w-0 overflow-hidden rounded-theme border border-border bg-surface p-3 sm:p-4 flex items-start justify-between gap-3 ${
+          !item.inStock ? 'opacity-65' : ''
         }`}
       >
-        {/* Left: Metadata, Title, Price, 2-Line Description */}
         <div className="min-w-0 flex-1 space-y-1.5">
-          <div className="flex items-center flex-wrap gap-1.5 text-xs text-stone-500">
+          <div className="flex items-center flex-wrap gap-1.5 text-xs text-muted">
             {renderDietMark(item.isVeg)}
             {item.isBestseller && (
-              <span className="text-amber-800 font-semibold">Bestseller</span>
+              <span className="text-primary font-semibold">Bestseller</span>
             )}
             {item.isTodaysSpecial && (
               <>
                 <span aria-hidden="true">·</span>
-                <span className="text-emerald-800 font-medium">Chef&apos;s Special</span>
+                <span className="text-emerald-600 font-medium">Chef&apos;s Special</span>
               </>
             )}
+            {!item.inStock && (
+              <span className="px-1.5 py-0.5 rounded bg-red-500/15 text-red-600 text-[10px] font-bold uppercase">
+                Out of Stock
+              </span>
+            )}
             <span aria-hidden="true">·</span>
-            <span className="inline-flex items-center gap-0.5 text-stone-700 font-medium">
+            <span className="inline-flex items-center gap-0.5 text-text font-medium">
               <Star className="w-3 h-3 fill-amber-500 text-amber-500" />
               4.8
             </span>
           </div>
 
-          <h3 className="text-sm sm:text-base font-semibold text-stone-900 leading-snug break-words">
+          <h3 className="text-sm sm:text-base font-semibold text-text leading-snug break-words">
             {item.name}
           </h3>
 
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-sm font-bold font-mono tabular-nums text-stone-900">
+            <span className="text-sm font-bold font-mono tabular-nums text-text">
               ₹{item.basePrice}
             </span>
-            <span className="text-xs text-stone-400">· {item.prepTimeMins} mins</span>
+            <span className="text-xs text-muted">· {item.prepTimeMins} mins</span>
           </div>
 
-          <p className="text-xs text-stone-500 line-clamp-2 leading-relaxed break-words">
+          <p className="text-xs text-muted line-clamp-2 leading-relaxed break-words">
             {item.description}
           </p>
 
           <button
             type="button"
             onClick={() => setFavourites(guestAuthLayer.toggleFavourite(item.id))}
-            className="inline-flex items-center gap-1 pt-1 text-xs text-stone-500 hover:text-red-600 cursor-pointer"
+            className="inline-flex items-center gap-1 pt-1 text-xs text-muted hover:text-red-600 cursor-pointer"
           >
             <Heart className={`w-3.5 h-3.5 ${isFav ? 'fill-red-600 text-red-600' : ''}`} />
             <span>{isFav ? 'Saved' : 'Save'}</span>
           </button>
         </div>
 
-        {/* Right: Dish Photo + One-Line "Add ₹415" Button (Fits cleanly even at 320px) */}
-        <div className="w-[100px] sm:w-[124px] shrink-0 flex flex-col items-center">
-          <div className="relative w-full aspect-square rounded-xl bg-stone-900 overflow-hidden border border-stone-100">
+        <div className="w-[104px] sm:w-[124px] shrink-0 flex flex-col items-center">
+          <div className="relative w-full aspect-square rounded-theme bg-bg overflow-hidden border border-border">
             <img
               src={item.imageUrl}
               alt={item.name}
@@ -881,21 +1132,10 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
             />
           </div>
 
-          <button
-            type="button"
-            disabled={!item.inStock}
-            onClick={() => openCustomizeModal(item)}
-            className="-mt-4 relative z-10 w-full min-h-[42px] px-2 rounded-xl bg-stone-900 hover:bg-amber-800 text-white text-xs sm:text-sm font-semibold shadow-md whitespace-nowrap flex items-center justify-center transition-colors cursor-pointer disabled:opacity-40"
-          >
-            {!item.inStock
-              ? 'Sold Out'
-              : inCartQty > 0
-              ? `Add ₹${item.basePrice} (${inCartQty})`
-              : `Add ₹${item.basePrice}`}
-          </button>
+          {renderAddOrStepperButton(item, false)}
 
-          {item.variants.length > 0 && (
-            <span className="mt-1 text-[10px] text-stone-400 whitespace-nowrap">
+          {item.variants.length > 0 && item.inStock && (
+            <span className="mt-1 text-[10px] text-muted whitespace-nowrap">
               Customizable
             </span>
           )}
@@ -908,8 +1148,29 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
 
   return (
     <div className="w-full max-w-[100vw] overflow-x-clip min-w-0 pb-8">
-      {/* 2. SLIM DELIVERY-ADDRESS BAR UNDER HEADER (Opens Address Bottom Sheet) */}
-      <div className="w-full max-w-[100vw] bg-stone-100 border-b border-stone-200 overflow-x-clip">
+      {/* 1. SHOP CLOSED / HOLIDAY / PRE-ORDER TIMINGS BANNER */}
+      {(!settings.isOpen || settings.holidaysNote) && (
+        <div className="w-full max-w-[100vw] bg-primary/10 border-b border-primary/30 px-4 py-2.5">
+          <div className="w-full max-w-[480px] md:max-w-[1200px] mx-auto flex flex-wrap items-center justify-between gap-2 text-xs">
+            <div className="flex items-center gap-2 min-w-0 flex-1">
+              <CalendarClock className="w-4 h-4 text-primary shrink-0" />
+              <span className="font-semibold text-text break-words">
+                {!settings.isOpen
+                  ? `Kitchen is currently closed · Opens at ${settings.opensAtText || '11:00 AM'} (${settings.weeklyTimings})`
+                  : settings.holidaysNote}
+              </span>
+            </div>
+            {!settings.isOpen && settings.allowPreOrdersWhenClosed && (
+              <span className="px-2 py-0.5 rounded bg-primary text-primary-contrast font-bold text-[10px] uppercase shrink-0">
+                Pre-Orders Open
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* 2. SLIM DELIVERY-ADDRESS BAR UNDER HEADER (Starts empty until guest pins/selects) */}
+      <div className="w-full max-w-[100vw] bg-surface border-b border-border overflow-x-clip">
         <div className="w-full max-w-[480px] md:max-w-[1200px] mx-auto px-4 py-2 min-w-0">
           <button
             type="button"
@@ -917,20 +1178,32 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
             className="w-full max-w-full min-w-0 flex items-center justify-between gap-2 text-left cursor-pointer overflow-hidden"
           >
             <div className="flex items-center gap-1.5 min-w-0 flex-1">
-              <MapPin className="w-4 h-4 text-amber-700 shrink-0" />
-              <span className="text-xs font-semibold text-stone-900 shrink-0">Deliver to:</span>
-              <span className="text-xs text-stone-600 truncate min-w-0 flex-1">
-                {guestAddress || 'Add address'}
+              <MapPin className="w-4 h-4 text-primary shrink-0" />
+              <span className="text-xs font-semibold text-text shrink-0">
+                {lang === 'hi' ? 'डिलीवरी पता:' : 'Deliver to:'}
               </span>
-              <ChevronRight className="w-3.5 h-3.5 text-stone-400 shrink-0" />
+              <span className="text-xs text-muted truncate min-w-0 flex-1">
+                {liveAddressDistance.pinned && guestAddress
+                  ? guestAddress
+                  : lang === 'hi'
+                  ? 'अपना लोकेशन चुनें (GPS / पिन)'
+                  : 'Tap to set your delivery location (GPS / Map Pin)'}
+              </span>
+              <ChevronRight className="w-3.5 h-3.5 text-muted shrink-0" />
             </div>
 
             <span
-              className={`text-[11px] font-medium whitespace-nowrap shrink-0 ${
-                liveAddressDistance.within ? 'text-emerald-700' : 'text-red-600'
+              className={`text-[11px] font-semibold whitespace-nowrap shrink-0 ${
+                !liveAddressDistance.pinned
+                  ? 'text-primary'
+                  : liveAddressDistance.within
+                  ? 'text-emerald-600'
+                  : 'text-red-600'
               }`}
             >
-              {liveAddressDistance.within
+              {!liveAddressDistance.pinned
+                ? 'Set Location'
+                : liveAddressDistance.within
                 ? `${liveAddressDistance.km} km`
                 : `Outside (${liveAddressDistance.km} km)`}
             </span>
@@ -939,27 +1212,33 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
       </div>
 
       {/* =====================================================================
-          HOME & MENU VIEW (Single Centered Wrapper: max-w-[480px] md:max-w-[1200px] px-4)
+          HOME & MENU VIEW
          ===================================================================== */}
       {(activeSubTab === 'home' || activeSubTab === 'menu') && (
         <div className="w-full max-w-[100vw] overflow-x-clip min-w-0">
-          {/* STEP 1: STICKY ROUNDED FULL-WIDTH SEARCH BAR */}
-          <div className="sticky top-[56px] left-0 right-0 z-20 w-full max-w-[100vw] bg-[#FAF8F5]/95 backdrop-blur-md border-b border-stone-200/70 overflow-x-clip">
+          {/* STEP 1: STICKY SEARCH BAR */}
+          <div className="sticky top-[56px] left-0 right-0 z-20 w-full max-w-[100vw] bg-bg/95 backdrop-blur-md border-b border-border overflow-x-clip">
             <div className="w-full max-w-[480px] md:max-w-[1200px] mx-auto px-4 py-2.5 min-w-0">
               <div className="relative w-full min-w-0">
-                <Search className="w-4 h-4 text-stone-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <Search className="w-4 h-4 text-muted absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                 <input
                   type="search"
+                  aria-label="Search menu dishes"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search biryani, paneer tikka, murgh makhani..."
-                  className="w-full h-11 pl-10 pr-9 rounded-full border border-stone-300 bg-white text-sm text-stone-900 placeholder:text-stone-400 focus:outline-none focus:border-stone-900 shadow-2xs"
+                  placeholder={
+                    lang === 'hi'
+                      ? 'बिरयानी, पनीर टिक्का, बटर चिकन खोजें...'
+                      : 'Search biryani, paneer tikka, murgh makhani...'
+                  }
+                  className="w-full h-11 pl-10 pr-9 rounded-full border border-border bg-surface text-sm text-text placeholder:text-muted focus:outline-none focus:border-primary shadow-2xs"
                 />
                 {searchQuery && (
                   <button
                     type="button"
+                    aria-label="Clear search query"
                     onClick={() => setSearchQuery('')}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-stone-400 hover:text-stone-700 cursor-pointer"
+                    className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-muted hover:text-text cursor-pointer"
                   >
                     <X className="w-4 h-4" />
                   </button>
@@ -968,7 +1247,6 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
             </div>
           </div>
 
-          {/* SINGLE PAGE WRAPPER: max-width 480px on mobile, 1200px on desktop, 16px padding */}
           <div className="w-full max-w-[480px] md:max-w-[1200px] mx-auto px-4 pt-4 space-y-6 min-w-0 overflow-x-clip">
             {/* STEP 2: HORIZONTALLY SCROLLABLE ROUND CATEGORIES STRIP */}
             <section aria-label="Menu Categories" className="w-full max-w-full min-w-0 overflow-hidden">
@@ -981,8 +1259,8 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   <div
                     className={`w-15 h-15 rounded-full overflow-hidden border-2 transition-all ${
                       selectedCategory === 'ALL'
-                        ? 'border-amber-700 ring-2 ring-amber-700/20'
-                        : 'border-stone-200'
+                        ? 'border-primary ring-2 ring-primary/20'
+                        : 'border-border'
                     }`}
                   >
                     <img
@@ -995,11 +1273,11 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   <span
                     className={`text-xs text-center truncate w-full ${
                       selectedCategory === 'ALL'
-                        ? 'font-bold text-stone-900'
-                        : 'font-medium text-stone-600'
+                        ? 'font-bold text-text'
+                        : 'font-medium text-muted'
                     }`}
                   >
-                    All
+                    {lang === 'hi' ? 'सभी' : 'All'}
                   </span>
                 </button>
 
@@ -1018,8 +1296,8 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                       <div
                         className={`w-15 h-15 rounded-full overflow-hidden border-2 transition-all ${
                           isActive
-                            ? 'border-amber-700 ring-2 ring-amber-700/20'
-                            : 'border-stone-200'
+                            ? 'border-primary ring-2 ring-primary/20'
+                            : 'border-border'
                         }`}
                       >
                         <img
@@ -1032,8 +1310,8 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                       <span
                         className={`text-xs text-center truncate w-full ${
                           isActive
-                            ? 'font-bold text-stone-900'
-                            : 'font-medium text-stone-600'
+                            ? 'font-bold text-text'
+                            : 'font-medium text-muted'
                         }`}
                       >
                         {cat.name.split(' ')[0]}
@@ -1044,10 +1322,10 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
               </div>
             </section>
 
-            {/* STEP 3: 16:9 BANNER CAROUSEL (Single active frame — zero stray adjacent panel on left/right) */}
+            {/* STEP 3: 16:9 BANNER CAROUSEL */}
             {activeSubTab === 'home' && banners.length > 0 && !searchQuery && currentBanner && (
               <section aria-label="Promotional Banners" className="w-full max-w-full min-w-0 space-y-2.5 overflow-hidden">
-                <div className="relative w-full max-w-full aspect-video rounded-2xl overflow-hidden bg-stone-900 border border-stone-200">
+                <div className="relative w-full max-w-full aspect-video rounded-theme overflow-hidden bg-surface border border-border">
                   <img
                     src={currentBanner.imageUrl}
                     alt={currentBanner.title}
@@ -1068,7 +1346,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                             setSelectedCategory(currentBanner.linkTarget);
                           }
                         }}
-                        className="min-h-[42px] px-4 rounded-xl bg-amber-600 hover:bg-amber-500 text-stone-950 text-xs sm:text-sm font-semibold whitespace-nowrap inline-flex items-center justify-center transition-colors cursor-pointer"
+                        className="min-h-[42px] px-4 rounded-theme bg-primary text-primary-contrast text-xs sm:text-sm font-semibold whitespace-nowrap inline-flex items-center justify-center transition-opacity hover:opacity-95 cursor-pointer"
                       >
                         {currentBanner.ctaText}
                       </button>
@@ -1076,7 +1354,6 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   </div>
                 </div>
 
-                {/* Dots Indicator */}
                 {banners.length > 1 && (
                   <div className="flex items-center justify-center gap-1.5">
                     {banners.map((b, idx) => (
@@ -1087,8 +1364,8 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                         onClick={() => setActiveBannerIdx(idx)}
                         className={`h-1.5 rounded-full transition-all cursor-pointer ${
                           idx === activeBannerIdx % banners.length
-                            ? 'w-5 bg-stone-900'
-                            : 'w-1.5 bg-stone-300'
+                            ? 'w-5 bg-primary'
+                            : 'w-1.5 bg-border'
                         }`}
                       />
                     ))}
@@ -1097,7 +1374,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
               </section>
             )}
 
-            {/* STEP 4: OFFER CHIPS ROW (Horizontal Scroll, Tap to Copy Code) */}
+            {/* STEP 4: OFFER CHIPS ROW (Tap to Apply Coupon) */}
             {coupons.length > 0 && !searchQuery && (
               <section aria-label="Available Offers" className="w-full max-w-full min-w-0 overflow-hidden">
                 <div className="w-full max-w-full min-w-0 flex items-center gap-2.5 overflow-x-auto no-scrollbar snap-x py-0.5">
@@ -1108,19 +1385,19 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                         key={c.code}
                         type="button"
                         onClick={() => handleCopyAndApplyCoupon(c.code)}
-                        className={`min-h-[48px] px-3.5 py-2 rounded-xl border text-left shrink-0 snap-start flex items-center gap-2.5 transition-colors cursor-pointer whitespace-nowrap ${
+                        className={`min-h-[48px] px-3.5 py-2 rounded-theme border text-left shrink-0 snap-start flex items-center gap-2.5 transition-colors cursor-pointer whitespace-nowrap ${
                           isCopied
-                            ? 'border-emerald-600 bg-emerald-50/70 text-emerald-950'
-                            : 'border-stone-200 bg-white hover:border-amber-700 text-stone-800'
+                            ? 'border-emerald-600 bg-emerald-500/10 text-text'
+                            : 'border-border bg-surface hover:border-primary text-text'
                         }`}
                       >
-                        <Tag className="w-4 h-4 text-amber-700 shrink-0" />
+                        <Tag className="w-4 h-4 text-primary shrink-0" />
                         <div className="min-w-0">
-                          <p className="text-xs font-semibold text-stone-900 whitespace-nowrap">
+                          <p className="text-xs font-semibold text-text whitespace-nowrap">
                             {c.description}
                           </p>
-                          <p className="text-[11px] font-mono text-stone-500 whitespace-nowrap">
-                            {isCopied ? `✓ Applied ${c.code}` : `Tap to copy · ${c.code}`}
+                          <p className="text-[11px] font-mono text-muted whitespace-nowrap">
+                            {isCopied ? `✓ Applied ${c.code}` : `Tap to apply · ${c.code}`}
                           </p>
                         </div>
                       </button>
@@ -1130,7 +1407,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
               </section>
             )}
 
-            {/* STEP 5: ADMIN-DEFINED SECTIONS (Horizontal Scroll of Item Cards) */}
+            {/* STEP 5: ADMIN-DEFINED SECTIONS */}
             {activeSubTab === 'home' &&
               !searchQuery &&
               selectedCategory === 'ALL' &&
@@ -1139,11 +1416,11 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   <section key={section.id} className="w-full max-w-full min-w-0 space-y-3 overflow-hidden">
                     <div className="flex items-baseline justify-between gap-2 min-w-0">
                       <div className="min-w-0 flex-1">
-                        <h2 className="text-lg sm:text-xl font-semibold text-stone-900 truncate">
+                        <h2 className="text-lg sm:text-xl font-semibold text-text truncate">
                           {section.title}
                         </h2>
                         {section.subtitle && (
-                          <p className="text-xs text-stone-500 truncate">{section.subtitle}</p>
+                          <p className="text-xs text-muted truncate">{section.subtitle}</p>
                         )}
                       </div>
                     </div>
@@ -1155,37 +1432,52 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                 ) : null
               )}
 
-            {/* STEP 6: VEG/NON-VEG TOGGLE + FILTER CHIPS (Rating 4+, Under ₹350, Bestseller) */}
-            <section aria-label="Menu Filters" className="w-full max-w-full min-w-0 pt-2 border-t border-stone-200 overflow-hidden">
+            {/* STEP 6: VEG/NON-VEG TOGGLE + FILTER CHIPS + SORT */}
+            <section aria-label="Menu Filters and Sort" className="w-full max-w-full min-w-0 pt-2 border-t border-border overflow-hidden">
               <div className="w-full max-w-full min-w-0 flex items-center gap-2 overflow-x-auto no-scrollbar py-1">
                 {(
                   [
-                    { id: 'ALL', label: 'All' },
-                    { id: 'VEG', label: 'Pure Veg' },
-                    { id: 'NON_VEG', label: 'Non-Veg' },
+                    { id: 'ALL', label: lang === 'hi' ? 'सभी' : 'All' },
+                    { id: 'VEG', label: lang === 'hi' ? 'शाकाहारी (Veg)' : 'Pure Veg' },
+                    { id: 'NON_VEG', label: lang === 'hi' ? 'मांसाहारी' : 'Non-Veg' },
                   ] as const
                 ).map((t) => (
                   <button
                     key={t.id}
                     type="button"
                     onClick={() => setDietFilter(t.id)}
-                    className={`min-h-[40px] px-3.5 rounded-xl text-xs font-semibold whitespace-nowrap shrink-0 border transition-colors cursor-pointer ${
+                    className={`min-h-[40px] px-3.5 rounded-theme text-xs font-semibold whitespace-nowrap shrink-0 border transition-colors cursor-pointer ${
                       dietFilter === t.id
-                        ? 'border-stone-900 bg-stone-900 text-white'
-                        : 'border-stone-300 bg-white text-stone-700'
+                        ? 'border-primary bg-primary text-primary-contrast'
+                        : 'border-border bg-surface text-text'
                     }`}
                   >
                     {t.label}
                   </button>
                 ))}
 
+                {/* Sort Selector */}
+                <div className="relative shrink-0 flex items-center">
+                  <ArrowUpDown className="w-3.5 h-3.5 text-muted absolute left-3 pointer-events-none" />
+                  <select
+                    aria-label="Sort menu items"
+                    value={sortBy}
+                    onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
+                    className="min-h-[40px] pl-8 pr-3 rounded-theme border border-border bg-surface text-xs font-semibold text-text cursor-pointer"
+                  >
+                    <option value="POPULAR">Sort: Popularity</option>
+                    <option value="PRICE_ASC">Price: Low to High</option>
+                    <option value="PRICE_DESC">Price: High to Low</option>
+                  </select>
+                </div>
+
                 <button
                   type="button"
                   onClick={() => setFilterRating4Plus((v) => !v)}
-                  className={`min-h-[40px] px-3.5 rounded-xl text-xs font-semibold whitespace-nowrap shrink-0 border transition-colors cursor-pointer ${
+                  className={`min-h-[40px] px-3.5 rounded-theme text-xs font-semibold whitespace-nowrap shrink-0 border transition-colors cursor-pointer ${
                     filterRating4Plus
-                      ? 'border-amber-700 bg-amber-50 text-amber-950'
-                      : 'border-stone-300 bg-white text-stone-700'
+                      ? 'border-primary bg-primary/15 text-text'
+                      : 'border-border bg-surface text-text'
                   }`}
                 >
                   Rating 4.0+
@@ -1194,10 +1486,10 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                 <button
                   type="button"
                   onClick={() => setFilterUnder350((v) => !v)}
-                  className={`min-h-[40px] px-3.5 rounded-xl text-xs font-semibold whitespace-nowrap shrink-0 border transition-colors cursor-pointer ${
+                  className={`min-h-[40px] px-3.5 rounded-theme text-xs font-semibold whitespace-nowrap shrink-0 border transition-colors cursor-pointer ${
                     filterUnder350
-                      ? 'border-amber-700 bg-amber-50 text-amber-950'
-                      : 'border-stone-300 bg-white text-stone-700'
+                      ? 'border-primary bg-primary/15 text-text'
+                      : 'border-border bg-surface text-text'
                   }`}
                 >
                   Under ₹350
@@ -1206,10 +1498,10 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                 <button
                   type="button"
                   onClick={() => setFilterBestseller((v) => !v)}
-                  className={`min-h-[40px] px-3.5 rounded-xl text-xs font-semibold whitespace-nowrap shrink-0 border transition-colors cursor-pointer ${
+                  className={`min-h-[40px] px-3.5 rounded-theme text-xs font-semibold whitespace-nowrap shrink-0 border transition-colors cursor-pointer ${
                     filterBestseller
-                      ? 'border-amber-700 bg-amber-50 text-amber-950'
-                      : 'border-stone-300 bg-white text-stone-700'
+                      ? 'border-primary bg-primary/15 text-text'
+                      : 'border-border bg-surface text-text'
                   }`}
                 >
                   Bestseller
@@ -1218,10 +1510,10 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                 <button
                   type="button"
                   onClick={() => setFilterSavedOnly((v) => !v)}
-                  className={`min-h-[40px] px-3.5 rounded-xl text-xs font-semibold whitespace-nowrap shrink-0 border transition-colors cursor-pointer ${
+                  className={`min-h-[40px] px-3.5 rounded-theme text-xs font-semibold whitespace-nowrap shrink-0 border transition-colors cursor-pointer ${
                     filterSavedOnly
-                      ? 'border-amber-700 bg-amber-50 text-amber-950'
-                      : 'border-stone-300 bg-white text-stone-700'
+                      ? 'border-primary bg-primary/15 text-text'
+                      : 'border-border bg-surface text-text'
                   }`}
                 >
                   Saved ({favourites.length})
@@ -1232,8 +1524,8 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
             {/* STEP 7: FULL MENU LIST GROUPED BY CATEGORY */}
             <section aria-label="Full Menu by Category" className="w-full max-w-full min-w-0 space-y-8">
               {filteredMenuItems.length === 0 ? (
-                <div className="rounded-2xl border border-stone-200 bg-white p-8 text-center space-y-3">
-                  <p className="text-base font-semibold text-stone-900">
+                <div className="rounded-theme border border-border bg-surface p-8 text-center space-y-3">
+                  <p className="text-base font-semibold text-text">
                     No dishes match your active filters
                   </p>
                   <button
@@ -1247,7 +1539,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                       setFilterSavedOnly(false);
                       setSearchQuery('');
                     }}
-                    className="min-h-[48px] px-5 rounded-xl bg-stone-900 text-white text-sm font-semibold whitespace-nowrap cursor-pointer"
+                    className="min-h-[48px] px-5 rounded-theme bg-primary text-primary-contrast text-sm font-semibold whitespace-nowrap cursor-pointer"
                   >
                     Clear All Filters
                   </button>
@@ -1259,7 +1551,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   return (
                     <div key={cat.id} className="w-full max-w-full min-w-0 space-y-3">
                       <div className="flex items-baseline justify-between gap-2 min-w-0">
-                        <h2 className="text-lg font-semibold text-stone-900 truncate">
+                        <h2 className="text-lg font-semibold text-text truncate">
                           {cat.name} ({catItems.length})
                         </h2>
                       </div>
@@ -1276,37 +1568,76 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
       )}
 
       {/* =====================================================================
-          MY RECENT ORDERS TAB (On This Device)
+          MY RECENT ORDERS TAB + "FIND MY ORDER" GUEST LOOKUP
          ===================================================================== */}
       {activeSubTab === 'orders' && (
-        <div className="w-full max-w-[480px] md:max-w-[1200px] mx-auto px-4 py-4 space-y-4 min-w-0 overflow-x-clip">
+        <div className="w-full max-w-[480px] md:max-w-[1200px] mx-auto px-4 py-4 space-y-5 min-w-0 overflow-x-clip">
+          {/* Phase 4: "Find My Order" Guest Lookup Card (orderNumber + phone, no login) */}
+          <div className="rounded-theme border border-border bg-surface p-4 space-y-3">
+            <div>
+              <h2 className="text-sm font-bold text-text">
+                {lang === 'hi' ? 'अपना ऑर्डर खोजें (Find My Order)' : 'Find My Order'}
+              </h2>
+              <p className="text-xs text-muted">
+                Cleared your browser or switched devices? Enter your Order ID and 10-digit mobile number.
+              </p>
+            </div>
+            <form onSubmit={handleFindOrderLookup} className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+              <input
+                type="text"
+                value={lookupOrderNo}
+                onChange={(e) => setLookupOrderNo(e.target.value.toUpperCase())}
+                placeholder="Order ID (e.g. AAN-1042)"
+                className="px-3 py-2.5 rounded-theme border border-border bg-bg text-xs font-mono uppercase text-text"
+              />
+              <input
+                type="tel"
+                maxLength={10}
+                value={lookupPhone}
+                onChange={(e) => setLookupPhone(e.target.value.replace(/\D/g, ''))}
+                placeholder="10-Digit Mobile Number"
+                className="px-3 py-2.5 rounded-theme border border-border bg-bg text-xs font-mono text-text"
+              />
+              <button
+                type="submit"
+                disabled={lookupBusy}
+                className="min-h-[42px] px-4 rounded-theme bg-primary text-primary-contrast text-xs font-semibold cursor-pointer disabled:opacity-50"
+              >
+                {lookupBusy ? 'Searching...' : 'Find Order'}
+              </button>
+            </form>
+            {lookupError && (
+              <p className="text-xs text-red-600 font-medium">{lookupError}</p>
+            )}
+          </div>
+
           <div className="flex items-center justify-between gap-2 min-w-0">
             <div className="min-w-0 flex-1">
-              <h1 className="text-xl font-semibold text-stone-900 truncate">My Recent Orders</h1>
-              <p className="text-xs text-stone-500 truncate">
+              <h1 className="text-xl font-semibold text-text truncate">My Recent Orders</h1>
+              <p className="text-xs text-muted truncate">
                 Saved locally on this device · Tap to track live or reorder
               </p>
             </div>
             <button
               type="button"
               onClick={loadRecentOrders}
-              className="min-h-[44px] px-4 rounded-xl border border-stone-300 bg-white text-sm font-semibold text-stone-800 whitespace-nowrap shrink-0 cursor-pointer"
+              className="min-h-[44px] px-4 rounded-theme border border-border bg-surface text-sm font-semibold text-text whitespace-nowrap shrink-0 cursor-pointer"
             >
               Refresh
             </button>
           </div>
 
           {loadingRecent ? (
-            <div className="rounded-2xl border border-stone-200 bg-white p-8 text-center text-sm text-stone-500">
+            <div className="rounded-theme border border-border bg-surface p-8 text-center text-sm text-muted">
               Loading your recent orders...
             </div>
           ) : recentOrders.length === 0 ? (
-            <div className="rounded-2xl border border-stone-200 bg-white p-8 text-center space-y-3">
-              <p className="text-base font-semibold text-stone-900">No orders yet</p>
+            <div className="rounded-theme border border-border bg-surface p-8 text-center space-y-3">
+              <p className="text-base font-semibold text-text">No orders yet</p>
               <button
                 type="button"
                 onClick={() => setActiveSubTab('home')}
-                className="min-h-[48px] px-5 rounded-xl bg-stone-900 text-white text-sm font-semibold whitespace-nowrap cursor-pointer"
+                className="min-h-[48px] px-5 rounded-theme bg-primary text-primary-contrast text-sm font-semibold whitespace-nowrap cursor-pointer"
               >
                 Explore Menu
               </button>
@@ -1316,55 +1647,41 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
               {recentOrders.map((ord) => (
                 <div
                   key={ord.id}
-                  className="rounded-2xl border border-stone-200 bg-white p-4 space-y-3 min-w-0 overflow-hidden"
+                  className="rounded-theme border border-border bg-surface p-4 space-y-3 min-w-0 overflow-hidden"
                 >
                   <div className="flex items-start justify-between gap-2 min-w-0">
                     <div className="min-w-0 flex-1">
-                      <p className="text-xs font-mono text-stone-500 break-words">
-                        {ord.orderNumber} · {ord.status} · OTP: {ord.deliveryOtp}
+                      <p className="text-xs font-mono text-muted break-words">
+                        {ord.orderNumber} · <strong className="text-primary">{ord.status}</strong> · OTP: {ord.deliveryOtp}
                       </p>
-                      <p className="mt-1 text-sm font-semibold text-stone-900 line-clamp-2 break-words">
+                      <p className="mt-1 text-sm font-semibold text-text line-clamp-2 break-words">
                         {ord.items.map((i) => `${i.quantity}x ${i.itemName}`).join(', ')}
                       </p>
-                      <p className="mt-0.5 text-xs text-stone-500 break-words line-clamp-2">
+                      <p className="mt-0.5 text-xs text-muted break-words line-clamp-2">
                         {ord.deliveryAddress}
                       </p>
                     </div>
-                    <span className="text-base font-bold font-mono tabular-nums text-stone-900 shrink-0">
+                    <span className="text-base font-bold font-mono tabular-nums text-text shrink-0">
                       ₹{ord.grandTotal}
                     </span>
                   </div>
 
-                  <div className="flex items-center gap-2 pt-2 border-t border-stone-100">
+                  <div className="flex items-center gap-2 pt-2 border-t border-border">
                     <button
                       type="button"
                       onClick={() => {
-                        const restored: CartItem[] = ord.items.map((it, idx) => ({
-                          cartLineId: `reorder_${ord.id}_${idx}`,
-                          menuItemId: it.menuItemId,
-                          name: it.itemName,
-                          imageUrl:
-                            homeData.allMenuItems.find((m) => m.id === it.menuItemId)?.imageUrl ||
-                            '',
-                          isVeg:
-                            homeData.allMenuItems.find((m) => m.id === it.menuItemId)?.isVeg ??
-                            true,
-                          variantName: it.variantName,
-                          selectedAddons: it.addons,
-                          unitPrice: it.unitPrice,
-                          quantity: it.quantity,
-                        }));
-                        setCart(restored);
-                        setCartDrawerOpen(true);
+                        if (onReorder) {
+                          onReorder(ord, homeData.allMenuItems);
+                        }
                       }}
-                      className="flex-1 min-h-[48px] px-4 rounded-xl border border-stone-300 text-sm font-semibold text-stone-800 whitespace-nowrap cursor-pointer"
+                      className="flex-1 min-h-[48px] px-4 rounded-theme border border-border bg-bg text-sm font-semibold text-text whitespace-nowrap cursor-pointer"
                     >
                       Reorder
                     </button>
                     <button
                       type="button"
                       onClick={() => onOpenTracking(ord.trackingToken)}
-                      className="flex-1 min-h-[48px] px-4 rounded-xl bg-stone-900 text-white text-sm font-semibold whitespace-nowrap cursor-pointer"
+                      className="flex-1 min-h-[48px] px-4 rounded-theme bg-primary text-primary-contrast text-sm font-semibold whitespace-nowrap cursor-pointer"
                     >
                       Live Track
                     </button>
@@ -1376,34 +1693,34 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
         </div>
       )}
 
-      {/* STEP 8: FOOTER (FSSAI Number & Policy Links) */}
-      <footer className="w-full max-w-[480px] md:max-w-[1200px] mx-auto mt-10 px-4 pt-6 border-t border-stone-200 text-xs text-stone-500 space-y-3 min-w-0 overflow-x-clip">
+      {/* STEP 8: FOOTER */}
+      <footer className="w-full max-w-[480px] md:max-w-[1200px] mx-auto mt-10 px-4 pt-6 border-t border-border text-xs text-muted space-y-3 min-w-0 overflow-x-clip">
         <div className="min-w-0 space-y-1">
-          <p className="font-semibold text-stone-800 break-words">{settings.shopName}</p>
+          <p className="font-semibold text-text break-words">{settings.shopName}</p>
           <p className="line-clamp-2 break-words">{deliveryZone.shopAddress}</p>
-          <p className="font-mono tabular-nums text-stone-600 break-words">
-            FSSAI Lic No. {settings.fssaiNumber} · GST {settings.gstPercent}%
+          <p className="font-mono tabular-nums text-muted break-words">
+            FSSAI Lic No. {settings.fssaiNumber} · GST {settings.gstPercent}% · Hours: {settings.weeklyTimings}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-4 pt-1">
           <button
             type="button"
             onClick={() => setActivePolicyModal('privacy')}
-            className="underline hover:text-stone-900 cursor-pointer whitespace-nowrap"
+            className="underline hover:text-text cursor-pointer whitespace-nowrap"
           >
             Privacy Policy
           </button>
           <button
             type="button"
             onClick={() => setActivePolicyModal('terms')}
-            className="underline hover:text-stone-900 cursor-pointer whitespace-nowrap"
+            className="underline hover:text-text cursor-pointer whitespace-nowrap"
           >
             Terms of Service
           </button>
           <button
             type="button"
             onClick={() => setActivePolicyModal('refund')}
-            className="underline hover:text-stone-900 cursor-pointer whitespace-nowrap"
+            className="underline hover:text-text cursor-pointer whitespace-nowrap"
           >
             Refund Policy
           </button>
@@ -1417,16 +1734,16 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
             <button
               type="button"
               onClick={() => setCartDrawerOpen(true)}
-              className="w-full min-h-[52px] px-4 py-2.5 rounded-2xl bg-stone-900 text-white shadow-xl flex items-center justify-between gap-3 cursor-pointer"
+              className="w-full min-h-[52px] px-4 py-2.5 rounded-theme bg-primary text-primary-contrast shadow-xl flex items-center justify-between gap-3 cursor-pointer"
             >
               <div className="min-w-0 text-left">
-                <p className="text-xs text-amber-400 font-mono tabular-nums truncate">
+                <p className="text-xs font-mono font-bold tabular-nums truncate">
                   {totalCartItems} {totalCartItems === 1 ? ' item' : ' items'} · ₹{totalCartAmount}
                 </p>
-                <p className="text-xs text-stone-300 truncate">Extra charges may apply at checkout</p>
+                <p className="text-[11px] opacity-85 truncate">Extra charges may apply at checkout</p>
               </div>
               <span className="text-sm font-semibold whitespace-nowrap shrink-0 flex items-center gap-1">
-                <span>View Bag</span>
+                <span>{lang === 'hi' ? 'कार्ट देखें' : 'View Bag'}</span>
                 <ChevronRight className="w-4 h-4" />
               </span>
             </button>
@@ -1439,16 +1756,16 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
          ===================================================================== */}
       {addressSheetOpen && (
         <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-xs">
-          <div className="w-full max-w-lg max-h-[90dvh] rounded-t-3xl sm:rounded-2xl bg-white flex flex-col overflow-hidden pb-safe">
-            <div className="w-10 h-1.5 bg-stone-300 rounded-full mx-auto mt-3 sm:hidden" />
-            <div className="px-4 py-3.5 border-b border-stone-200 flex items-center justify-between gap-2">
-              <h3 className="text-base font-semibold text-stone-900 truncate">
+          <div className="w-full max-w-lg max-h-[90dvh] rounded-t-3xl sm:rounded-theme bg-surface text-text border border-border flex flex-col overflow-hidden pb-safe">
+            <div className="w-10 h-1.5 bg-border rounded-full mx-auto mt-3 sm:hidden" />
+            <div className="px-4 py-3.5 border-b border-border flex items-center justify-between gap-2">
+              <h3 className="text-base font-semibold text-text truncate">
                 Select Delivery Location
               </h3>
               <button
                 type="button"
                 onClick={() => setAddressSheetOpen(false)}
-                className="p-2 rounded-lg text-stone-400 hover:text-stone-700 shrink-0 cursor-pointer"
+                className="p-2 rounded-lg text-muted hover:text-text shrink-0 cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -1458,15 +1775,15 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
               <button
                 type="button"
                 onClick={handleUseCurrentGps}
-                className="w-full min-h-[48px] px-4 rounded-xl border border-amber-700/40 bg-amber-50/60 text-amber-950 font-semibold text-sm flex items-center justify-center gap-2 whitespace-nowrap cursor-pointer"
+                className="w-full min-h-[48px] px-4 rounded-theme border border-primary/40 bg-primary/10 text-text font-semibold text-sm flex items-center justify-center gap-2 whitespace-nowrap cursor-pointer"
               >
-                <Compass className="w-4 h-4 text-amber-700 shrink-0" />
-                <span>Use Current GPS Location</span>
+                <Compass className="w-4 h-4 text-primary shrink-0" />
+                <span>Use My Current GPS Location</span>
               </button>
 
               <div className="space-y-2">
-                <label className="block font-semibold text-stone-700">
-                  Quick Map Pin Presets (Test Delivery Zone Radius)
+                <label className="block font-semibold text-text">
+                  Quick Area Pin Presets (Verify Delivery Radius)
                 </label>
                 <div className="space-y-2">
                   {LOCATION_PRESETS.map((p, idx) => (
@@ -1477,71 +1794,81 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                         setGuestAddress(p.address);
                         setGuestLat(p.lat);
                         setGuestLng(p.lng);
+                        setLocationPinned(true);
                       }}
-                      className={`w-full p-3 rounded-xl border text-left transition-colors cursor-pointer ${
-                        guestLat === p.lat && guestLng === p.lng
-                          ? 'border-stone-900 bg-stone-50 font-semibold'
-                          : 'border-stone-200 hover:border-stone-300'
+                      className={`w-full p-3 rounded-theme border text-left transition-colors cursor-pointer ${
+                        locationPinned && guestLat === p.lat && guestLng === p.lng
+                          ? 'border-primary bg-primary/10 font-semibold'
+                          : 'border-border bg-bg hover:border-primary/50'
                       }`}
                     >
-                      <p className="text-stone-900 truncate">{p.label}</p>
-                      <p className="text-stone-500 truncate mt-0.5">{p.address}</p>
+                      <p className="text-text truncate">{p.label}</p>
+                      <p className="text-muted truncate mt-0.5">{p.address}</p>
                     </button>
                   ))}
                 </div>
               </div>
 
               <div>
-                <label className="block font-semibold text-stone-700 mb-1">
+                <label className="block font-semibold text-text mb-1">
                   Complete Flat / Street Address
                 </label>
                 <textarea
                   rows={2}
                   value={guestAddress}
                   onChange={(e) => setGuestAddress(e.target.value)}
-                  className="w-full p-3 rounded-xl border border-stone-300 text-sm focus:outline-none focus:border-stone-900"
+                  placeholder="Enter flat no., building name, street & landmark"
+                  className="w-full p-3 rounded-theme border border-border bg-bg text-sm text-text focus:outline-none focus:border-primary"
                 />
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-stone-500 mb-1">Latitude</label>
+                  <label className="block text-muted mb-1">Latitude</label>
                   <input
                     type="number"
                     step="0.0001"
-                    value={guestLat}
-                    onChange={(e) => setGuestLat(Number(e.target.value))}
-                    className="w-full px-3 py-2 rounded-xl border border-stone-300 font-mono"
+                    value={guestLat || ''}
+                    onChange={(e) => {
+                      setGuestLat(Number(e.target.value));
+                      setLocationPinned(true);
+                    }}
+                    className="w-full px-3 py-2 rounded-theme border border-border bg-bg font-mono text-text"
                   />
                 </div>
                 <div>
-                  <label className="block text-stone-500 mb-1">Longitude</label>
+                  <label className="block text-muted mb-1">Longitude</label>
                   <input
                     type="number"
                     step="0.0001"
-                    value={guestLng}
-                    onChange={(e) => setGuestLng(Number(e.target.value))}
-                    className="w-full px-3 py-2 rounded-xl border border-stone-300 font-mono"
+                    value={guestLng || ''}
+                    onChange={(e) => {
+                      setGuestLng(Number(e.target.value));
+                      setLocationPinned(true);
+                    }}
+                    className="w-full px-3 py-2 rounded-theme border border-border bg-bg font-mono text-text"
                   />
                 </div>
               </div>
 
-              <div
-                className={`p-3 rounded-xl border ${
-                  liveAddressDistance.within
-                    ? 'border-emerald-200 bg-emerald-50 text-emerald-950'
-                    : 'border-red-300 bg-red-50 text-red-900 font-medium'
-                }`}
-              >
-                {liveAddressDistance.within
-                  ? `✓ Delivery available (${liveAddressDistance.km} km from shop · max ${deliveryZone.radiusKm} km)`
-                  : `✕ Delivery not available in your area (${liveAddressDistance.km} km away · max ${deliveryZone.radiusKm} km)`}
-              </div>
+              {liveAddressDistance.pinned && (
+                <div
+                  className={`p-3 rounded-theme border ${
+                    liveAddressDistance.within
+                      ? 'border-emerald-500/30 bg-emerald-500/10 text-text'
+                      : 'border-red-500/40 bg-red-500/10 text-red-600 font-medium'
+                  }`}
+                >
+                  {liveAddressDistance.within
+                    ? `✓ Delivery available (${liveAddressDistance.km} km from shop · max ${deliveryZone.radiusKm} km)`
+                    : `✕ Delivery not available in your area (${liveAddressDistance.km} km away · max ${deliveryZone.radiusKm} km)`}
+                </div>
+              )}
 
               <button
                 type="button"
                 onClick={() => setAddressSheetOpen(false)}
-                className="w-full min-h-[48px] rounded-xl bg-stone-900 text-white text-sm font-semibold whitespace-nowrap cursor-pointer"
+                className="w-full min-h-[48px] rounded-theme bg-primary text-primary-contrast text-sm font-semibold whitespace-nowrap cursor-pointer"
               >
                 Save Delivery Location
               </button>
@@ -1551,26 +1878,26 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
       )}
 
       {/* =====================================================================
-          BOTTOM SHEET 2: DISH CUSTOMIZATION (Variants & Add-ons)
+          BOTTOM SHEET 2: DISH CUSTOMIZATION (Variants, Add-ons & Per-Item Note)
          ===================================================================== */}
       {customizingItem && (
         <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-xs">
-          <div className="w-full max-w-lg max-h-[90dvh] rounded-t-3xl sm:rounded-2xl bg-white flex flex-col overflow-hidden pb-safe">
-            <div className="w-10 h-1.5 bg-stone-300 rounded-full mx-auto mt-3 sm:hidden" />
-            <div className="p-4 border-b border-stone-200 flex items-start justify-between gap-3">
+          <div className="w-full max-w-lg max-h-[90dvh] rounded-t-3xl sm:rounded-theme bg-surface text-text border border-border flex flex-col overflow-hidden pb-safe">
+            <div className="w-10 h-1.5 bg-border rounded-full mx-auto mt-3 sm:hidden" />
+            <div className="p-4 border-b border-border flex items-start justify-between gap-3">
               <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-1.5 text-xs text-stone-500">
+                <div className="flex items-center gap-1.5 text-xs text-muted">
                   {renderDietMark(customizingItem.isVeg)}
                   <span className="truncate">{customizingItem.prepTimeMins} mins prep</span>
                 </div>
-                <h3 className="mt-1 text-base font-semibold text-stone-900 leading-snug">
+                <h3 className="mt-1 text-base font-semibold text-text leading-snug">
                   {customizingItem.name}
                 </h3>
               </div>
               <button
                 type="button"
                 onClick={() => setCustomizingItem(null)}
-                className="p-2 rounded-lg text-stone-400 hover:text-stone-700 shrink-0 cursor-pointer"
+                className="p-2 rounded-lg text-muted hover:text-text shrink-0 cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -1579,17 +1906,17 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
             <div className="p-4 overflow-y-auto space-y-5 flex-1">
               {customizingItem.variants.length > 0 && (
                 <div>
-                  <h4 className="text-xs font-semibold text-stone-900 mb-2">
+                  <h4 className="text-xs font-semibold text-text mb-2">
                     Select Portion Size (Required)
                   </h4>
                   <div className="space-y-2">
                     {customizingItem.variants.map((v) => (
                       <label
                         key={v.id}
-                        className={`flex items-center justify-between gap-2 p-3.5 rounded-xl border cursor-pointer ${
+                        className={`flex items-center justify-between gap-2 p-3.5 rounded-theme border cursor-pointer ${
                           selectedVariantId === v.id
-                            ? 'border-stone-900 bg-stone-50'
-                            : 'border-stone-200'
+                            ? 'border-primary bg-primary/10'
+                            : 'border-border bg-bg'
                         }`}
                       >
                         <div className="flex items-center gap-2.5 min-w-0 flex-1">
@@ -1598,13 +1925,13 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                             name="dish-variant"
                             checked={selectedVariantId === v.id}
                             onChange={() => setSelectedVariantId(v.id)}
-                            className="accent-stone-900 shrink-0"
+                            className="accent-primary shrink-0"
                           />
-                          <span className="text-sm font-medium text-stone-900 truncate">
+                          <span className="text-sm font-medium text-text truncate">
                             {v.name}
                           </span>
                         </div>
-                        <span className="text-sm font-mono font-semibold text-stone-900 shrink-0">
+                        <span className="text-sm font-mono font-semibold text-text shrink-0">
                           ₹{v.price}
                         </span>
                       </label>
@@ -1615,7 +1942,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
 
               {customizingItem.addons.length > 0 && (
                 <div>
-                  <h4 className="text-xs font-semibold text-stone-900 mb-2">
+                  <h4 className="text-xs font-semibold text-text mb-2">
                     Optional Add-ons
                   </h4>
                   <div className="space-y-2">
@@ -1624,8 +1951,8 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                       return (
                         <label
                           key={addon.id}
-                          className={`flex items-center justify-between gap-2 p-3.5 rounded-xl border cursor-pointer ${
-                            checked ? 'border-stone-900 bg-stone-50' : 'border-stone-200'
+                          className={`flex items-center justify-between gap-2 p-3.5 rounded-theme border cursor-pointer ${
+                            checked ? 'border-primary bg-primary/10' : 'border-border bg-bg'
                           }`}
                         >
                           <div className="flex items-center gap-2.5 min-w-0 flex-1">
@@ -1639,11 +1966,11 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                                     : [...prev, addon.id]
                                 )
                               }
-                              className="accent-stone-900 shrink-0"
+                              className="accent-primary shrink-0"
                             />
-                            <span className="text-sm text-stone-800 truncate">{addon.name}</span>
+                            <span className="text-sm text-text truncate">{addon.name}</span>
                           </div>
-                          <span className="text-sm font-mono text-stone-700 shrink-0">
+                          <span className="text-sm font-mono text-muted shrink-0">
                             +₹{addon.price}
                           </span>
                         </label>
@@ -1652,14 +1979,29 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   </div>
                 </div>
               )}
+
+              {/* Phase 4: Order note per item */}
+              <div>
+                <label className="block text-xs font-semibold text-text mb-1.5">
+                  Special Cooking Request for this Dish (Optional)
+                </label>
+                <input
+                  type="text"
+                  maxLength={120}
+                  value={customItemNote}
+                  onChange={(e) => setCustomItemNote(e.target.value)}
+                  placeholder="e.g. Less spicy, no onions, extra raita on side..."
+                  className="w-full px-3 py-2.5 rounded-theme border border-border bg-bg text-xs text-text"
+                />
+              </div>
             </div>
 
-            <div className="p-4 border-t border-stone-200 bg-stone-50 flex items-center gap-3">
-              <div className="flex items-center border border-stone-300 rounded-xl bg-white min-h-[48px] shrink-0">
+            <div className="p-4 border-t border-border bg-bg flex items-center gap-3">
+              <div className="flex items-center border border-border rounded-theme bg-surface min-h-[48px] shrink-0">
                 <button
                   type="button"
                   onClick={() => setCustomQty((q) => Math.max(1, q - 1))}
-                  className="px-3 h-12 text-stone-700 cursor-pointer"
+                  className="px-3 h-12 text-text cursor-pointer"
                 >
                   <Minus className="w-4 h-4" />
                 </button>
@@ -1669,7 +2011,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                 <button
                   type="button"
                   onClick={() => setCustomQty((q) => q + 1)}
-                  className="px-3 h-12 text-stone-700 cursor-pointer"
+                  className="px-3 h-12 text-text cursor-pointer"
                 >
                   <Plus className="w-4 h-4" />
                 </button>
@@ -1678,7 +2020,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
               <button
                 type="button"
                 onClick={confirmAddToCart}
-                className="flex-1 min-h-[48px] px-4 rounded-xl bg-stone-900 hover:bg-amber-800 text-white text-sm font-semibold whitespace-nowrap flex items-center justify-center cursor-pointer"
+                className="flex-1 min-h-[48px] px-4 rounded-theme bg-primary text-primary-contrast text-sm font-semibold whitespace-nowrap flex items-center justify-center cursor-pointer"
               >
                 Add ₹
                 {((customizingItem.variants.find((v) => v.id === selectedVariantId)?.price ||
@@ -1694,22 +2036,22 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
       )}
 
       {/* =====================================================================
-          BOTTOM SHEET / DRAWER 3: CART & GUEST CHECKOUT (100dvh Safe)
+          BOTTOM SHEET / DRAWER 3: CART & GUEST CHECKOUT
          ===================================================================== */}
       {cartDrawerOpen && (
         <div className="fixed inset-0 z-50 flex justify-end bg-black/50 backdrop-blur-xs">
-          <div className="w-full max-w-xl bg-white h-[100dvh] flex flex-col shadow-2xl overflow-hidden pb-safe">
-            <div className="px-4 py-3.5 border-b border-stone-200 flex items-center justify-between gap-2 shrink-0">
+          <div className="w-full max-w-xl bg-surface text-text h-[100dvh] flex flex-col shadow-2xl overflow-hidden pb-safe">
+            <div className="px-4 py-3.5 border-b border-border flex items-center justify-between gap-2 shrink-0">
               <div className="flex items-center gap-2 min-w-0 flex-1">
-                <ShoppingBag className="w-5 h-5 text-amber-700 shrink-0" />
-                <h2 className="text-base font-semibold text-stone-900 truncate">
+                <ShoppingBag className="w-5 h-5 text-primary shrink-0" />
+                <h2 className="text-base font-semibold text-text truncate">
                   Your Bag ({totalCartItems})
                 </h2>
               </div>
               <button
                 type="button"
                 onClick={() => setCartDrawerOpen(false)}
-                className="p-2 rounded-lg text-stone-400 hover:text-stone-800 shrink-0 cursor-pointer"
+                className="p-2 rounded-lg text-muted hover:text-text shrink-0 cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -1717,9 +2059,9 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
 
             {cart.length === 0 ? (
               <div className="flex-1 p-8 flex flex-col items-center justify-center text-center">
-                <ShoppingBag className="w-10 h-10 text-stone-300 mb-3" />
-                <p className="text-base font-semibold text-stone-900">Your bag is empty</p>
-                <p className="mt-1 text-xs text-stone-500 max-w-xs">
+                <ShoppingBag className="w-10 h-10 text-muted mb-3" />
+                <p className="text-base font-semibold text-text">Your bag is empty</p>
+                <p className="mt-1 text-xs text-muted max-w-xs">
                   Add dishes from the menu to place a direct guest order.
                 </p>
               </div>
@@ -1728,77 +2070,103 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                 onSubmit={handlePlaceOrder}
                 className="flex-1 overflow-y-auto p-4 space-y-5"
               >
-                {/* 1. Cart Items */}
-                <div className="divide-y divide-stone-100 rounded-2xl border border-stone-200 bg-stone-50/50 px-3.5">
+                {/* 1. Cart Items + Per-Item Note */}
+                <div className="divide-y divide-border rounded-theme border border-border bg-bg/60 px-3.5">
                   {cart.map((item) => (
-                    <div
-                      key={item.cartLineId}
-                      className="py-3 flex items-center justify-between gap-2.5"
-                    >
-                      <div className="min-w-0 flex-1">
-                        <p className="text-sm font-semibold text-stone-900 truncate">
-                          {item.name}
-                        </p>
-                        <p className="text-xs text-stone-500 truncate">
-                          {item.variantName}
-                          {item.selectedAddons.length > 0 &&
-                            ` · +${item.selectedAddons.map((a) => a.name).join(', ')}`}
-                        </p>
-                        <p className="text-xs font-mono text-stone-700 mt-0.5">
-                          ₹{item.unitPrice}
-                        </p>
+                    <div key={item.cartLineId} className="py-3 space-y-2">
+                      <div className="flex items-center justify-between gap-2.5">
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-semibold text-text truncate">
+                            {item.name}
+                          </p>
+                          <p className="text-xs text-muted truncate">
+                            {item.variantName}
+                            {item.selectedAddons.length > 0 &&
+                              ` · +${item.selectedAddons.map((a) => a.name).join(', ')}`}
+                          </p>
+                          <p className="text-xs font-mono text-text mt-0.5">
+                            ₹{item.unitPrice}
+                          </p>
+                        </div>
+
+                        <div className="flex items-center gap-2 shrink-0">
+                          <div className="flex items-center border border-border rounded-lg bg-surface">
+                            <button
+                              type="button"
+                              onClick={() => updateCartQty(item.cartLineId, -1)}
+                              className="p-2 text-text cursor-pointer"
+                            >
+                              <Minus className="w-3.5 h-3.5" />
+                            </button>
+                            <span className="px-2 text-xs font-mono font-semibold">
+                              {item.quantity}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => updateCartQty(item.cartLineId, 1)}
+                              className="p-2 text-text cursor-pointer"
+                            >
+                              <Plus className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                          <span className="w-14 text-right text-sm font-mono font-semibold text-text">
+                            ₹{item.unitPrice * item.quantity}
+                          </span>
+                        </div>
                       </div>
 
-                      <div className="flex items-center gap-2 shrink-0">
-                        <div className="flex items-center border border-stone-300 rounded-lg bg-white">
-                          <button
-                            type="button"
-                            onClick={() => updateCartQty(item.cartLineId, -1)}
-                            className="p-2 text-stone-700 cursor-pointer"
-                          >
-                            <Minus className="w-3.5 h-3.5" />
-                          </button>
-                          <span className="px-2 text-xs font-mono font-semibold">
-                            {item.quantity}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => updateCartQty(item.cartLineId, 1)}
-                            className="p-2 text-stone-700 cursor-pointer"
-                          >
-                            <Plus className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                        <span className="w-14 text-right text-sm font-mono font-semibold text-stone-900">
-                          ₹{item.unitPrice * item.quantity}
-                        </span>
-                      </div>
+                      <input
+                        type="text"
+                        maxLength={120}
+                        value={item.itemNote || ''}
+                        onChange={(e) => updateCartItemNote(item.cartLineId, e.target.value)}
+                        placeholder="Add item note (e.g. less spicy, Jain prep)..."
+                        className="w-full px-2.5 py-1.5 rounded-lg border border-border bg-surface text-[11px] text-text"
+                      />
                     </div>
                   ))}
                 </div>
 
-                {/* 2. Coupon Code */}
-                <div className="rounded-2xl border border-stone-200 p-3.5 space-y-2.5">
+                {/* 2. Coupon Code & Available Tap-to-Apply List */}
+                <div className="rounded-theme border border-border p-3.5 space-y-2.5">
                   <div className="flex gap-2">
                     <input
                       type="text"
                       value={couponInput}
                       onChange={(e) => setCouponInput(e.target.value.toUpperCase())}
                       placeholder="Coupon code (e.g. FEAST150)"
-                      className="min-w-0 flex-1 px-3 py-2.5 rounded-xl border border-stone-300 text-xs font-mono uppercase focus:outline-none focus:border-stone-900"
+                      className="min-w-0 flex-1 px-3 py-2.5 rounded-theme border border-border bg-bg text-xs font-mono uppercase text-text focus:outline-none focus:border-primary"
                     />
                     <button
                       type="button"
                       onClick={() => setAppliedCouponCode(couponInput.trim().toUpperCase())}
-                      className="min-h-[48px] px-4 rounded-xl bg-stone-900 text-white text-sm font-semibold whitespace-nowrap shrink-0 cursor-pointer"
+                      className="min-h-[44px] px-4 rounded-theme bg-primary text-primary-contrast text-sm font-semibold whitespace-nowrap shrink-0 cursor-pointer"
                     >
                       Apply
                     </button>
                   </div>
+                  {coupons.length > 0 && (
+                    <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pt-1">
+                      {coupons.map((c) => (
+                        <button
+                          key={c.code}
+                          type="button"
+                          onClick={() => handleCopyAndApplyCoupon(c.code)}
+                          className={`px-2.5 py-1 rounded-lg border text-[11px] font-mono shrink-0 cursor-pointer ${
+                            appliedCouponCode === c.code
+                              ? 'border-emerald-600 bg-emerald-500/15 text-emerald-700 font-bold'
+                              : 'border-border bg-bg text-muted hover:text-text'
+                          }`}
+                        >
+                          {c.code}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                   {billPreview?.couponMessage && (
                     <p
                       className={`text-xs font-medium ${
-                        billPreview.appliedCoupon ? 'text-emerald-700' : 'text-amber-800'
+                        billPreview.appliedCoupon ? 'text-emerald-600' : 'text-primary'
                       }`}
                     >
                       {billPreview.couponMessage}
@@ -1806,20 +2174,35 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   )}
                 </div>
 
-                {/* 3. Guest Details */}
-                <div className="rounded-2xl border border-stone-200 p-3.5 space-y-3">
+                {/* 3. Guest Details & Location Requirement */}
+                <div className="rounded-theme border border-border p-3.5 space-y-3">
                   <div className="flex items-center justify-between gap-2">
-                    <h3 className="text-xs font-semibold text-stone-900 truncate">
+                    <h3 className="text-xs font-semibold text-text truncate">
                       Guest Delivery Details
                     </h3>
                     <button
                       type="button"
                       onClick={() => setAddressSheetOpen(true)}
-                      className="text-xs font-semibold text-amber-800 underline whitespace-nowrap shrink-0 cursor-pointer"
+                      className="text-xs font-semibold text-primary underline whitespace-nowrap shrink-0 cursor-pointer"
                     >
-                      Pin on Map
+                      {locationPinned ? 'Change Map Pin' : 'Set GPS / Map Pin *'}
                     </button>
                   </div>
+
+                  {!locationPinned && (
+                    <div className="rounded-theme border border-primary/40 bg-primary/10 p-3 flex items-center justify-between gap-2">
+                      <span className="text-xs font-medium text-text">
+                        Location required to calculate distance &amp; delivery fee
+                      </span>
+                      <button
+                        type="button"
+                        onClick={handleUseCurrentGps}
+                        className="px-3 py-1.5 rounded-lg bg-primary text-primary-contrast text-xs font-semibold shrink-0 cursor-pointer"
+                      >
+                        Use My Location
+                      </button>
+                    </div>
+                  )}
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                     <input
@@ -1828,7 +2211,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                       value={guestName}
                       onChange={(e) => setGuestName(e.target.value)}
                       placeholder="Your Full Name *"
-                      className="w-full px-3 py-2.5 rounded-xl border border-stone-300 text-sm"
+                      className="w-full px-3 py-2.5 rounded-theme border border-border bg-bg text-sm text-text"
                     />
                     <input
                       type="tel"
@@ -1837,7 +2220,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                       value={guestPhone}
                       onChange={(e) => setGuestPhone(e.target.value.replace(/\D/g, ''))}
                       placeholder="10-Digit Mobile Number *"
-                      className="w-full px-3 py-2.5 rounded-xl border border-stone-300 text-sm font-mono"
+                      className="w-full px-3 py-2.5 rounded-theme border border-border bg-bg text-sm font-mono text-text"
                     />
                   </div>
 
@@ -1847,15 +2230,15 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                     value={guestAddress}
                     onChange={(e) => setGuestAddress(e.target.value)}
                     placeholder="Flat / Building / Street Address *"
-                    className="w-full px-3 py-2 rounded-xl border border-stone-300 text-sm"
+                    className="w-full px-3 py-2 rounded-theme border border-border bg-bg text-sm text-text"
                   />
 
                   {billPreview && (
                     <div
-                      className={`rounded-xl p-2.5 text-xs border ${
+                      className={`rounded-theme p-2.5 text-xs border ${
                         billPreview.withinZone
-                          ? 'border-emerald-200 bg-emerald-50 text-emerald-950'
-                          : 'border-red-300 bg-red-50 text-red-900 font-medium'
+                          ? 'border-emerald-500/30 bg-emerald-500/10 text-text'
+                          : 'border-red-500/40 bg-red-500/10 text-red-600 font-medium'
                       }`}
                     >
                       {billPreview.withinZone
@@ -1864,31 +2247,65 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                     </div>
                   )}
 
+                  {/* Phase 4: Scheduled Order / Pre-Order Time-Slot Picker limited to shop hours */}
+                  <div className="pt-1 border-t border-border space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <label className="flex items-center gap-2 text-xs font-semibold text-text cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={isScheduled}
+                          onChange={(e) => {
+                            setIsScheduled(e.target.checked);
+                            if (e.target.checked && !scheduledFor && timeSlots[0]) {
+                              setScheduledFor(timeSlots[0].iso);
+                            }
+                          }}
+                          className="accent-primary"
+                        />
+                        <span>Schedule for later (Shop Hours: {settings.weeklyTimings})</span>
+                      </label>
+                    </div>
+                    {isScheduled && (
+                      <select
+                        value={scheduledFor}
+                        onChange={(e) => setScheduledFor(e.target.value)}
+                        className="w-full px-3 py-2 rounded-theme border border-border bg-bg text-xs font-semibold text-text"
+                      >
+                        <option value="">Select delivery time slot...</option>
+                        {timeSlots.map((slot) => (
+                          <option key={slot.iso} value={slot.iso}>
+                            {slot.label}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
+
                   <input
                     type="text"
                     value={orderNotes}
                     onChange={(e) => setOrderNotes(e.target.value)}
-                    placeholder="Cooking notes (optional)"
-                    className="w-full px-3 py-2 rounded-xl border border-stone-300 text-xs"
+                    placeholder="Overall delivery / kitchen notes (optional)"
+                    className="w-full px-3 py-2 rounded-theme border border-border bg-bg text-xs text-text"
                   />
                 </div>
 
                 {/* 4. Payment Method */}
-                <div className="rounded-2xl border border-stone-200 p-3.5 space-y-2.5">
+                <div className="rounded-theme border border-border p-3.5 space-y-2.5">
                   <div className="flex items-center justify-between gap-2">
-                    <h3 className="text-xs font-semibold text-stone-900">Payment Method</h3>
+                    <h3 className="text-xs font-semibold text-text">Payment Method</h3>
                     {homeData.razorpayMode !== 'live' && (
-                      <span className="px-2 py-0.5 rounded-md bg-amber-100 border border-amber-300 text-amber-900 text-[10px] font-bold tracking-wide uppercase">
+                      <span className="px-2 py-0.5 rounded-md bg-primary/15 border border-primary/30 text-primary text-[10px] font-bold tracking-wide uppercase">
                         DEMO PAYMENT
                       </span>
                     )}
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                     <label
-                      className={`p-3 rounded-xl border cursor-pointer flex items-start gap-2 ${
+                      className={`p-3 rounded-theme border cursor-pointer flex items-start gap-2 ${
                         paymentMethod === 'RAZORPAY'
-                          ? 'border-stone-900 bg-stone-50'
-                          : 'border-stone-200'
+                          ? 'border-primary bg-primary/10'
+                          : 'border-border bg-bg'
                       }`}
                     >
                       <input
@@ -1896,13 +2313,13 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                         name="pay-method"
                         checked={paymentMethod === 'RAZORPAY'}
                         onChange={() => setPaymentMethod('RAZORPAY')}
-                        className="mt-0.5 accent-stone-900 shrink-0"
+                        className="mt-0.5 accent-primary shrink-0"
                       />
                       <div className="min-w-0 text-xs">
-                        <p className="font-semibold text-stone-900 truncate">
+                        <p className="font-semibold text-text truncate">
                           Razorpay Online (UPI / Card)
                         </p>
-                        <p className="text-stone-500">
+                        <p className="text-muted">
                           {homeData.razorpayMode === 'live'
                             ? 'Live Razorpay Checkout'
                             : 'Demo Payment Sandbox'}
@@ -1911,12 +2328,12 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                     </label>
 
                     <label
-                      className={`p-3 rounded-xl border flex items-start gap-2 ${
+                      className={`p-3 rounded-theme border flex items-start gap-2 ${
                         !billPreview?.codAllowed
-                          ? 'border-stone-200 bg-stone-100 opacity-60 cursor-not-allowed'
+                          ? 'border-border bg-bg opacity-60 cursor-not-allowed'
                           : paymentMethod === 'COD'
-                          ? 'border-stone-900 bg-stone-50 cursor-pointer'
-                          : 'border-stone-200 cursor-pointer'
+                          ? 'border-primary bg-primary/10 cursor-pointer'
+                          : 'border-border bg-bg cursor-pointer'
                       }`}
                     >
                       <input
@@ -1925,13 +2342,13 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                         disabled={!billPreview?.codAllowed}
                         checked={paymentMethod === 'COD'}
                         onChange={() => setPaymentMethod('COD')}
-                        className="mt-0.5 accent-stone-900 shrink-0"
+                        className="mt-0.5 accent-primary shrink-0"
                       />
                       <div className="min-w-0 text-xs">
-                        <p className="font-semibold text-stone-900 truncate">
+                        <p className="font-semibold text-text truncate">
                           Cash on Delivery (COD)
                         </p>
-                        <p className="text-stone-500 line-clamp-1">
+                        <p className="text-muted line-clamp-1">
                           {billPreview && !billPreview.codAllowed
                             ? billPreview.codDisallowedReason
                             : `Up to ₹${settings.codMaxAmount}`}
@@ -1940,15 +2357,15 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                     </label>
                   </div>
 
-                  {/* Optional COD Phone OTP block when admin setting is enabled */}
+                  {/* Optional COD Phone OTP block */}
                   {paymentMethod === 'COD' && billPreview?.requirePhoneOtpForCod && (
-                    <div className="rounded-xl border border-amber-200 bg-amber-50/70 p-3 space-y-2 text-xs">
+                    <div className="rounded-theme border border-primary/30 bg-primary/10 p-3 space-y-2 text-xs">
                       <div className="flex items-center justify-between gap-2">
-                        <span className="font-semibold text-stone-900">
+                        <span className="font-semibold text-text">
                           Phone OTP Verification (Required for COD)
                         </span>
                         {codOtpVerified && (
-                          <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-semibold text-[11px]">
+                          <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-700 font-semibold text-[11px]">
                             ✓ Verified
                           </span>
                         )}
@@ -1959,7 +2376,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                             type="button"
                             disabled={codOtpBusy}
                             onClick={handleRequestCodOtp}
-                            className="px-3 py-1.5 rounded-lg bg-stone-900 text-white font-semibold text-xs cursor-pointer disabled:opacity-50"
+                            className="px-3 py-1.5 rounded-lg bg-primary text-primary-contrast font-semibold text-xs cursor-pointer disabled:opacity-50"
                           >
                             {codOtpRequested ? 'Resend OTP' : 'Send OTP'}
                           </button>
@@ -1974,7 +2391,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                                   setCodOtpCode(e.target.value.replace(/\D/g, '').slice(0, 4))
                                 }
                                 placeholder="4-digit OTP"
-                                className="w-28 px-2.5 py-1.5 rounded-lg border border-stone-300 bg-white text-xs font-mono"
+                                className="w-28 px-2.5 py-1.5 rounded-lg border border-border bg-surface text-xs font-mono text-text"
                               />
                               <button
                                 type="button"
@@ -1989,16 +2406,15 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                         </div>
                       )}
                       {codOtpDemoHint && !codOtpVerified && (
-                        <p className="text-[11px] font-mono text-amber-800">
+                        <p className="text-[11px] font-mono text-primary">
                           Demo OTP Code: <strong>{codOtpDemoHint}</strong>
                         </p>
                       )}
                     </div>
                   )}
 
-                  {/* Cloudflare Turnstile Widget or Demo Mode Note */}
                   {homeData.turnstileSiteKey ? (
-                    <div className="p-2.5 rounded-xl border border-stone-200 bg-stone-50">
+                    <div className="p-2.5 rounded-theme border border-border bg-bg">
                       <div
                         className="cf-turnstile"
                         data-sitekey={homeData.turnstileSiteKey}
@@ -2006,48 +2422,54 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                       />
                     </div>
                   ) : (
-                    <div className="flex items-center justify-between gap-2 p-2.5 rounded-xl border border-stone-200 bg-stone-50 text-[11px] text-stone-600">
+                    <div className="flex items-center justify-between gap-2 p-2.5 rounded-theme border border-border bg-bg text-[11px] text-muted">
                       <span className="truncate font-medium">
                         Cloudflare Turnstile protection active
                       </span>
-                      <span className="px-2 py-0.5 rounded bg-stone-200 text-stone-700 font-mono text-[10px] shrink-0">
+                      <span className="px-2 py-0.5 rounded bg-surface border border-border text-muted font-mono text-[10px] shrink-0">
                         Demo Mode: Bypassed
                       </span>
                     </div>
                   )}
                 </div>
 
-                {/* 5. Bill Breakdown */}
+                {/* 5. Bill Breakdown (Clearly shows distance and delivery fee before Place Order) */}
                 {billPreview && (
-                  <div className="rounded-2xl border border-stone-200 bg-stone-50 p-3.5 space-y-1.5 text-xs">
-                    <div className="flex justify-between text-stone-600">
+                  <div className="rounded-theme border border-border bg-bg p-3.5 space-y-1.5 text-xs">
+                    <div className="flex justify-between text-muted">
                       <span>Item Total</span>
                       <span className="font-mono">₹{billPreview.itemTotal}</span>
                     </div>
                     {billPreview.discountAmount > 0 && (
-                      <div className="flex justify-between text-emerald-700 font-medium">
+                      <div className="flex justify-between text-emerald-600 font-medium">
                         <span>Coupon ({billPreview.appliedCoupon})</span>
                         <span className="font-mono">-₹{billPreview.discountAmount}</span>
                       </div>
                     )}
-                    <div className="flex justify-between text-stone-600">
-                      <span>Delivery Fee ({billPreview.distanceKm} km)</span>
+                    <div className="flex justify-between text-muted">
+                      <span>Delivery Fee ({billPreview.distanceKm} km from shop)</span>
                       <span className="font-mono">₹{billPreview.deliveryFee}</span>
                     </div>
-                    <div className="flex justify-between text-stone-600">
+                    <div className="flex justify-between text-muted">
                       <span>GST ({billPreview.gstPercent}%)</span>
                       <span className="font-mono">₹{billPreview.gstAmount}</span>
                     </div>
-                    <div className="flex justify-between pt-2 border-t border-stone-200 text-sm font-bold text-stone-900">
+                    <div className="flex justify-between pt-2 border-t border-border text-sm font-bold text-text">
                       <span>To Pay</span>
                       <span className="font-mono">₹{billPreview.grandTotal}</span>
                     </div>
                   </div>
                 )}
 
-                {checkoutError && (
-                  <div className="rounded-xl border border-red-300 bg-red-50 p-3 text-xs text-red-900 font-medium">
-                    {checkoutError}
+                {verifyingPayment && (
+                  <div className="rounded-theme border border-primary bg-primary/10 p-3 text-xs font-semibold text-text">
+                    Payment pending — please do not refresh or pay twice while we verify with Razorpay.
+                  </div>
+                )}
+
+                {(checkoutError || paymentFailureMessage) && (
+                  <div className="rounded-theme border border-red-500/40 bg-red-500/10 p-3 text-xs text-red-600 font-medium">
+                    {checkoutError || paymentFailureMessage}
                   </div>
                 )}
 
@@ -2055,17 +2477,22 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   type="submit"
                   disabled={
                     placingOrder ||
+                    verifyingPayment ||
                     (billPreview !== null && (!billPreview.withinZone || !billPreview.minOrderMet))
                   }
-                  className="w-full min-h-[48px] px-4 rounded-xl bg-stone-900 hover:bg-amber-800 text-white text-sm font-semibold whitespace-nowrap cursor-pointer disabled:opacity-50"
+                  className="w-full min-h-[48px] px-4 rounded-theme bg-primary text-primary-contrast text-sm font-semibold whitespace-nowrap cursor-pointer disabled:opacity-50"
                 >
                   {placingOrder
                     ? 'Placing Order...'
+                    : !locationPinned
+                    ? 'Select Delivery Location to Order'
                     : billPreview && !billPreview.withinZone
                     ? 'Outside Delivery Area'
                     : billPreview && !billPreview.minOrderMet
                     ? `Min Order ₹${billPreview.minOrderAmount}`
-                    : `Place Order · ₹${billPreview?.grandTotal ?? totalCartAmount}`}
+                    : `Place Order · ₹${billPreview?.grandTotal ?? totalCartAmount} (${
+                        billPreview ? `${billPreview.distanceKm} km · +₹${billPreview.deliveryFee} delivery` : ''
+                      })`}
                 </button>
               </form>
             )}
@@ -2073,44 +2500,58 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
         </div>
       )}
 
-      {/* RAZORPAY DOUBLE-VERIFICATION CHECKOUT MODAL */}
+      {/* RAZORPAY DOUBLE-VERIFICATION CHECKOUT MODAL WITH "DON'T PAY TWICE" GUARD */}
       {pendingRazorpayModal && (
         <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-xs p-0 sm:p-4">
-          <div className="w-full max-w-md rounded-t-3xl sm:rounded-2xl bg-white border border-stone-200 shadow-2xl overflow-hidden pb-safe">
-            <div className="bg-stone-900 text-white p-4 flex items-center justify-between gap-2">
+          <div className="w-full max-w-md rounded-t-3xl sm:rounded-theme bg-surface text-text border border-border shadow-2xl overflow-hidden pb-safe">
+            <div className="bg-primary text-primary-contrast p-4 flex items-center justify-between gap-2">
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
-                  <span className="px-2 py-0.5 rounded bg-amber-400 text-stone-950 text-[10px] font-bold uppercase tracking-wider">
+                  <span className="px-2 py-0.5 rounded bg-black/25 text-primary-contrast text-[10px] font-bold uppercase tracking-wider">
                     DEMO PAYMENT
                   </span>
-                  <p className="text-[11px] font-mono text-amber-400 truncate">
+                  <p className="text-[11px] font-mono opacity-90 truncate">
                     DOUBLE VERIFICATION SANDBOX
                   </p>
                 </div>
                 <h3 className="text-base font-semibold truncate mt-0.5">{settings.shopName}</h3>
               </div>
-              <span className="text-lg font-mono font-bold text-amber-400 shrink-0">
+              <span className="text-lg font-mono font-bold shrink-0">
                 ₹{(pendingRazorpayModal.amountPaise / 100).toFixed(0)}
               </span>
             </div>
 
-            <div className="p-5 space-y-4 text-xs text-stone-600">
-              <div className="rounded-xl bg-stone-50 border border-stone-200 p-3 font-mono space-y-1">
+            <div className="p-5 space-y-4 text-xs text-muted">
+              <div className="rounded-theme bg-bg border border-border p-3 font-mono space-y-1">
                 <p className="truncate">
-                  Order: <strong className="text-stone-900">{pendingRazorpayModal.order.orderNumber}</strong>
+                  Order: <strong className="text-text">{pendingRazorpayModal.order.orderNumber}</strong>
                 </p>
                 <p className="truncate">Razorpay ID: {pendingRazorpayModal.razorpayOrderId}</p>
               </div>
+
+              {verifyingPayment && (
+                <div className="rounded-theme border border-primary/40 bg-primary/10 p-3 text-xs font-semibold text-text">
+                  Payment pending — verifying signature &amp; webhook. Please do not close or pay twice.
+                </div>
+              )}
+
+              {paymentFailureMessage && (
+                <div className="rounded-theme border border-red-500/40 bg-red-500/10 p-3 text-xs font-medium text-red-600">
+                  {paymentFailureMessage}
+                </div>
+              )}
 
               <div className="space-y-2.5">
                 <button
                   type="button"
                   disabled={verifyingPayment}
                   onClick={() => handleCompleteRazorpayPayment(false)}
-                  className="w-full min-h-[48px] px-4 rounded-xl bg-emerald-700 hover:bg-emerald-600 text-white text-sm font-semibold whitespace-nowrap cursor-pointer"
+                  className="w-full min-h-[48px] px-4 rounded-theme bg-emerald-700 hover:bg-emerald-600 text-white text-sm font-semibold whitespace-nowrap cursor-pointer disabled:opacity-50"
                 >
                   {verifyingPayment
-                    ? 'Verifying Payment...'
+                    ? 'Verifying Payment (Do Not Pay Twice)...'
+                    : paymentFailureMessage
+                    ? `Retry Payment · ₹${pendingRazorpayModal.amountPaise / 100}`
                     : `Pay ₹${pendingRazorpayModal.amountPaise / 100} (UPI / Card)`}
                 </button>
 
@@ -2118,7 +2559,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   type="button"
                   disabled={verifyingPayment}
                   onClick={() => handleCompleteRazorpayPayment(true)}
-                  className="w-full min-h-[48px] px-4 rounded-xl border border-red-200 text-red-700 hover:bg-red-50 text-sm font-medium whitespace-nowrap cursor-pointer"
+                  className="w-full min-h-[48px] px-4 rounded-theme border border-red-500/30 text-red-600 hover:bg-red-500/10 text-sm font-medium whitespace-nowrap cursor-pointer disabled:opacity-50"
                 >
                   Simulate Payment Failure
                 </button>
@@ -2131,9 +2572,9 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
       {/* Policy Modal */}
       {activePolicyModal && (
         <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 p-0 sm:p-4">
-          <div className="w-full max-w-lg rounded-t-3xl sm:rounded-2xl bg-white border border-stone-200 p-6 space-y-4 pb-safe">
+          <div className="w-full max-w-lg rounded-t-3xl sm:rounded-theme bg-surface text-text border border-border p-6 space-y-4 pb-safe">
             <div className="flex items-center justify-between gap-2">
-              <h3 className="text-base font-semibold text-stone-900 truncate">
+              <h3 className="text-base font-semibold text-text truncate">
                 {activePolicyModal === 'privacy'
                   ? 'Guest Privacy Policy'
                   : activePolicyModal === 'terms'
@@ -2143,12 +2584,12 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
               <button
                 type="button"
                 onClick={() => setActivePolicyModal(null)}
-                className="p-2 text-stone-400 hover:text-stone-800 cursor-pointer shrink-0"
+                className="p-2 text-muted hover:text-text cursor-pointer shrink-0"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
-            <div className="text-xs text-stone-600 space-y-2 leading-relaxed">
+            <div className="text-xs text-muted space-y-2 leading-relaxed">
               {activePolicyModal === 'privacy' && (
                 <p>
                   We operate in Guest Mode and collect only your name, 10-digit phone number, and delivery coordinates to fulfill your order. Card data is never stored on our servers.
@@ -2168,7 +2609,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
             <button
               type="button"
               onClick={() => setActivePolicyModal(null)}
-              className="w-full min-h-[48px] rounded-xl bg-stone-900 text-white text-sm font-semibold whitespace-nowrap cursor-pointer"
+              className="w-full min-h-[48px] rounded-theme bg-primary text-primary-contrast text-sm font-semibold whitespace-nowrap cursor-pointer"
             >
               Close
             </button>

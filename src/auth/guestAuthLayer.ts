@@ -1,11 +1,11 @@
-import { CartItem } from '../types.ts';
+import { CartItem, ThemeMode } from '../types.ts';
 
 /**
  * Pluggable Customer Authentication & Device State Layer
  *
  * Customers are GUEST-ONLY (no signup, no login, no OTP required by default).
- * Also exposes an optional pluggable COD Phone OTP challenge when the store
- * admin explicitly enables `requirePhoneOtpForCod` in Order Rules.
+ * Starts with an empty address/location so guests must choose "Use my location"
+ * or pin/select an address before placing an order.
  */
 
 export interface GuestProfile {
@@ -15,6 +15,7 @@ export interface GuestProfile {
   landmark: string;
   lat: number;
   lng: number;
+  locationPinned?: boolean;
 }
 
 export interface CustomerAuthAdapter {
@@ -28,6 +29,10 @@ export interface CustomerAuthAdapter {
   toggleFavourite: (itemId: string) => string[];
   getRecentOrderTokens: () => string[];
   addRecentOrderToken: (token: string) => string[];
+  getGuestThemeMode: () => ThemeMode | null;
+  saveGuestThemeMode: (mode: ThemeMode | null) => void;
+  getGuestLanguage: () => 'en' | 'hi';
+  saveGuestLanguage: (lang: 'en' | 'hi') => void;
   // Optional pluggable COD Phone OTP verification (off by default):
   requestPhoneOtp: (phone: string) => Promise<{ sessionId: string; demoOtp?: string }>;
   verifyPhoneOtp: (sessionId: string, otp: string) => Promise<{ verifiedToken: string }>;
@@ -36,17 +41,20 @@ export interface CustomerAuthAdapter {
 const STORAGE_KEYS = {
   CART: 'aangan_guest_cart_v1',
   FAVOURITES: 'aangan_guest_favs_v1',
-  PROFILE: 'aangan_guest_profile_v1',
+  PROFILE: 'aangan_guest_profile_v2',
   RECENT_TOKENS: 'aangan_recent_order_tokens_v1',
+  THEME_MODE: 'aangan_guest_theme_mode_v1',
+  LANGUAGE: 'aangan_guest_lang_v1',
 };
 
 const DEFAULT_PROFILE: GuestProfile = {
   name: '',
   phone: '',
-  address: 'Flat 402, Sea Breeze Apartments, Bandra West, Mumbai',
-  landmark: 'Near Carter Road Promenade',
-  lat: 19.0655,
-  lng: 72.8262,
+  address: '',
+  landmark: '',
+  lat: 0,
+  lng: 0,
+  locationPinned: false,
 };
 
 export const guestAuthLayer: CustomerAuthAdapter = {
@@ -132,6 +140,45 @@ export const guestAuthLayer: CustomerAuthAdapter = {
       // Ignore
     }
     return next;
+  },
+
+  getGuestThemeMode(): ThemeMode | null {
+    try {
+      const val = localStorage.getItem(STORAGE_KEYS.THEME_MODE);
+      if (val === 'light' || val === 'dark' || val === 'auto') return val;
+      return null;
+    } catch {
+      return null;
+    }
+  },
+
+  saveGuestThemeMode(mode: ThemeMode | null) {
+    try {
+      if (!mode) {
+        localStorage.removeItem(STORAGE_KEYS.THEME_MODE);
+      } else {
+        localStorage.setItem(STORAGE_KEYS.THEME_MODE, mode);
+      }
+    } catch {
+      // Ignore
+    }
+  },
+
+  getGuestLanguage(): 'en' | 'hi' {
+    try {
+      const val = localStorage.getItem(STORAGE_KEYS.LANGUAGE);
+      return val === 'hi' ? 'hi' : 'en';
+    } catch {
+      return 'en';
+    }
+  },
+
+  saveGuestLanguage(lang: 'en' | 'hi') {
+    try {
+      localStorage.setItem(STORAGE_KEYS.LANGUAGE, lang);
+    } catch {
+      // Ignore
+    }
   },
 
   async requestPhoneOtp(phone: string) {

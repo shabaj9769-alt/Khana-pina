@@ -12,6 +12,29 @@ export type PaymentMethod = 'RAZORPAY' | 'COD';
 export type PaymentStatus = 'PENDING' | 'PAID' | 'FAILED' | 'REFUNDED';
 export type AdminRole = 'owner' | 'manager' | 'staff';
 
+export type ThemeMode = 'light' | 'dark' | 'auto';
+export type StorefrontThemePresetId =
+  | 'classic-amber'
+  | 'spice-red'
+  | 'forest-green'
+  | 'royal-blue'
+  | 'midnight-dark'
+  | 'minimal-mono'
+  | 'custom';
+export type StorefrontFontPair = 'fraunces-jakarta' | 'playfair-inter' | 'poppins-only';
+export type StorefrontRadiusScale = 'sharp' | 'rounded' | 'pill';
+
+export interface StorefrontThemeConfig {
+  mode: ThemeMode;
+  presetId: StorefrontThemePresetId;
+  primaryColor: string;
+  accentColor: string;
+  fontPair: StorefrontFontPair;
+  radiusScale: StorefrontRadiusScale;
+  logoUrl?: string;
+  pwaThemeColor: string;
+}
+
 export interface Category {
   id: string;
   name: string;
@@ -19,6 +42,7 @@ export interface Category {
   description: string;
   sortOrder: number;
   isActive: boolean;
+  isDeleted?: boolean;
 }
 
 export interface ItemVariant {
@@ -56,6 +80,7 @@ export interface MenuItem {
   salesCount: number;
   variants: ItemVariant[];
   addons: ItemAddon[];
+  isDeleted?: boolean;
 }
 
 export interface CartItem {
@@ -69,6 +94,7 @@ export interface CartItem {
   selectedAddons: { id: string; name: string; price: number }[];
   unitPrice: number;
   quantity: number;
+  itemNote?: string;
 }
 
 export interface DeliverySlab {
@@ -83,6 +109,8 @@ export interface ShopSettings {
   isOpen: boolean;
   busyMode: boolean;
   weeklyTimings: string;
+  opensAtText?: string;
+  allowPreOrdersWhenClosed?: boolean;
   holidaysNote: string;
   minOrderAmount: number;
   gstPercent: number;
@@ -97,6 +125,7 @@ export interface ShopSettings {
   deliverySlabs: DeliverySlab[];
   themeAccentColor?: string;
   themeSurfaceStyle?: 'warm' | 'clean' | 'minimal';
+  theme?: StorefrontThemeConfig;
 }
 
 export interface DeliveryZone {
@@ -119,6 +148,7 @@ export interface Banner {
   isVisible: boolean;
   startDate: string;
   endDate: string;
+  isDeleted?: boolean;
 }
 
 export type HomeSectionType =
@@ -155,6 +185,7 @@ export interface Coupon {
   firstOrderOnly: boolean;
   expiresAt: string;
   isActive: boolean;
+  isDeleted?: boolean;
 }
 
 export interface OrderItemRecord {
@@ -165,6 +196,7 @@ export interface OrderItemRecord {
   unitPrice: number;
   quantity: number;
   lineTotal: number;
+  itemNote?: string;
 }
 
 export interface OrderRecord {
@@ -259,6 +291,7 @@ export interface DeliveryBoy {
   accessToken: string;
   tokenExpiresAt?: string | null;
   dailyPin?: string;
+  isDeleted?: boolean;
 }
 
 export interface ReviewRecord {
@@ -303,6 +336,8 @@ export interface AdminUserPublic {
   totpEnabled: boolean;
   createdAt: string;
   lastLoginAt?: string;
+  themeMode?: ThemeMode;
+  themeAccent?: string;
 }
 
 export interface AdminSessionRecord {

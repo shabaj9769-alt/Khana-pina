@@ -1,0 +1,854 @@
+{
+  "settings": {
+    "shopName": "Aangan Artisanal Kitchen",
+    "fssaiNumber": "11524006000489",
+    "supportPhone": "+91 98201 44500",
+    "isOpen": true,
+    "busyMode": false,
+    "weeklyTimings": "Mon–Sun · 11:00 AM – 11:30 PM",
+    "holidaysNote": "",
+    "minOrderAmount": 199,
+    "gstPercent": 5,
+    "codEnabled": true,
+    "codMaxAmount": 1800,
+    "codMaxActiveOrders": 2,
+    "onlineOnlyFirstOrder": false,
+    "maxOrdersPerHourPhone": 5,
+    "maxOrdersPerHourIp": 10,
+    "autoCancelUnacceptedMins": 5,
+    "deliverySlabs": [
+      {
+        "maxKm": 3,
+        "fee": 25
+      },
+      {
+        "maxKm": 6,
+        "fee": 45
+      },
+      {
+        "maxKm": 10,
+        "fee": 75
+      }
+    ],
+    "requirePhoneOtpForCod": false,
+    "themeAccentColor": "#D9480F",
+    "themeSurfaceStyle": "warm",
+    "opensAtText": "11:00 AM",
+    "allowPreOrdersWhenClosed": true,
+    "theme": {
+      "mode": "light",
+      "presetId": "classic-amber",
+      "primaryColor": "#B45309",
+      "accentColor": "#D97706",
+      "fontPair": "fraunces-jakarta",
+      "radiusScale": "rounded",
+      "logoUrl": "",
+      "pwaThemeColor": "#1C1917"
+    }
+  },
+  "deliveryZone": {
+    "shopLat": 19.0607,
+    "shopLng": 72.8362,
+    "shopAddress": "Plot 14, 16th Road, Bandra West, Mumbai 400050",
+    "radiusKm": 8.5,
+    "zoneEnabled": true
+  },
+  "categories": [
+    {
+      "id": "cat_biryani",
+      "name": "Awadhi Dum Biryanis",
+      "slug": "biryanis",
+      "description": "Slow-cooked in sealed copper handis over charcoal with aged basmati & Kesar.",
+      "sortOrder": 1,
+      "isActive": true
+    },
+    {
+      "id": "cat_kebabs",
+      "name": "Charcoal Tandoor & Kebabs",
+      "slug": "tandoor-kebabs",
+      "description": "Marinated 12 hours in hung curd and hand-pounded spices, skewered over live coals.",
+      "sortOrder": 2,
+      "isActive": true
+    },
+    {
+      "id": "cat_curries",
+      "name": "Heirloom Curries & Breads",
+      "slug": "curries-breads",
+      "description": "Rich slow-simmered gravies paired with artisanal sourdough naans and flaky parathas.",
+      "sortOrder": 3,
+      "isActive": true
+    },
+    {
+      "id": "cat_desserts",
+      "name": "Royal Mithai &Beverages",
+      "slug": "desserts-drinks",
+      "description": "Warm cardamom-infused sweets and chilled rose-pistachio beverages.",
+      "sortOrder": 4,
+      "isActive": true
+    }
+  ],
+  "menuItems": [
+    {
+      "id": "item_lucknowi_biryani",
+      "categoryId": "cat_biryani",
+      "name": "Lucknowi Zafrani Gosht Dum Biryani",
+      "description": "Tender pasture-raised mutton marinated in raw papaya and saffron milk, layered with 2-year aged Dehraduni basmati in a dough-sealed earthen handi. Served with roasted garlic burani raita.",
+      "basePrice": 445,
+      "imageUrl": "/src/assets/images/dish_royal_biryani_1793975538453.jpg",
+      "isVeg": false,
+      "inStock": false,
+      "showOnHome": true,
+      "isBestseller": true,
+      "isTodaysSpecial": true,
+      "isNewArrival": false,
+      "spiceLevel": "Medium",
+      "prepTimeMins": 28,
+      "salesCount": 142,
+      "variants": [
+        {
+          "id": "var_lb_half",
+          "itemId": "item_lucknowi_biryani",
+          "name": "Single Handi (650ml · Serves 1)",
+          "price": 445,
+          "inStock": true
+        },
+        {
+          "id": "var_lb_full",
+          "itemId": "item_lucknowi_biryani",
+          "name": "Royal Handi (1200ml · Serves 2)",
+          "price": 795,
+          "inStock": true
+        },
+        {
+          "id": "var_lb_family",
+          "itemId": "item_lucknowi_biryani",
+          "name": "Dastarkhwan Handi (2200ml · Serves 4)",
+          "price": 1450,
+          "inStock": true
+        }
+      ],
+      "addons": [
+        {
+          "id": "add_burani",
+          "itemId": "item_lucknowi_biryani",
+          "name": "Extra Smoked Garlic Burani Raita",
+          "price": 55,
+          "isVeg": true,
+          "inStock": true
+        },
+        {
+          "id": "add_salan",
+          "itemId": "item_lucknowi_biryani",
+          "name": "Hyderabadi Mirchi Ka Salan",
+          "price": 65,
+          "isVeg": true,
+          "inStock": true
+        },
+        {
+          "id": "add_boiled_egg",
+          "itemId": "item_lucknowi_biryani",
+          "name": "2 Masala Tawa Eggs",
+          "price": 50,
+          "isVeg": false,
+          "inStock": true
+        }
+      ]
+    },
+    {
+      "id": "item_subz_biryani",
+      "categoryId": "cat_biryani",
+      "name": "Subz-E-Falak Jackfruit & Paneer Dum Biryani",
+      "description": "Char-grilled malai paneer cubes, tender kathal (young jackfruit), caramelized barista onions, and fresh mint layered with saffron-infused basmati rice in a clay handi.",
+      "basePrice": 365,
+      "imageUrl": "/src/assets/images/dish_royal_biryani_1793975538453.jpg",
+      "isVeg": true,
+      "inStock": true,
+      "showOnHome": true,
+      "isBestseller": true,
+      "isTodaysSpecial": false,
+      "isNewArrival": false,
+      "spiceLevel": "Medium",
+      "prepTimeMins": 25,
+      "salesCount": 118,
+      "variants": [
+        {
+          "id": "var_sb_half",
+          "itemId": "item_subz_biryani",
+          "name": "Single Handi (650ml · Serves 1)",
+          "price": 365,
+          "inStock": true
+        },
+        {
+          "id": "var_sb_full",
+          "itemId": "item_subz_biryani",
+          "name": "Royal Handi (1200ml · Serves 2)",
+          "price": 645,
+          "inStock": true
+        }
+      ],
+      "addons": [
+        {
+          "id": "add_sb_raita",
+          "itemId": "item_subz_biryani",
+          "name": "Pineapple & Mint Boondi Raita",
+          "price": 55,
+          "isVeg": true,
+          "inStock": true
+        },
+        {
+          "id": "add_sb_salan",
+          "itemId": "item_subz_biryani",
+          "name": "Peanut & Sesame Salan",
+          "price": 60,
+          "isVeg": true,
+          "inStock": true
+        }
+      ]
+    },
+    {
+      "id": "item_paneer_tikka",
+      "categoryId": "cat_kebabs",
+      "name": "Smoked Kasundi & Malai Paneer Tikka",
+      "description": "Artisanal house-churned cottage cheese marinated in hung yogurt, white pepper, and Bengal mustard, blistered over white-hot tamarind wood charcoal. Served with fresh pudina chutney.",
+      "basePrice": 325,
+      "imageUrl": "/src/assets/images/dish_paneer_tikka_1793975540023.jpg",
+      "isVeg": true,
+      "inStock": true,
+      "showOnHome": true,
+      "isBestseller": true,
+      "isTodaysSpecial": true,
+      "isNewArrival": false,
+      "spiceLevel": "Mild",
+      "prepTimeMins": 20,
+      "salesCount": 96,
+      "variants": [
+        {
+          "id": "var_pt_half",
+          "itemId": "item_paneer_tikka",
+          "name": "Half Skewer (5 Pieces)",
+          "price": 325,
+          "inStock": true
+        },
+        {
+          "id": "var_pt_full",
+          "itemId": "item_paneer_tikka",
+          "name": "Full Platter (9 Pieces)",
+          "price": 525,
+          "inStock": true
+        }
+      ],
+      "addons": [
+        {
+          "id": "add_pt_rumali",
+          "itemId": "item_paneer_tikka",
+          "name": "Warm Handkerchief Rumali Roti",
+          "price": 45,
+          "isVeg": true,
+          "inStock": true
+        },
+        {
+          "id": "add_pt_chutney",
+          "itemId": "item_paneer_tikka",
+          "name": "Extra Raw Mango & Mint Chutney",
+          "price": 35,
+          "isVeg": true,
+          "inStock": true
+        }
+      ]
+    },
+    {
+      "id": "item_butter_chicken",
+      "categoryId": "cat_curries",
+      "name": "Old Delhi 1950s Murgh Makhani & Garlic Naan",
+      "description": "Tandoor-charred bone-in chicken tikka simmered in a velvety heirloom tomato gravy finished with white makkhan, roasted kasuri methi, and ginger juliennes.",
+      "basePrice": 415,
+      "imageUrl": "/src/assets/images/dish_butter_chicken_1793975541967.jpg",
+      "isVeg": false,
+      "inStock": true,
+      "showOnHome": true,
+      "isBestseller": true,
+      "isTodaysSpecial": false,
+      "isNewArrival": true,
+      "spiceLevel": "Mild",
+      "prepTimeMins": 24,
+      "salesCount": 164,
+      "variants": [
+        {
+          "id": "var_bc_half",
+          "itemId": "item_butter_chicken",
+          "name": "Half Portion (450ml)",
+          "price": 415,
+          "inStock": true
+        },
+        {
+          "id": "var_bc_full",
+          "itemId": "item_butter_chicken",
+          "name": "Full Copper Bowl (800ml)",
+          "price": 695,
+          "inStock": true
+        }
+      ],
+      "addons": [
+        {
+          "id": "add_bc_naan",
+          "itemId": "item_butter_chicken",
+          "name": "2 Smoked Garlic Butter Naans",
+          "price": 110,
+          "isVeg": true,
+          "inStock": true
+        },
+        {
+          "id": "add_bc_paratha",
+          "itemId": "item_butter_chicken",
+          "name": "2 Flaky Laccha Parathas",
+          "price": 105,
+          "isVeg": true,
+          "inStock": true
+        }
+      ]
+    },
+    {
+      "id": "item_dal_makhani",
+      "categoryId": "cat_curries",
+      "name": "24-Hour Bukhara Black Dal & Chur Chur Naan",
+      "description": "Whole urad lentils slow-cooked overnight on dying tandoor embers with churned cream, tomatoes, and Kashmiri garlic. Paired with flaky ghee-brushed Chur Chur Naan.",
+      "basePrice": 345,
+      "imageUrl": "/src/assets/images/hero_artisanal_feast_1793975537331.jpg",
+      "isVeg": true,
+      "inStock": true,
+      "showOnHome": true,
+      "isBestseller": false,
+      "isTodaysSpecial": true,
+      "isNewArrival": true,
+      "spiceLevel": "Mild",
+      "prepTimeMins": 18,
+      "salesCount": 89,
+      "variants": [
+        {
+          "id": "var_dm_half",
+          "itemId": "item_dal_makhani",
+          "name": "Regular Bowl (500ml)",
+          "price": 345,
+          "inStock": true
+        },
+        {
+          "id": "var_dm_combo",
+          "itemId": "item_dal_makhani",
+          "name": "Dal + 2 Amritsari Chur Chur Naans",
+          "price": 465,
+          "inStock": true
+        }
+      ],
+      "addons": [
+        {
+          "id": "add_dm_ghee",
+          "itemId": "item_dal_makhani",
+          "name": "Desi Gir Cow Ghee Tadka",
+          "price": 45,
+          "isVeg": true,
+          "inStock": true
+        },
+        {
+          "id": "add_dm_jeera",
+          "itemId": "item_dal_makhani",
+          "name": "Dehraduni Jeera Pulao",
+          "price": 145,
+          "isVeg": true,
+          "inStock": true
+        }
+      ]
+    },
+    {
+      "id": "item_gulab_jamun",
+      "categoryId": "cat_desserts",
+      "name": "Warm Khoya Gulab Jamun with Iranian Pistachio",
+      "description": "Caramelized milk-solid dumplings poached in saffron-cardamom rose nectar, garnished with hand-pounded Iranian green pistachios and edible silver leaf.",
+      "basePrice": 185,
+      "imageUrl": "/src/assets/images/dish_gulab_jamun_dessert_1793975541767.jpg",
+      "isVeg": true,
+      "inStock": true,
+      "showOnHome": true,
+      "isBestseller": false,
+      "isTodaysSpecial": false,
+      "isNewArrival": true,
+      "spiceLevel": "Mild",
+      "prepTimeMins": 10,
+      "salesCount": 74,
+      "variants": [
+        {
+          "id": "var_gj_2pc",
+          "itemId": "item_gulab_jamun",
+          "name": "2 Pieces (Warm Bowl)",
+          "price": 185,
+          "inStock": true
+        },
+        {
+          "id": "var_gj_4pc",
+          "itemId": "item_gulab_jamun",
+          "name": "4 Pieces + Malai Rabri",
+          "price": 345,
+          "inStock": true
+        }
+      ],
+      "addons": [
+        {
+          "id": "add_gj_rabri",
+          "itemId": "item_gulab_jamun",
+          "name": "Extra Saffron Malai Rabri",
+          "price": 75,
+          "isVeg": true,
+          "inStock": true
+        }
+      ]
+    }
+  ],
+  "banners": [
+    {
+      "id": "ban_royal_feast",
+      "title": "Slow-Cooked Awadhi Handis, Delivered Seal-Intact",
+      "subtitle": "Crafted in small batches over tamarind charcoal in Bandra West. Zero aggregators, direct kitchen-to-doorstep delivery within 8.5 km.",
+      "ctaText": "Apply Code FEAST150",
+      "imageUrl": "/src/assets/images/hero_artisanal_feast_1793975537331.jpg",
+      "linkType": "COUPON",
+      "linkTarget": "FEAST150",
+      "sortOrder": 1,
+      "isVisible": true,
+      "startDate": "2026-01-01",
+      "endDate": "2027-12-31"
+    },
+    {
+      "id": "ban_kebabs",
+      "title": "Evening Charcoal Tandoor Platters",
+      "subtitle": "Freshly skewered Kasundi Paneer Tikka and Old Delhi Murgh Makhani straight from the hearth.",
+      "ctaText": "Browse Tandoor Menu",
+      "imageUrl": "/src/assets/images/dish_paneer_tikka_1793975540023.jpg",
+      "linkType": "CATEGORY",
+      "linkTarget": "cat_kebabs",
+      "sortOrder": 2,
+      "isVisible": true,
+      "startDate": "2026-01-01",
+      "endDate": "2027-12-31"
+    }
+  ],
+  "homeSections": [
+    {
+      "id": "sec_bestsellers",
+      "title": "Kitchen Bestsellers",
+      "subtitle": "Most reordered handis and slow-simmered classics across Bandra & Khar.",
+      "sectionType": "BESTSELLERS",
+      "bestsellerMode": "AUTO_SALES",
+      "sortOrder": 1,
+      "isVisible": true,
+      "maxItems": 3,
+      "scheduleStartHour": null,
+      "scheduleEndHour": null,
+      "itemIds": [
+        "item_butter_chicken",
+        "item_lucknowi_biryani",
+        "item_subz_biryani",
+        "item_paneer_tikka"
+      ]
+    },
+    {
+      "id": "sec_todays_special",
+      "title": "Chef's Charcoal Specials",
+      "subtitle": "Prepared in limited copper-handi batches for today’s service.",
+      "sectionType": "TODAYS_SPECIAL",
+      "bestsellerMode": "MANUAL",
+      "sortOrder": 2,
+      "isVisible": true,
+      "maxItems": 3,
+      "scheduleStartHour": null,
+      "scheduleEndHour": null,
+      "itemIds": [
+        "item_lucknowi_biryani",
+        "item_paneer_tikka",
+        "item_dal_makhani"
+      ]
+    },
+    {
+      "id": "sec_combos",
+      "title": "Complete Dastarkhwan & Desserts",
+      "subtitle": "Pair your main course with overnight Dal Bukhara and warm Khoya Gulab Jamun.",
+      "sectionType": "COMBO_OFFERS",
+      "bestsellerMode": "MANUAL",
+      "sortOrder": 3,
+      "isVisible": true,
+      "maxItems": 3,
+      "scheduleStartHour": null,
+      "scheduleEndHour": null,
+      "itemIds": [
+        "item_dal_makhani",
+        "item_butter_chicken",
+        "item_gulab_jamun"
+      ]
+    }
+  ],
+  "coupons": [
+    {
+      "code": "FEAST150",
+      "description": "Flat ₹150 OFF on orders above ₹699",
+      "discountType": "FLAT",
+      "discountValue": 150,
+      "minOrderAmount": 699,
+      "usageLimitPerPhone": 3,
+      "firstOrderOnly": false,
+      "expiresAt": "2027-12-31T23:59:59.000Z",
+      "isActive": true
+    },
+    {
+      "code": "WELCOME20",
+      "description": "20% OFF up to ₹200 on your first guest order above ₹399",
+      "discountType": "PERCENT",
+      "discountValue": 20,
+      "maxDiscount": 200,
+      "minOrderAmount": 399,
+      "usageLimitPerPhone": 1,
+      "firstOrderOnly": true,
+      "expiresAt": "2027-12-31T23:59:59.000Z",
+      "isActive": true
+    }
+  ],
+  "couponUsages": [],
+  "customers": {
+    "9820112233": {
+      "phone": "9820112233",
+      "name": "Kabir Mehta",
+      "isBlocked": false,
+      "orderCount": 2,
+      "totalSpent": 1540,
+      "firstOrderAt": "2026-11-06T15:21:33.948Z",
+      "lastOrderAt": "2026-11-06T17:03:33.948Z",
+      "lastAddress": "Flat 701, Rustomjee Seasons, Bandra East, Mumbai"
+    }
+  },
+  "orders": [
+    {
+      "id": "ord_sample_new",
+      "orderNumber": "AAN-1045",
+      "trackingToken": "trk_new_demo_884a1b2c3d4e",
+      "deliveryOtp": "3912",
+      "customerName": "Aarav Deshmukh",
+      "customerPhone": "9820445566",
+      "customerIp": "127.0.0.1",
+      "deliveryAddress": "B-1204, Sea Breeze Towers, Carter Road, Bandra West, Mumbai 400050",
+      "deliveryLat": 19.0622,
+      "deliveryLng": 72.8235,
+      "distanceKm": 1.38,
+      "orderNotes": "Extra spicy burani raita on the side, do not ring doorbell loudly.",
+      "scheduledFor": null,
+      "status": "PLACED",
+      "paymentMethod": "COD",
+      "paymentStatus": "PENDING",
+      "itemTotal": 770,
+      "deliveryFee": 25,
+      "gstAmount": 39,
+      "discountAmount": 0,
+      "couponCode": null,
+      "grandTotal": 834,
+      "deliveryBoyId": "rider_1",
+      "deliveryBoyName": "Ramesh Pawar",
+      "deliveryBoyPhone": "9876501234",
+      "placedAt": "2026-11-06T19:08:46.743Z",
+      "items": [
+        {
+          "menuItemId": "item_lucknowi_biryani",
+          "itemName": "Lucknowi Zafrani Gosht Dum Biryani",
+          "variantName": "Single Handi (650ml · Serves 1)",
+          "addons": [
+            {
+              "id": "add_burani",
+              "name": "Extra Smoked Garlic Burani Raita",
+              "price": 55
+            }
+          ],
+          "unitPrice": 500,
+          "quantity": 1,
+          "lineTotal": 500
+        },
+        {
+          "menuItemId": "item_gulab_jamun",
+          "itemName": "Warm Saffron & Pistachio Khoya Gulab Jamun",
+          "variantName": "Box of 4 Pieces",
+          "addons": [],
+          "unitPrice": 270,
+          "quantity": 1,
+          "lineTotal": 270
+        }
+      ]
+    },
+    {
+      "id": "ord_sample_live",
+      "orderNumber": "AAN-1042",
+      "trackingToken": "trk_live_demo_991a7b3c4d5e6f",
+      "deliveryOtp": "4829",
+      "customerName": "Kabir Mehta",
+      "customerPhone": "9820112233",
+      "customerIp": "127.0.0.1",
+      "deliveryAddress": "Flat 701, Rustomjee Seasons, Bandra East, Mumbai",
+      "deliveryLat": 19.0645,
+      "deliveryLng": 72.8488,
+      "distanceKm": 1.42,
+      "orderNotes": "Please send extra mint chutney and less cutlery.",
+      "scheduledFor": null,
+      "status": "PREPARING",
+      "paymentMethod": "RAZORPAY",
+      "paymentStatus": "PAID",
+      "itemTotal": 770,
+      "deliveryFee": 25,
+      "gstAmount": 39,
+      "discountAmount": 0,
+      "couponCode": null,
+      "grandTotal": 834,
+      "deliveryBoyId": "rider_1",
+      "deliveryBoyName": "Ramesh Pawar",
+      "deliveryBoyPhone": "9876501234",
+      "placedAt": "2026-11-06T17:03:33.948Z",
+      "acceptedAt": "2026-11-06T17:06:33.948Z",
+      "preparedAt": "2026-11-06T17:13:33.948Z",
+      "razorpayOrderId": "order_demo_1042",
+      "items": [
+        {
+          "menuItemId": "item_lucknowi_biryani",
+          "itemName": "Lucknowi Zafrani Gosht Dum Biryani",
+          "variantName": "Single Handi (650ml · Serves 1)",
+          "addons": [],
+          "unitPrice": 445,
+          "quantity": 1,
+          "lineTotal": 445
+        },
+        {
+          "menuItemId": "item_paneer_tikka",
+          "itemName": "Smoked Kasundi & Malai Paneer Tikka",
+          "variantName": "Half Skewer (5 Pieces)",
+          "addons": [],
+          "unitPrice": 325,
+          "quantity": 1,
+          "lineTotal": 325
+        }
+      ]
+    },
+    {
+      "id": "ord_sample_delivered",
+      "orderNumber": "AAN-1039",
+      "trackingToken": "trk_delivered_demo_772b9c1a",
+      "deliveryOtp": "7104",
+      "customerName": "Kabir Mehta",
+      "customerPhone": "9820112233",
+      "customerIp": "127.0.0.1",
+      "deliveryAddress": "Flat 701, Rustomjee Seasons, Bandra East, Mumbai",
+      "deliveryLat": 19.0645,
+      "deliveryLng": 72.8488,
+      "distanceKm": 1.42,
+      "orderNotes": "",
+      "scheduledFor": null,
+      "status": "DELIVERED",
+      "paymentMethod": "COD",
+      "paymentStatus": "PAID",
+      "itemTotal": 695,
+      "deliveryFee": 25,
+      "gstAmount": 35,
+      "discountAmount": 0,
+      "couponCode": null,
+      "grandTotal": 755,
+      "deliveryBoyId": "rider_1",
+      "deliveryBoyName": "Ramesh Pawar",
+      "deliveryBoyPhone": "9876501234",
+      "placedAt": "2026-11-06T15:21:33.948Z",
+      "acceptedAt": "2026-11-06T15:21:33.948Z",
+      "preparedAt": "2026-11-06T15:21:33.948Z",
+      "outForDeliveryAt": "2026-11-06T15:21:33.948Z",
+      "deliveredAt": "2026-11-06T15:51:33.948Z",
+      "items": [
+        {
+          "menuItemId": "item_butter_chicken",
+          "itemName": "Old Delhi 1950s Murgh Makhani & Garlic Naan",
+          "variantName": "Full Copper Bowl (800ml)",
+          "addons": [],
+          "unitPrice": 695,
+          "quantity": 1,
+          "lineTotal": 695
+        }
+      ]
+    }
+  ],
+  "payments": [
+    {
+      "id": "pay_sample_1042",
+      "orderId": "ord_sample_live",
+      "orderNumber": "AAN-1042",
+      "customerPhone": "9820112233",
+      "gateway": "RAZORPAY",
+      "razorpayOrderId": "order_demo_1042",
+      "razorpayPaymentId": "pay_rzp_demo_998123",
+      "razorpaySignature": "verified_hmac_sig_demo",
+      "amount": 834,
+      "currency": "INR",
+      "status": "VERIFIED",
+      "serverHmacVerified": true,
+      "webhookVerified": true,
+      "apiAmountMatched": true,
+      "webhookEventId": "evt_demo_1042",
+      "createdAt": "2026-11-06T17:03:33.948Z",
+      "updatedAt": "2026-11-06T17:03:33.948Z"
+    },
+    {
+      "id": "pay_sample_1039",
+      "orderId": "ord_sample_delivered",
+      "orderNumber": "AAN-1039",
+      "customerPhone": "9820112233",
+      "gateway": "COD",
+      "amount": 755,
+      "currency": "INR",
+      "status": "VERIFIED",
+      "serverHmacVerified": true,
+      "webhookVerified": true,
+      "apiAmountMatched": true,
+      "createdAt": "2026-11-06T15:21:33.948Z",
+      "updatedAt": "2026-11-06T15:21:33.948Z"
+    }
+  ],
+  "refunds": [],
+  "deliveryBoys": [
+    {
+      "id": "rider_1",
+      "name": "Ramesh Pawar",
+      "phone": "9876501234",
+      "isActive": true,
+      "activeOrders": 2,
+      "accessToken": "rider_token_ramesh_01",
+      "tokenExpiresAt": "2026-12-06T18:19:25.828Z",
+      "dailyPin": "8802"
+    },
+    {
+      "id": "rider_2",
+      "name": "Imran Shaikh",
+      "phone": "9876505678",
+      "isActive": true,
+      "activeOrders": 0,
+      "accessToken": "rider_token_imran_02",
+      "tokenExpiresAt": "2026-12-06T18:19:25.828Z",
+      "dailyPin": "9852"
+    }
+  ],
+  "reviews": [
+    {
+      "id": "rev_1",
+      "orderId": "ord_sample_delivered",
+      "orderNumber": "AAN-1039",
+      "customerPhone": "9820112233",
+      "customerName": "Kabir Mehta",
+      "rating": 5,
+      "comment": "The copper handi seal kept the Murgh Makhani piping hot. Best garlic naan in Bandra.",
+      "complaintStatus": "NONE",
+      "createdAt": "2026-11-06T17:21:33.948Z"
+    }
+  ],
+  "adminUsers": [
+    {
+      "id": "adm_owner",
+      "email": "owner@aangan.in",
+      "passwordHash": "scrypt$081841e88e8f033a6c99caa0619283c1$822f983dfde86eb78742315ed5e24aa928a5aa07888c751208a9367c960fc208bea35b3403cc8d3b1eb49bd9d2f23faec33501455703a439534bef9e635b9c5b",
+      "name": "Chef Vikramaditya (Owner)",
+      "role": "owner",
+      "mustChangePassword": true,
+      "isActive": true,
+      "tokenVersion": 1,
+      "totpEnabled": false,
+      "createdAt": "2026-11-06T18:19:25.721Z"
+    },
+    {
+      "id": "adm_manager",
+      "email": "manager@aangan.in",
+      "passwordHash": "scrypt$5ae9449b6a0759c0e08e055ecfd6581b$ca6712beb8e9f53e45c7880816a0a12c5575938443348b5e274a0db9f75f84172d5826fec3b972d130b9fb652c11cbb4c42cc09dcd9e9f665f547f4bfe7debc9",
+      "name": "Ananya Nair (Manager)",
+      "role": "manager",
+      "mustChangePassword": true,
+      "isActive": true,
+      "tokenVersion": 1,
+      "totpEnabled": false,
+      "createdAt": "2026-11-06T18:19:25.776Z"
+    },
+    {
+      "id": "adm_staff",
+      "email": "staff@aangan.in",
+      "passwordHash": "scrypt$c4632f2aee4fe53e053f1a49e4f71c03$6bd79617fcb3b719ed0ac536a3b02a1bf3173aca768835bbaeebe5b819d01df872ac68cc6c73053906c35d2d9add287dffc963883462038b099241d0a0fa39cf",
+      "name": "Kitchen Dispatch (Staff)",
+      "role": "staff",
+      "mustChangePassword": true,
+      "isActive": true,
+      "tokenVersion": 1,
+      "totpEnabled": false,
+      "createdAt": "2026-11-06T18:19:25.828Z"
+    }
+  ],
+  "auditLogs": [
+    {
+      "id": "aud_1793986386361_1zdr",
+      "adminEmail": "owner@aangan.in",
+      "adminRole": "owner",
+      "action": "SHOP_SETTINGS_UPDATED",
+      "details": "Updated shop settings and delivery zone (radius: 8.5 km, open: true)",
+      "ipAddress": "127.0.0.1",
+      "createdAt": "2026-11-06T17:33:06.361Z"
+    },
+    {
+      "id": "aud_1793986339370_9avb",
+      "adminEmail": "owner@aangan.in",
+      "adminRole": "owner",
+      "action": "SHOP_SETTINGS_UPDATED",
+      "details": "Updated shop settings and delivery zone (radius: 8.5 km, open: false)",
+      "ipAddress": "127.0.0.1",
+      "createdAt": "2026-11-06T17:32:19.370Z"
+    },
+    {
+      "id": "aud_1793986303603_xugs",
+      "adminEmail": "owner@aangan.in",
+      "adminRole": "owner",
+      "action": "MENU_ITEM_TOGGLED",
+      "details": "Toggled showOnHome=true on 24-Hour Bukhara Black Dal & Chur Chur Naan",
+      "ipAddress": "127.0.0.1",
+      "createdAt": "2026-11-06T17:31:43.603Z"
+    },
+    {
+      "id": "aud_1793986299611_smk7",
+      "adminEmail": "owner@aangan.in",
+      "adminRole": "owner",
+      "action": "MENU_ITEM_TOGGLED",
+      "details": "Toggled showOnHome=false on 24-Hour Bukhara Black Dal & Chur Chur Naan",
+      "ipAddress": "127.0.0.1",
+      "createdAt": "2026-11-06T17:31:39.611Z"
+    },
+    {
+      "id": "aud_1793986237284_6ick",
+      "adminEmail": "owner@aangan.in",
+      "adminRole": "owner",
+      "action": "MENU_ITEM_TOGGLED",
+      "details": "Toggled inStock=false on Lucknowi Zafrani Gosht Dum Biryani",
+      "ipAddress": "127.0.0.1",
+      "createdAt": "2026-11-06T17:30:37.284Z"
+    },
+    {
+      "id": "aud_1793986222381_hjbh",
+      "adminEmail": "owner@aangan.in",
+      "adminRole": "owner",
+      "action": "ADMIN_LOGIN",
+      "details": "Logged into Admin Panel as owner",
+      "ipAddress": "127.0.0.1",
+      "createdAt": "2026-11-06T17:30:22.381Z"
+    },
+    {
+      "id": "aud_init",
+      "adminEmail": "owner@aangan.in",
+      "adminRole": "owner",
+      "action": "SYSTEM_INITIALIZED",
+      "details": "Initialized Aangan Artisanal Kitchen delivery zone (8.5 km radius) and Razorpay webhook verifier.",
+      "ipAddress": "127.0.0.1",
+      "createdAt": "2026-11-06T17:21:33.948Z"
+    }
+  ],
+  "blockedList": [],
+  "broadcasts": [],
+  "nextOrderSequence": 1046,
+  "adminSessions": []
+}

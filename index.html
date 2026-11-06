@@ -18,12 +18,34 @@
     <link rel="icon" type="image/svg+xml" href="/icon.svg" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=JetBrains+Mono:wght@400;500;600&family=Playfair+Display:wght@500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <script>
+      (function () {
+        try {
+          var raw = localStorage.getItem('aangan_theme_cache_v1');
+          if (!raw) return;
+          var t = JSON.parse(raw);
+          var root = document.documentElement;
+          if (t.isDark) root.classList.add('dark');
+          else root.classList.remove('dark');
+          if (t.bg) root.style.setProperty('--color-bg', t.bg);
+          if (t.surface) root.style.setProperty('--color-surface', t.surface);
+          if (t.text) root.style.setProperty('--color-text', t.text);
+          if (t.muted) root.style.setProperty('--color-muted', t.muted);
+          if (t.border) root.style.setProperty('--color-border', t.border);
+          if (t.primary) root.style.setProperty('--color-primary', t.primary);
+          if (t.primaryContrast) root.style.setProperty('--color-primary-contrast', t.primaryContrast);
+          if (t.accent) root.style.setProperty('--color-accent', t.accent);
+          if (t.radius) root.style.setProperty('--radius', t.radius);
+          if (t.displayFont) root.style.setProperty('--font-display', t.displayFont);
+          if (t.bodyFont) root.style.setProperty('--font-body', t.bodyFont);
+        } catch (e) {}
+      })();
+    </script>
     <script src="https://checkout.razorpay.com/v1/checkout.js" async></script>
   </head>
-  <body class="bg-[#FAF8F5] text-stone-900 antialiased selection:bg-amber-700 selection:text-white">
+  <body class="bg-bg text-text antialiased selection:bg-primary selection:text-primary-contrast">
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
-

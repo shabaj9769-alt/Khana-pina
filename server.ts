@@ -32,11 +32,14 @@ import {
   RefundRecord,
   ReviewRecord,
   ShopSettings,
+  StorefrontThemeConfig,
+  ThemeMode,
 } from './src/types.ts';
+import { DEFAULT_STOREFRONT_THEME } from './src/utils/themeTokens.ts';
 
 dotenv.config();
 
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 const IS_PROD = process.env.NODE_ENV === 'production';
 const DEFAULT_ADMIN_SECRET = 'aangan_admin_jwt_secret_key_change_in_prod';
 const ADMIN_JWT_SECRET = process.env.ADMIN_JWT_SECRET || DEFAULT_ADMIN_SECRET;
@@ -83,6 +86,8 @@ interface AdminUserRecord {
   totpSecret?: string;
   createdAt: string;
   lastLoginAt?: string;
+  themeMode?: ThemeMode;
+  themeAccent?: string;
 }
 
 interface CouponUsageRecord {
@@ -320,6 +325,8 @@ function getInitialDatabaseState(): DatabaseState {
       isOpen: true,
       busyMode: false,
       weeklyTimings: 'Mon–Sun · 11:00 AM – 11:30 PM',
+      opensAtText: '11:00 AM',
+      allowPreOrdersWhenClosed: true,
       holidaysNote: '',
       minOrderAmount: 199,
       gstPercent: 5,
@@ -338,6 +345,7 @@ function getInitialDatabaseState(): DatabaseState {
       ],
       themeAccentColor: '#D9480F',
       themeSurfaceStyle: 'warm',
+      theme: { ...DEFAULT_STOREFRONT_THEME },
     },
     deliveryZone: {
       shopLat: 19.0607,
@@ -937,6 +945,15 @@ function migrateLoadedDatabase(state: DatabaseState, initial: DatabaseState): Da
   if (!state.settings.themeSurfaceStyle) {
     state.settings.themeSurfaceStyle = 'warm';
   }
+  if (!state.settings.opensAtText) {
+    state.settings.opensAtText = '11:00 AM';
+  }
+  if (state.settings.allowPreOrdersWhenClosed === undefined) {
+    state.settings.allowPreOrdersWhenClosed = true;
+  }
+  if (!state.settings.theme) {
+    state.settings.theme = { ...DEFAULT_STOREFRONT_THEME };
+  }
   if (!Array.isArray(state.adminSessions)) {
     state.adminSessions = [];
   }
@@ -1046,6 +1063,15 @@ function saveDatabase(state: DatabaseState) {
       }
     }
     fs.renameSync(tmpFile, DATA_FILE);
+
+    // Phase 5: Automatic daily backup snapshot in data/backups/store-YYYY-MM-DD.json
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const backupsDir = path.join(process.cwd(), 'data', 'backups');
+    const dailyBackupFile = path.join(backupsDir, `store-${todayStr}.json`);
+    if (!fs.existsSync(dailyBackupFile)) {
+      fs.mkdirSync(backupsDir, { recursive: true });
+      fs.writeFileSync(dailyBackupFile, serialized, 'utf8');
+    }
   } catch (e) {
     console.error('Error saving store.json atomically:', e);
   }
@@ -1104,7 +1130,7 @@ async function syncStateToPostgres(state: DatabaseState) {
   }
 }
 
-const db = loadDatabase();
+export const db = loadDatabase();
 
 // In-memory Home API cache (cleared automatically on Admin save)
 let homeApiCache: { timestamp: number; payload: unknown } | null = null;
@@ -1145,6 +1171,8 @@ function toPublicAdminUser(u: AdminUserRecord): AdminUserPublic {
     totpEnabled: u.totpEnabled,
     createdAt: u.createdAt,
     lastLoginAt: u.lastLoginAt,
+    themeMode: u.themeMode || 'light',
+    themeAccent: u.themeAccent || '#D9480F',
   };
 }
 
@@ -1152,17 +1180,17 @@ function toPublicAdminUser(u: AdminUserRecord): AdminUserPublic {
 // 1.2 LOGIN BRUTE-FORCE RATE LIMITER & LOCKOUT (Max 5 per email & per IP / 15m)
 // =============================================================================
 
-interface LoginAttemptBucket {
+export interface LoginAttemptBucket {
   failures: number[];
   lockedUntil: number;
 }
 
-const loginAttemptsByEmail = new Map<string, LoginAttemptBucket>();
-const loginAttemptsByIp = new Map<string, LoginAttemptBucket>();
+export const loginAttemptsByEmail = new Map<string, LoginAttemptBucket>();
+export const loginAttemptsByIp = new Map<string, LoginAttemptBucket>();
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const MAX_LOGIN_FAILURES = 5;
 
-function isLoginLocked(map: Map<string, LoginAttemptBucket>, key: string): boolean {
+export function isLoginLocked(map: Map<string, LoginAttemptBucket>, key: string): boolean {
   const now = Date.now();
   const bucket = map.get(key);
   if (!bucket) return false;
@@ -1171,7 +1199,7 @@ function isLoginLocked(map: Map<string, LoginAttemptBucket>, key: string): boole
   return false;
 }
 
-function recordLoginFailure(map: Map<string, LoginAttemptBucket>, key: string): boolean {
+export function recordLoginFailure(map: Map<string, LoginAttemptBucket>, key: string): boolean {
   const now = Date.now();
   const bucket = map.get(key) || { failures: [], lockedUntil: 0 };
   bucket.failures = bucket.failures.filter((t) => now - t < LOGIN_WINDOW_MS);
@@ -1185,7 +1213,7 @@ function recordLoginFailure(map: Map<string, LoginAttemptBucket>, key: string): 
   return false;
 }
 
-function clearLoginFailures(email: string, ip: string) {
+export function clearLoginFailures(email: string, ip: string) {
   loginAttemptsByEmail.delete(email);
   loginAttemptsByIp.delete(ip);
 }
@@ -1212,6 +1240,25 @@ const DeliverySlabSchema = z.object({
   fee: z.number().min(0).max(2000),
 });
 
+const StorefrontThemeSchema = z.object({
+  mode: z.enum(['light', 'dark', 'auto']),
+  presetId: z.enum([
+    'classic-amber',
+    'spice-red',
+    'forest-green',
+    'royal-blue',
+    'midnight-dark',
+    'minimal-mono',
+    'custom',
+  ]),
+  primaryColor: z.string().trim().max(32),
+  accentColor: z.string().trim().max(32),
+  fontPair: z.enum(['fraunces-jakarta', 'playfair-inter', 'poppins-only']),
+  radiusScale: z.enum(['sharp', 'rounded', 'pill']),
+  logoUrl: z.string().trim().max(500).optional().default(''),
+  pwaThemeColor: z.string().trim().max(32).optional().default('#1C1917'),
+});
+
 const ShopSettingsUpdateSchema = z
   .object({
     shopName: z.string().trim().min(2).max(120).optional(),
@@ -1220,6 +1267,8 @@ const ShopSettingsUpdateSchema = z
     isOpen: z.boolean().optional(),
     busyMode: z.boolean().optional(),
     weeklyTimings: z.string().trim().max(150).optional(),
+    opensAtText: z.string().trim().max(80).optional(),
+    allowPreOrdersWhenClosed: z.boolean().optional(),
     holidaysNote: z.string().trim().max(250).optional(),
     minOrderAmount: z.number().min(0).max(10000).optional(),
     gstPercent: z.number().min(0).max(28).optional(),
@@ -1234,6 +1283,7 @@ const ShopSettingsUpdateSchema = z
     deliverySlabs: z.array(DeliverySlabSchema).min(1).max(10).optional(),
     themeAccentColor: z.string().trim().max(32).optional(),
     themeSurfaceStyle: z.enum(['warm', 'clean', 'minimal']).optional(),
+    theme: StorefrontThemeSchema.optional(),
   })
   .strict();
 
@@ -1266,6 +1316,7 @@ const OrderPlacementSchema = z.object({
         variantId: z.string().optional(),
         addonIds: z.array(z.string()).optional(),
         quantity: z.number().int().min(1).max(25),
+        itemNote: z.string().max(150).optional(),
       })
     )
     .min(1),
@@ -1274,8 +1325,8 @@ const OrderPlacementSchema = z.object({
 /**
  * Authoritative Server-Side Cart & Bill Calculation
  */
-function calculateAuthoritativeBill(params: {
-  items: { menuItemId: string; variantId?: string; addonIds?: string[]; quantity: number }[];
+export function calculateAuthoritativeBill(params: {
+  items: { menuItemId: string; variantId?: string; addonIds?: string[]; quantity: number; itemNote?: string }[];
   lat: number;
   lng: number;
   couponCode?: string | null;
@@ -1336,6 +1387,7 @@ function calculateAuthoritativeBill(params: {
       unitPrice,
       quantity: qty,
       lineTotal,
+      itemNote: cartItem.itemNote ? String(cartItem.itemNote).trim().slice(0, 150) : undefined,
     });
   }
 
@@ -1837,8 +1889,14 @@ async function startServer() {
     } = parsedBody.data;
 
     if (!db.settings.isOpen) {
-      res.status(400).json({ error: 'The kitchen is currently closed. Please check our opening hours.' });
-      return;
+      if (!(db.settings.allowPreOrdersWhenClosed && scheduledFor)) {
+        res.status(400).json({
+          error: db.settings.allowPreOrdersWhenClosed
+            ? `Kitchen is currently closed (opens at ${db.settings.opensAtText || '11:00 AM'}). Please pick a scheduled pre-order slot.`
+            : 'The kitchen is currently closed. Please check our opening hours.',
+        });
+        return;
+      }
     }
     if (db.settings.busyMode) {
       res.status(400).json({ error: 'Kitchen is in high-demand busy mode and temporarily paused new orders.' });
@@ -2294,6 +2352,39 @@ async function startServer() {
     res.json({ orders: matched });
   });
 
+  // Phase 4: Guest "Find my order" lookup by orderNumber + 10-digit phone (no login)
+  app.post('/api/orders/lookup', trackingAndRiderLimiter, (req, res) => {
+    const parsed = z
+      .object({
+        orderNumber: z.string().trim().min(3).max(32),
+        phone: z.string().trim().regex(/^[6-9]\d{9}$/, 'Enter the 10-digit mobile number used for the order'),
+      })
+      .safeParse(req.body);
+
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.issues[0]?.message || 'Enter valid order number and 10-digit phone' });
+      return;
+    }
+
+    const cleanOrderNo = parsed.data.orderNumber.toUpperCase();
+    const cleanPhone = parsed.data.phone.replace(/\D/g, '');
+    const order = db.orders.find(
+      (o) =>
+        (o.orderNumber.toUpperCase() === cleanOrderNo ||
+          o.orderNumber.toUpperCase() === `AAN-${cleanOrderNo.replace(/^AAN-/i, '')}`) &&
+        o.customerPhone === cleanPhone
+    );
+
+    if (!order) {
+      res.status(404).json({
+        error: 'No matching order found for that Order ID and mobile number.',
+      });
+      return;
+    }
+
+    res.json({ order });
+  });
+
   app.post('/api/track/:trackingToken/review', trackingAndRiderLimiter, (req, res) => {
     const { trackingToken } = req.params;
     const order = db.orders.find((o) => o.trackingToken === trackingToken);
@@ -2596,6 +2687,29 @@ async function startServer() {
       sessionId: req.admin!.sessionId,
       user: toPublicAdminUser(user),
     });
+  });
+
+  // Phase 3.3: Per-admin-user personal theme mode & accent preference
+  app.patch('/api/admin/me/theme', requireAdmin(), (req: AdminAuthRequest, res) => {
+    const parsed = z
+      .object({
+        themeMode: z.enum(['light', 'dark', 'auto']).optional(),
+        themeAccent: z.string().trim().max(32).optional(),
+      })
+      .safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'Invalid theme preference' });
+      return;
+    }
+    const user = db.adminUsers.find((u) => u.id === req.admin!.userId);
+    if (!user) {
+      res.status(404).json({ error: 'Admin user not found' });
+      return;
+    }
+    if (parsed.data.themeMode) user.themeMode = parsed.data.themeMode;
+    if (parsed.data.themeAccent) user.themeAccent = parsed.data.themeAccent;
+    saveDatabase(db);
+    res.json({ user: toPublicAdminUser(user) });
   });
 
   app.post('/api/admin/logout', (req: AdminAuthRequest, res) => {
@@ -3094,6 +3208,113 @@ async function startServer() {
     res.json({ item: found });
   });
 
+  // Phase 5: Delete Category (soft/hard remove)
+  app.delete('/api/admin/categories/:id', requireAdmin(['owner', 'manager']), (req: AdminAuthRequest, res) => {
+    const cat = db.categories.find((c) => c.id === req.params.id);
+    if (!cat) {
+      res.status(404).json({ error: 'Category not found' });
+      return;
+    }
+    db.categories = db.categories.filter((c) => c.id !== req.params.id);
+    clearHomeCache();
+    logAudit(req.admin!.email, req.admin!.role, 'CATEGORY_DELETED', `Deleted category ${cat.name}`, req.ip || '127.0.0.1');
+    res.json({ categories: db.categories });
+  });
+
+  // Phase 5: Delete Menu Item
+  app.delete('/api/admin/menu-items/:id', requireAdmin(['owner', 'manager']), (req: AdminAuthRequest, res) => {
+    const found = db.menuItems.find((m) => m.id === req.params.id);
+    if (!found) {
+      res.status(404).json({ error: 'Menu item not found' });
+      return;
+    }
+    db.menuItems = db.menuItems.filter((m) => m.id !== req.params.id);
+    for (const sec of db.homeSections) {
+      sec.itemIds = sec.itemIds.filter((id) => id !== req.params.id);
+    }
+    clearHomeCache();
+    logAudit(req.admin!.email, req.admin!.role, 'MENU_ITEM_DELETED', `Deleted menu item ${found.name}`, req.ip || '127.0.0.1');
+    res.json({ menuItems: db.menuItems, homeSections: db.homeSections });
+  });
+
+  // Phase 5: Bulk Menu Item Actions (in-stock/out-of-stock, bulk price %, CSV import)
+  app.post('/api/admin/menu-items/bulk', requireAdmin(['owner', 'manager']), (req: AdminAuthRequest, res) => {
+    const { action, itemIds, percentChange, importedItems } = req.body || {};
+    const targetSet = Array.isArray(itemIds) && itemIds.length > 0 ? new Set<string>(itemIds) : null;
+
+    if (action === 'MARK_IN_STOCK' || action === 'MARK_OUT_OF_STOCK') {
+      const nextStock = action === 'MARK_IN_STOCK';
+      let count = 0;
+      for (const m of db.menuItems) {
+        if (!targetSet || targetSet.has(m.id)) {
+          m.inStock = nextStock;
+          count++;
+        }
+      }
+      clearHomeCache();
+      logAudit(req.admin!.email, req.admin!.role, 'MENU_BULK_STOCK', `Set inStock=${nextStock} on ${count} items`, req.ip || '127.0.0.1');
+      res.json({ menuItems: db.menuItems });
+      return;
+    }
+
+    if (action === 'ADJUST_PRICE_PERCENT') {
+      const pct = Number(percentChange) || 0;
+      if (pct < -80 || pct > 200 || pct === 0) {
+        res.status(400).json({ error: 'Enter a non-zero percentage between -80% and +200%' });
+        return;
+      }
+      let count = 0;
+      const factor = 1 + pct / 100;
+      for (const m of db.menuItems) {
+        if (!targetSet || targetSet.has(m.id)) {
+          m.basePrice = Math.max(10, Math.round(m.basePrice * factor));
+          for (const v of m.variants) {
+            v.price = Math.max(10, Math.round(v.price * factor));
+          }
+          count++;
+        }
+      }
+      clearHomeCache();
+      logAudit(req.admin!.email, req.admin!.role, 'MENU_BULK_PRICE', `Adjusted prices by ${pct}% on ${count} items`, req.ip || '127.0.0.1');
+      res.json({ menuItems: db.menuItems });
+      return;
+    }
+
+    if (action === 'CSV_IMPORT' && Array.isArray(importedItems)) {
+      let importedCount = 0;
+      for (const raw of importedItems) {
+        if (!raw || !raw.name) continue;
+        const catId = raw.categoryId || db.categories[0]?.id || 'cat_biryani';
+        db.menuItems.push({
+          id: `item_${Date.now()}_${importedCount}`,
+          categoryId: String(catId),
+          name: String(raw.name).trim(),
+          description: String(raw.description || '').trim(),
+          basePrice: Math.max(10, Number(raw.basePrice) || 249),
+          imageUrl: String(raw.imageUrl || IMG_HERO),
+          isVeg: raw.isVeg !== false && raw.isVeg !== 'false',
+          inStock: raw.inStock !== false && raw.inStock !== 'false',
+          showOnHome: true,
+          isBestseller: false,
+          isTodaysSpecial: false,
+          isNewArrival: false,
+          spiceLevel: (['Mild', 'Medium', 'Fiery'].includes(raw.spiceLevel) ? raw.spiceLevel : 'Medium') as MenuItem['spiceLevel'],
+          prepTimeMins: Number(raw.prepTimeMins) || 25,
+          salesCount: 0,
+          variants: [],
+          addons: [],
+        });
+        importedCount++;
+      }
+      clearHomeCache();
+      logAudit(req.admin!.email, req.admin!.role, 'MENU_CSV_IMPORTED', `Imported ${importedCount} menu items via CSV`, req.ip || '127.0.0.1');
+      res.json({ menuItems: db.menuItems, importedCount });
+      return;
+    }
+
+    res.status(400).json({ error: 'Unsupported bulk menu action' });
+  });
+
   // Home Page Manager (Single source of truth for sections & banners)
   app.put('/api/admin/home-manager', requireAdmin(['owner', 'manager']), (req: AdminAuthRequest, res) => {
     const { banners, homeSections } = req.body || {};
@@ -3217,7 +3438,15 @@ async function startServer() {
     res.json({ coupons: db.coupons });
   });
 
-  // Delivery Boys Management + 1.5 Token Regenerate / Revoke / Daily PIN
+  app.delete('/api/admin/coupons/:code', requireAdmin(['owner', 'manager']), (req: AdminAuthRequest, res) => {
+    const cleanCode = String(req.params.code || '').toUpperCase();
+    db.coupons = db.coupons.filter((c) => c.code !== cleanCode);
+    clearHomeCache();
+    logAudit(req.admin!.email, req.admin!.role, 'COUPON_DELETED', `Deleted coupon ${cleanCode}`, req.ip || '127.0.0.1');
+    res.json({ coupons: db.coupons });
+  });
+
+  // Delivery Boys Management + 1.5 Token Regenerate / Revoke / Daily PIN / Edit / Delete
   app.post('/api/admin/delivery-boys', requireAdmin(['owner', 'manager']), (req: AdminAuthRequest, res) => {
     const { name, phone } = req.body || {};
     const cleanPhone = String(phone || '').replace(/\D/g, '');
@@ -3237,6 +3466,34 @@ async function startServer() {
     };
     db.deliveryBoys.push(rider);
     logAudit(req.admin!.email, req.admin!.role, 'RIDER_ADDED', `Added delivery partner ${rider.name}`, req.ip || '127.0.0.1');
+    res.json({ deliveryBoys: db.deliveryBoys });
+  });
+
+  app.patch('/api/admin/delivery-boys/:id', requireAdmin(['owner', 'manager']), (req: AdminAuthRequest, res) => {
+    const rider = db.deliveryBoys.find((r) => r.id === req.params.id);
+    if (!rider) {
+      res.status(404).json({ error: 'Rider not found' });
+      return;
+    }
+    const { name, phone, isActive } = req.body || {};
+    if (name !== undefined && String(name).trim().length >= 2) rider.name = String(name).trim();
+    if (phone !== undefined) {
+      const clean = String(phone).replace(/\D/g, '');
+      if (/^[6-9]\d{9}$/.test(clean)) rider.phone = clean;
+    }
+    if (isActive !== undefined) rider.isActive = Boolean(isActive);
+    logAudit(req.admin!.email, req.admin!.role, 'RIDER_UPDATED', `Updated rider ${rider.name}`, req.ip || '127.0.0.1');
+    res.json({ deliveryBoys: db.deliveryBoys });
+  });
+
+  app.delete('/api/admin/delivery-boys/:id', requireAdmin(['owner', 'manager']), (req: AdminAuthRequest, res) => {
+    const rider = db.deliveryBoys.find((r) => r.id === req.params.id);
+    if (!rider) {
+      res.status(404).json({ error: 'Rider not found' });
+      return;
+    }
+    db.deliveryBoys = db.deliveryBoys.filter((r) => r.id !== req.params.id);
+    logAudit(req.admin!.email, req.admin!.role, 'RIDER_DELETED', `Deleted rider ${rider.name}`, req.ip || '127.0.0.1');
     res.json({ deliveryBoys: db.deliveryBoys });
   });
 
@@ -3439,6 +3696,189 @@ async function startServer() {
     res.json({ broadcast: record, broadcasts: db.broadcasts });
   });
 
+  // Phase 5: Image Upload Endpoint (validates MIME type & size <= 3MB, saves to public/uploads/)
+  app.post('/api/admin/upload-image', requireAdmin(['owner', 'manager']), (req: AdminAuthRequest, res) => {
+    const { dataUrl, filename } = req.body || {};
+    if (!dataUrl || typeof dataUrl !== 'string') {
+      res.status(400).json({ error: 'Image dataUrl is required' });
+      return;
+    }
+    const match = dataUrl.match(/^data:(image\/(jpeg|jpg|png|webp|svg\+xml));base64,([A-Za-z0-9+/=]+)$/);
+    if (!match) {
+      res.status(400).json({ error: 'Only JPEG, PNG, WebP, or SVG images are allowed' });
+      return;
+    }
+    const ext = match[2] === 'svg+xml' ? 'svg' : match[2] === 'jpeg' ? 'jpg' : match[2];
+    const base64Data = match[3];
+    const buffer = Buffer.from(base64Data, 'base64');
+    if (buffer.byteLength > 3 * 1024 * 1024) {
+      res.status(400).json({ error: 'Image size must be under 3 MB' });
+      return;
+    }
+
+    const uploadsDir = path.join(process.cwd(), 'public', 'uploads');
+    fs.mkdirSync(uploadsDir, { recursive: true });
+    const safeBase = String(filename || 'asset')
+      .replace(/[^a-zA-Z0-9_-]/g, '')
+      .slice(0, 32) || 'img';
+    const finalName = `${safeBase}_${Date.now()}.${ext}`;
+    const filePath = path.join(uploadsDir, finalName);
+    fs.writeFileSync(filePath, buffer);
+
+    const publicUrl = `/uploads/${finalName}`;
+    logAudit(req.admin!.email, req.admin!.role, 'IMAGE_UPLOADED', `Uploaded image ${publicUrl} (${Math.round(buffer.byteLength / 1024)} KB)`, req.ip || '127.0.0.1');
+    res.json({ url: publicUrl });
+  });
+
+  // Phase 5: Manual Phone Order Entry (Admin/Manager/Staff)
+  app.post('/api/admin/orders/manual', requireAdmin(['owner', 'manager', 'staff']), async (req: AdminAuthRequest, res) => {
+    const parsed = z
+      .object({
+        customerName: z.string().trim().min(2).max(120),
+        customerPhone: z.string().trim().regex(/^[6-9]\d{9}$/, 'Valid 10-digit Indian mobile number required'),
+        deliveryAddress: z.string().trim().min(5).max(400),
+        orderNotes: z.string().max(300).optional().default('Phone Order'),
+        paymentMethod: z.enum(['COD', 'RAZORPAY']).optional().default('COD'),
+        items: z
+          .array(
+            z.object({
+              menuItemId: z.string().min(1),
+              quantity: z.number().int().min(1).max(25),
+            })
+          )
+          .min(1),
+      })
+      .safeParse(req.body);
+
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.issues[0]?.message || 'Invalid manual order input' });
+      return;
+    }
+
+    const { customerName, customerPhone, deliveryAddress, orderNotes, paymentMethod, items } = parsed.data;
+    const cleanPhone = customerPhone.replace(/\D/g, '');
+
+    const created = await withWriteLock(() => {
+      const bill = calculateAuthoritativeBill({
+        items,
+        lat: db.deliveryZone.shopLat + 0.01,
+        lng: db.deliveryZone.shopLng + 0.01,
+        customerPhone: cleanPhone,
+      });
+      if (bill.resolvedItems.length === 0) {
+        return { error: 'Selected menu items are unavailable or out of stock' };
+      }
+
+      const orderSeq = db.nextOrderSequence++;
+      const orderNumber = `AAN-${orderSeq}`;
+      const orderId = `ord_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+      const trackingToken = `trk_${crypto.randomBytes(16).toString('hex')}`;
+      const deliveryOtp = String(Math.floor(1000 + Math.random() * 9000));
+      const nowIso = new Date().toISOString();
+
+      const newOrder: OrderRecord = {
+        id: orderId,
+        orderNumber,
+        trackingToken,
+        deliveryOtp,
+        customerName,
+        customerPhone: cleanPhone,
+        customerIp: req.ip || '127.0.0.1',
+        deliveryAddress,
+        deliveryLat: db.deliveryZone.shopLat + 0.01,
+        deliveryLng: db.deliveryZone.shopLng + 0.01,
+        distanceKm: bill.distanceKm,
+        orderNotes: `[PHONE ORDER] ${orderNotes}`.trim(),
+        scheduledFor: null,
+        status: 'ACCEPTED',
+        paymentMethod,
+        paymentStatus: paymentMethod === 'RAZORPAY' ? 'PAID' : 'PENDING',
+        itemTotal: bill.itemTotal,
+        deliveryFee: bill.deliveryFee,
+        gstAmount: bill.gstAmount,
+        discountAmount: 0,
+        couponCode: null,
+        grandTotal: bill.grandTotal,
+        deliveryBoyId: null,
+        placedAt: nowIso,
+        acceptedAt: nowIso,
+        items: bill.resolvedItems,
+      };
+
+      const paymentRecord: PaymentRecord = {
+        id: `pay_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
+        orderId,
+        orderNumber,
+        customerPhone: cleanPhone,
+        gateway: paymentMethod,
+        amount: bill.grandTotal,
+        currency: 'INR',
+        status: paymentMethod === 'RAZORPAY' ? 'VERIFIED' : 'PENDING',
+        serverHmacVerified: true,
+        webhookVerified: true,
+        apiAmountMatched: true,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      };
+
+      db.orders.unshift(newOrder);
+      db.payments.unshift(paymentRecord);
+
+      const existingCust = db.customers[cleanPhone];
+      if (existingCust) {
+        existingCust.name = customerName;
+        existingCust.lastOrderAt = nowIso;
+        existingCust.lastAddress = deliveryAddress;
+        existingCust.orderCount += 1;
+        existingCust.totalSpent += bill.grandTotal;
+      } else {
+        db.customers[cleanPhone] = {
+          phone: cleanPhone,
+          name: customerName,
+          isBlocked: false,
+          orderCount: 1,
+          totalSpent: bill.grandTotal,
+          firstOrderAt: nowIso,
+          lastOrderAt: nowIso,
+          lastAddress: deliveryAddress,
+        };
+      }
+
+      saveDatabase(db);
+      io.to('admin:live').emit('order:new', newOrder);
+      return { order: newOrder, payment: paymentRecord };
+    });
+
+    if ('error' in created) {
+      res.status(400).json({ error: created.error });
+      return;
+    }
+
+    logAudit(
+      req.admin!.email,
+      req.admin!.role,
+      'MANUAL_ORDER_CREATED',
+      `Created manual phone order ${created.order.orderNumber} for ${customerPhone} (₹${created.order.grandTotal})`,
+      req.ip || '127.0.0.1'
+    );
+    res.status(201).json(created);
+  });
+
+  // Phase 5: Owner-only Database Backup Download
+  app.get('/api/admin/backup', requireAdmin(['owner']), (req: AdminAuthRequest, res) => {
+    logAudit(
+      req.admin!.email,
+      req.admin!.role,
+      'DATABASE_BACKUP_DOWNLOADED',
+      'Downloaded full JSON database backup',
+      req.ip || '127.0.0.1'
+    );
+    const filename = `aangan-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(JSON.stringify(db, null, 2));
+  });
+
   // ===========================================================================
   // BACKGROUND CRON JOB: Auto-cancel unaccepted PLACED orders & stale payments
   // ===========================================================================
@@ -3448,13 +3888,25 @@ async function startServer() {
     let mutated = false;
 
     for (const order of db.orders) {
-      const ageMs = now - new Date(order.placedAt).getTime();
+      // Phase 4: Scheduled orders in the future must NOT be auto-cancelled before their scheduled window
+      const scheduledTimeMs = order.scheduledFor ? new Date(order.scheduledFor).getTime() : 0;
+      const effectiveReferenceTime =
+        scheduledTimeMs && !Number.isNaN(scheduledTimeMs) && scheduledTimeMs > new Date(order.placedAt).getTime()
+          ? scheduledTimeMs
+          : new Date(order.placedAt).getTime();
+
+      if (effectiveReferenceTime > now) {
+        // Still waiting for future scheduled slot
+        continue;
+      }
+
+      const ageMs = now - effectiveReferenceTime;
 
       if (
         order.paymentMethod === 'RAZORPAY' &&
         order.paymentStatus === 'PENDING' &&
         order.status === 'PLACED' &&
-        ageMs > 10 * 60 * 1000
+        now - new Date(order.placedAt).getTime() > 10 * 60 * 1000
       ) {
         order.status = 'CANCELLED';
         order.paymentStatus = 'FAILED';
@@ -3530,4 +3982,7 @@ async function startServer() {
   });
 }
 
-startServer();
+if (!process.env.VITEST) {
+  startServer();
+}
+

@@ -1,7 +1,48 @@
 @import "tailwindcss";
 @custom-variant dark (&:where(.dark, .dark *));
 
+@theme {
+  --color-bg: var(--color-bg);
+  --color-surface: var(--color-surface);
+  --color-text: var(--color-text);
+  --color-muted: var(--color-muted);
+  --color-border: var(--color-border);
+  --color-primary: var(--color-primary);
+  --color-primary-contrast: var(--color-primary-contrast);
+  --color-accent: var(--color-accent);
+  --radius-theme: var(--radius);
+  --font-display: var(--font-display);
+  --font-body: var(--font-body);
+}
+
 @layer base {
+  :root {
+    --color-bg: #FAF8F5;
+    --color-surface: #FFFFFF;
+    --color-text: #1C1917;
+    --color-muted: #57534E;
+    --color-border: #E7E5E4;
+    --color-primary: #B45309;
+    --color-primary-contrast: #FFFFFF;
+    --color-accent: #D97706;
+    --radius: 0.875rem;
+    --font-display: 'Fraunces', Georgia, serif;
+    --font-body: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-mono: 'JetBrains Mono', monospace;
+    --font-ops: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  }
+
+  .dark {
+    --color-bg: #12100E;
+    --color-surface: #1C1917;
+    --color-text: #F5F5F4;
+    --color-muted: #A8A29E;
+    --color-border: #292524;
+    --color-primary: #EA580C;
+    --color-primary-contrast: #FFFFFF;
+    --color-accent: #F59E0B;
+  }
+
   *,
   *::before,
   *::after {
@@ -15,10 +56,11 @@
     margin: 0;
     padding: 0;
     overflow-x: hidden;
-    font-family: var(--font-sans);
-    background-color: #FAF8F5;
-    color: #1C1917;
+    font-family: var(--font-body);
+    background-color: var(--color-bg);
+    color: var(--color-text);
     -webkit-tap-highlight-color: transparent;
+    transition: background-color 150ms ease, color 150ms ease;
   }
 
   #root,
@@ -34,13 +76,6 @@
     display: block;
   }
 
-  :root {
-    --font-display: 'Fraunces', Georgia, serif;
-    --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
-    --font-mono: 'JetBrains Mono', monospace;
-    --font-ops: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-  }
-
   h1,
   h2,
   .font-display {
@@ -54,7 +89,6 @@
   }
 }
 
-/* Operations Dashboard Theme (Admin & Rider): Inter ONLY, zero serif, zero monospace */
 .admin-ops-theme,
 .admin-ops-theme h1,
 .admin-ops-theme h2,
@@ -63,7 +97,7 @@
 .admin-ops-theme .font-display,
 .admin-ops-theme .font-mono,
 .admin-ops-theme .tabular-nums {
-  font-family: var(--font-ops) !important;
+  font-family: var(--font-ops);
 }
 
 .admin-ops-theme .tabular-nums {
@@ -87,12 +121,19 @@
 }
 
 @media print {
+  html,
+  body {
+    background: #FFFFFF !important;
+    color: #000000 !important;
+  }
   body * {
     visibility: hidden;
   }
   #printable-area,
   #printable-area * {
     visibility: visible;
+    color: #000000 !important;
+    background: #FFFFFF !important;
   }
   #printable-area {
     position: absolute;

@@ -4,13 +4,16 @@ import {
   Check,
   CheckCircle2,
   MapPin,
+  Moon,
   Navigation,
   Phone,
   RefreshCw,
   ShieldCheck,
+  Sun,
   Truck,
 } from 'lucide-react';
-import { OrderRecord } from '../types.ts';
+import { OrderRecord, ThemeMode } from '../types.ts';
+import { applyAdminOrRiderThemeToDocument } from '../utils/themeTokens.ts';
 
 interface DeliveryPartnerViewProps {
   initialToken?: string;
@@ -39,8 +42,26 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
   const [otpDigits, setOtpDigits] = useState<Record<string, [string, string, string, string]>>({});
   const [feedback, setFeedback] = useState<Record<string, { type: 'ok' | 'err'; msg: string }>>({});
   const [toastMsg, setToastMsg] = useState<string | null>(null);
+  const [riderThemeMode, setRiderThemeMode] = useState<ThemeMode>(() => {
+    try {
+      const saved = localStorage.getItem('aangan_rider_theme_v1');
+      if (saved === 'dark' || saved === 'light') return saved;
+    } catch {
+      // Ignore storage error
+    }
+    return 'light';
+  });
 
   const inputRefs = useRef<Record<string, (HTMLInputElement | null)[]>>({});
+
+  useEffect(() => {
+    applyAdminOrRiderThemeToDocument(riderThemeMode, '#D9480F');
+    try {
+      localStorage.setItem('aangan_rider_theme_v1', riderThemeMode);
+    } catch {
+      // Ignore storage error
+    }
+  }, [riderThemeMode]);
 
   const showToast = (msg: string) => {
     setToastMsg(msg);
@@ -89,7 +110,6 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
   const handleDigitChange = (orderId: string, index: number, rawVal: string) => {
     const clean = rawVal.replace(/\D/g, '');
     if (clean.length > 1) {
-      // Handle paste of 4 digits
       const chars = clean.slice(0, 4).split('');
       const next: [string, string, string, string] = [
         chars[0] || '',
@@ -170,25 +190,40 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
   const firstName = (riderName || 'Ramesh').split(' ')[0];
 
   return (
-    <div className="admin-ops-theme min-h-[100dvh] w-full max-w-[100vw] overflow-x-clip bg-[#F4F5F7] text-[#111827] pb-safe">
-      {/* Simple Top Bar: "Hi, Ramesh" + Online/Offline toggle (NO customer nav) */}
-      <header className="sticky top-0 left-0 right-0 w-full max-w-[100vw] z-30 bg-white border-b border-gray-200 py-3 shadow-[0_1px_3px_rgba(0,0,0,0.08)] overflow-x-clip">
+    <div className="min-h-[100dvh] w-full max-w-[100vw] overflow-x-clip bg-bg text-text pb-safe transition-colors duration-200">
+      {/* Simple Top Bar: "Hi, Ramesh" + Night Dark Mode + Online/Offline toggle (NO customer nav) */}
+      <header className="sticky top-0 left-0 right-0 w-full max-w-[100vw] z-30 bg-surface border-b border-border py-3 shadow-2xs overflow-x-clip">
         <div className="w-full max-w-[480px] mx-auto px-4 flex items-center justify-between gap-2 min-w-0">
           <div className="flex items-center gap-2.5 min-w-0 flex-1">
-            <div className="w-10 h-10 rounded-[12px] bg-[#D9480F]/10 text-[#D9480F] flex items-center justify-center shrink-0">
+            <div className="w-10 h-10 rounded-theme bg-primary/15 text-primary flex items-center justify-center shrink-0">
               <Truck className="w-5 h-5" />
             </div>
             <div className="min-w-0 flex-1">
-              <h1 className="text-[18px] sm:text-[20px] font-bold text-[#111827] leading-tight break-words">
+              <h1 className="text-[18px] sm:text-[20px] font-bold text-text leading-tight break-words">
                 Hi, {firstName}
               </h1>
-              <p className="text-[12px] text-[#6B7280] truncate tabular-nums">
+              <p className="text-[12px] text-muted truncate tabular-nums">
                 +91 {riderPhone} {dailyPin ? `· Daily PIN: ${dailyPin}` : '· Link-only rider portal'}
               </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-1.5 shrink-0">
+            {/* Night Run Dark Mode Toggle */}
+            <button
+              type="button"
+              onClick={() => setRiderThemeMode((m) => (m === 'dark' ? 'light' : 'dark'))}
+              aria-label="Toggle night mode"
+              title="Toggle Night / Day Mode"
+              className="min-w-[40px] min-h-[40px] rounded-theme border border-border bg-bg hover:bg-surface flex items-center justify-center text-text cursor-pointer shrink-0"
+            >
+              {riderThemeMode === 'dark' ? (
+                <Sun className="w-4 h-4 text-accent" />
+              ) : (
+                <Moon className="w-4 h-4 text-muted" />
+              )}
+            </button>
+
             {/* Online / Offline Toggle */}
             <button
               type="button"
@@ -201,13 +236,13 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
               }}
               className={`min-h-[40px] px-3 rounded-full text-[12px] font-semibold flex items-center gap-1.5 transition-colors duration-200 cursor-pointer whitespace-nowrap shrink-0 border ${
                 isOnline
-                  ? 'bg-green-50 border-green-200 text-[#16A34A]'
-                  : 'bg-gray-100 border-gray-300 text-[#6B7280]'
+                  ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-600'
+                  : 'bg-bg border-border text-muted'
               }`}
             >
               <span
                 className={`w-2.5 h-2.5 rounded-full shrink-0 ${
-                  isOnline ? 'bg-[#16A34A]' : 'bg-gray-400'
+                  isOnline ? 'bg-emerald-600' : 'bg-muted'
                 }`}
               />
               <span>{isOnline ? 'Online' : 'Offline'}</span>
@@ -217,7 +252,7 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
               type="button"
               onClick={() => fetchRiderOrders(activeToken)}
               aria-label="Refresh runs"
-              className="min-w-[40px] min-h-[40px] rounded-[8px] border border-gray-200 bg-white hover:bg-gray-50 active:scale-[0.98] flex items-center justify-center text-[#111827] transition-all duration-200 cursor-pointer shrink-0"
+              className="min-w-[40px] min-h-[40px] rounded-theme border border-border bg-bg hover:bg-surface active:scale-[0.98] flex items-center justify-center text-text transition-all duration-200 cursor-pointer shrink-0"
             >
               <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
             </button>
@@ -225,10 +260,10 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
         </div>
       </header>
 
-      {/* Main Content Container (480px centered wrapper, 16px page padding, 12px gap between cards) */}
+      {/* Main Content Container */}
       <main className="w-full max-w-[480px] mx-auto px-4 py-4 space-y-3 min-w-0 overflow-x-clip">
         {authError && (
-          <div className="bg-red-50 border border-red-200 text-red-900 rounded-[12px] p-4 text-[13px] font-medium space-y-1">
+          <div className="bg-red-500/10 border border-red-500/30 text-red-600 rounded-theme p-4 text-[13px] font-medium space-y-1">
             <p className="font-bold">Rider Link Access Error</p>
             <p>{authError}</p>
           </div>
@@ -236,18 +271,18 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
 
         {/* Rider Switcher Pill Strip (only shown when no fixed token or in demo preview) */}
         {!initialToken && (
-          <div className="flex flex-wrap items-center justify-between gap-2 bg-white rounded-[12px] p-3 shadow-[0_1px_3px_rgba(0,0,0,0.08)] border border-gray-100">
-            <span className="text-[12px] font-medium text-[#6B7280]">Demo Rider Link:</span>
+          <div className="flex flex-wrap items-center justify-between gap-2 bg-surface rounded-theme p-3 shadow-2xs border border-border">
+            <span className="text-[12px] font-medium text-muted">Demo Rider Link:</span>
             <div className="flex flex-wrap items-center gap-1.5 min-w-0">
               {DEMO_RIDERS.map((r) => (
                 <button
                   key={r.token}
                   type="button"
                   onClick={() => setActiveToken(r.token)}
-                  className={`min-h-[36px] px-3 rounded-[8px] text-[12px] font-semibold whitespace-nowrap transition-colors duration-200 cursor-pointer ${
+                  className={`min-h-[36px] px-3 rounded-lg text-[12px] font-semibold whitespace-nowrap transition-colors duration-200 cursor-pointer ${
                     activeToken === r.token
-                      ? 'bg-[#D9480F] text-white'
-                      : 'bg-gray-100 text-[#111827] hover:bg-gray-200'
+                      ? 'bg-primary text-primary-contrast'
+                      : 'bg-bg text-text hover:opacity-90'
                   }`}
                 >
                   {r.name}
@@ -259,29 +294,29 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
 
         {/* Daily Summary Card: Deliveries Done & Cash Collected */}
         <section className="grid grid-cols-2 gap-3 min-w-0">
-          <div className="bg-white rounded-[12px] p-4 shadow-[0_1px_3px_rgba(0,0,0,0.08)] border border-gray-100 min-w-0">
-            <p className="text-[12px] font-medium text-[#6B7280] truncate">Deliveries done</p>
-            <p className="mt-1 text-[24px] font-bold text-[#111827] tabular-nums leading-tight">
+          <div className="bg-surface rounded-theme p-4 shadow-2xs border border-border min-w-0">
+            <p className="text-[12px] font-medium text-muted truncate">Deliveries done</p>
+            <p className="mt-1 text-[24px] font-bold text-text tabular-nums leading-tight">
               {completedDeliveries.length}
             </p>
           </div>
-          <div className="bg-white rounded-[12px] p-4 shadow-[0_1px_3px_rgba(0,0,0,0.08)] border border-gray-100 min-w-0">
-            <p className="text-[12px] font-medium text-[#6B7280] truncate">Cash collected</p>
-            <p className="mt-1 text-[24px] font-bold text-[#16A34A] tabular-nums leading-tight">
+          <div className="bg-surface rounded-theme p-4 shadow-2xs border border-border min-w-0">
+            <p className="text-[12px] font-medium text-muted truncate">Cash collected</p>
+            <p className="mt-1 text-[24px] font-bold text-emerald-600 tabular-nums leading-tight">
               ₹{cashCollectedToday.toLocaleString()}
             </p>
           </div>
         </section>
 
         {/* Tabs: Active (n) | Completed (n) */}
-        <div className="grid grid-cols-2 gap-2 bg-white p-1.5 rounded-[12px] shadow-[0_1px_3px_rgba(0,0,0,0.08)] border border-gray-100">
+        <div className="grid grid-cols-2 gap-2 bg-surface p-1.5 rounded-theme shadow-2xs border border-border">
           <button
             type="button"
             onClick={() => setRiderTab('active')}
-            className={`min-h-[48px] px-3 rounded-[8px] text-[14px] font-semibold whitespace-nowrap transition-colors duration-200 cursor-pointer tabular-nums ${
+            className={`min-h-[48px] px-3 rounded-lg text-[14px] font-semibold whitespace-nowrap transition-colors duration-200 cursor-pointer tabular-nums ${
               riderTab === 'active'
-                ? 'bg-[#D9480F] text-white shadow-xs'
-                : 'text-[#6B7280] hover:text-[#111827]'
+                ? 'bg-primary text-primary-contrast shadow-xs'
+                : 'text-muted hover:text-text'
             }`}
           >
             Active ({activeDeliveries.length})
@@ -289,10 +324,10 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
           <button
             type="button"
             onClick={() => setRiderTab('completed')}
-            className={`min-h-[48px] px-3 rounded-[8px] text-[14px] font-semibold whitespace-nowrap transition-colors duration-200 cursor-pointer tabular-nums ${
+            className={`min-h-[48px] px-3 rounded-lg text-[14px] font-semibold whitespace-nowrap transition-colors duration-200 cursor-pointer tabular-nums ${
               riderTab === 'completed'
-                ? 'bg-[#D9480F] text-white shadow-xs'
-                : 'text-[#6B7280] hover:text-[#111827]'
+                ? 'bg-primary text-primary-contrast shadow-xs'
+                : 'text-muted hover:text-text'
             }`}
           >
             Completed ({completedDeliveries.length})
@@ -307,21 +342,21 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
                 {[1, 2].map((n) => (
                   <div
                     key={n}
-                    className="bg-white rounded-[12px] p-4 shadow-[0_1px_3px_rgba(0,0,0,0.08)] space-y-3 animate-pulse"
+                    className="bg-surface rounded-theme p-4 border border-border space-y-3 animate-pulse"
                   >
-                    <div className="h-5 bg-gray-200 rounded w-1/2" />
-                    <div className="h-4 bg-gray-100 rounded w-3/4" />
-                    <div className="h-12 bg-gray-100 rounded w-full" />
+                    <div className="h-5 bg-border rounded w-1/2" />
+                    <div className="h-4 bg-bg rounded w-3/4" />
+                    <div className="h-12 bg-bg rounded w-full" />
                   </div>
                 ))}
               </div>
             ) : activeDeliveries.length === 0 ? (
-              <div className="bg-white rounded-[12px] p-8 text-center shadow-[0_1px_3px_rgba(0,0,0,0.08)] border border-gray-100 space-y-2">
-                <div className="w-12 h-12 rounded-full bg-gray-100 text-[#6B7280] flex items-center justify-center mx-auto">
+              <div className="bg-surface rounded-theme p-8 text-center shadow-2xs border border-border space-y-2">
+                <div className="w-12 h-12 rounded-full bg-bg text-muted flex items-center justify-center mx-auto">
                   <CheckCircle2 className="w-6 h-6" />
                 </div>
-                <p className="text-[16px] font-semibold text-[#111827]">No active runs assigned</p>
-                <p className="text-[14px] text-[#6B7280]">
+                <p className="text-[16px] font-semibold text-text">No active runs assigned</p>
+                <p className="text-[14px] text-muted">
                   New dispatches from the kitchen will appear here automatically.
                 </p>
               </div>
@@ -338,26 +373,26 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
                   return (
                     <article
                       key={order.id}
-                      className="bg-white rounded-[12px] p-4 shadow-[0_1px_3px_rgba(0,0,0,0.08)] border border-gray-100 space-y-4 min-w-0"
+                      className="bg-surface rounded-theme p-4 shadow-2xs border border-border space-y-4 min-w-0"
                     >
-                      {/* Top Row: Order ID + Amount + Big Highlighted Payment Chip */}
-                      <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-gray-100 min-w-0">
+                      {/* Top Row: Order ID + Amount + Payment Chip */}
+                      <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-border min-w-0">
                         <div className="flex items-center gap-2 min-w-0">
-                          <span className="text-[16px] font-semibold text-[#111827] whitespace-nowrap tabular-nums">
+                          <span className="text-[16px] font-semibold text-text whitespace-nowrap tabular-nums">
                             {order.orderNumber}
                           </span>
-                          <span className="text-[16px] font-bold text-[#111827] whitespace-nowrap tabular-nums">
+                          <span className="text-[16px] font-bold text-text whitespace-nowrap tabular-nums">
                             · ₹{order.grandTotal}
                           </span>
                         </div>
 
                         {isCodCollect ? (
-                          <span className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-amber-100 text-[#D97706] border border-amber-300 text-[14px] font-bold tabular-nums whitespace-nowrap">
+                          <span className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-amber-500/15 text-amber-600 border border-amber-500/30 text-[14px] font-bold tabular-nums whitespace-nowrap">
                             <Banknote className="w-4 h-4 shrink-0" />
                             <span>Collect ₹{order.grandTotal} cash</span>
                           </span>
                         ) : (
-                          <span className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-green-100 text-[#16A34A] border border-green-200 text-[14px] font-semibold whitespace-nowrap">
+                          <span className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-emerald-500/15 text-emerald-600 border border-emerald-500/30 text-[14px] font-semibold whitespace-nowrap">
                             <ShieldCheck className="w-4 h-4 shrink-0" />
                             <span>Prepaid</span>
                           </span>
@@ -367,21 +402,21 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
                       {/* Customer Name, Full Wrapping Address, Distance */}
                       <div className="space-y-2 min-w-0">
                         <div className="flex flex-wrap items-center justify-between gap-2 min-w-0">
-                          <h2 className="text-[16px] font-bold text-[#111827] break-words min-w-0">
+                          <h2 className="text-[16px] font-bold text-text break-words min-w-0">
                             {order.customerName}
                           </h2>
-                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-gray-100 text-[#6B7280] text-[12px] font-semibold tabular-nums whitespace-nowrap shrink-0">
+                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-bg text-muted text-[12px] font-semibold tabular-nums whitespace-nowrap shrink-0">
                             <MapPin className="w-3.5 h-3.5 shrink-0" />
                             <span>{order.distanceKm} km</span>
                           </span>
                         </div>
 
-                        <p className="text-[14px] text-[#6B7280] leading-snug break-words">
+                        <p className="text-[14px] text-muted leading-snug break-words">
                           {order.deliveryAddress}
                         </p>
 
                         {order.orderNotes && (
-                          <div className="p-2.5 rounded-[8px] bg-amber-50 border border-amber-200 text-[12px] text-[#D97706] font-medium break-words">
+                          <div className="p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-[12px] text-amber-600 font-medium break-words">
                             Delivery Note: {order.orderNotes}
                           </div>
                         )}
@@ -391,9 +426,9 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
                       <div className="grid grid-cols-2 gap-3 min-w-0">
                         <a
                           href={`tel:+91${order.customerPhone}`}
-                          className="min-h-[48px] px-3 rounded-[8px] border border-gray-300 bg-white hover:bg-gray-50 active:bg-gray-100 text-[#111827] text-[14px] font-semibold flex items-center justify-center gap-2 whitespace-nowrap transition-colors duration-200 cursor-pointer min-w-0"
+                          className="min-h-[48px] px-3 rounded-lg border border-border bg-bg hover:bg-surface text-text text-[14px] font-semibold flex items-center justify-center gap-2 whitespace-nowrap transition-colors duration-200 cursor-pointer min-w-0"
                         >
-                          <Phone className="w-4 h-4 text-[#D9480F] shrink-0" />
+                          <Phone className="w-4 h-4 text-primary shrink-0" />
                           <span className="truncate">Call</span>
                         </a>
 
@@ -401,7 +436,7 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
                           href={mapsUrl}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="min-h-[48px] px-3 rounded-[8px] border border-blue-200 bg-blue-50 hover:bg-blue-100 active:bg-blue-200 text-[#2563EB] text-[14px] font-semibold flex items-center justify-center gap-2 whitespace-nowrap transition-colors duration-200 cursor-pointer min-w-0"
+                          className="min-h-[48px] px-3 rounded-lg border border-blue-500/30 bg-blue-500/10 hover:bg-blue-500/20 text-blue-600 text-[14px] font-semibold flex items-center justify-center gap-2 whitespace-nowrap transition-colors duration-200 cursor-pointer min-w-0"
                         >
                           <Navigation className="w-4 h-4 shrink-0" />
                           <span className="truncate">Navigate</span>
@@ -409,19 +444,18 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
                       </div>
 
                       {/* Separate Full-Width OTP Block Below */}
-                      <div className="pt-4 border-t border-gray-200 space-y-3 min-w-0">
+                      <div className="pt-4 border-t border-border space-y-3 min-w-0">
                         <div className="flex items-center justify-between gap-2 min-w-0">
-                          <label className="block text-[14px] font-semibold text-[#111827]">
+                          <label className="block text-[14px] font-semibold text-text">
                             Enter customer&apos;s delivery OTP
                           </label>
                           {DEV_MODE_SHOW_OTP && (
-                            <span className="text-[12px] text-[#6B7280] tabular-nums">
+                            <span className="text-[12px] text-muted tabular-nums">
                               [DEV OTP: {order.deliveryOtp}]
                             </span>
                           )}
                         </div>
 
-                        {/* 4 Separate Big Digit Boxes (48x56px, numeric keypad) */}
                         <div className="flex items-center justify-center sm:justify-start gap-2.5">
                           {[0, 1, 2, 3].map((idx) => (
                             <input
@@ -440,7 +474,7 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
                               value={digits[idx]}
                               onChange={(e) => handleDigitChange(order.id, idx, e.target.value)}
                               onKeyDown={(e) => handleDigitKeyDown(order.id, idx, e)}
-                              className="w-[48px] h-[56px] rounded-[8px] border-2 border-gray-300 bg-[#F4F5F7] focus:bg-white focus:border-[#D9480F] focus:outline-none text-center text-[20px] font-bold text-[#111827] tabular-nums transition-colors duration-200"
+                              className="w-[48px] h-[56px] rounded-lg border-2 border-border bg-bg focus:bg-surface focus:border-primary focus:outline-none text-center text-[20px] font-bold text-text tabular-nums transition-colors duration-200"
                             />
                           ))}
                         </div>
@@ -449,19 +483,18 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
                           <p
                             className={`text-[12px] font-semibold break-words ${
                               feedback[order.id].type === 'ok'
-                                ? 'text-[#16A34A]'
-                                : 'text-[#DC2626]'
+                                ? 'text-emerald-600'
+                                : 'text-red-600'
                             }`}
                           >
                             {feedback[order.id].msg}
                           </p>
                         )}
 
-                        {/* Full-width "Mark Delivered" button (56px height, green) */}
                         <button
                           type="button"
                           onClick={() => handleMarkDelivered(order.id)}
-                          className="w-full min-h-[56px] px-4 rounded-[8px] bg-[#16A34A] hover:bg-green-700 active:bg-green-800 text-white text-[16px] font-semibold flex items-center justify-center gap-2 whitespace-nowrap transition-colors duration-200 cursor-pointer shadow-xs"
+                          className="w-full min-h-[56px] px-4 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[16px] font-semibold flex items-center justify-center gap-2 whitespace-nowrap transition-colors duration-200 cursor-pointer shadow-xs"
                         >
                           <CheckCircle2 className="w-5 h-5 shrink-0" />
                           <span>Mark Delivered</span>
@@ -479,25 +512,25 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
         {riderTab === 'completed' && (
           <section className="space-y-3 min-w-0">
             {completedDeliveries.length === 0 ? (
-              <div className="bg-white rounded-[12px] p-8 text-center shadow-[0_1px_3px_rgba(0,0,0,0.08)] border border-gray-100">
-                <p className="text-[14px] text-[#6B7280]">No completed deliveries yet today.</p>
+              <div className="bg-surface rounded-theme p-8 text-center shadow-2xs border border-border">
+                <p className="text-[14px] text-muted">No completed deliveries yet today.</p>
               </div>
             ) : (
-              <div className="bg-white rounded-[12px] shadow-[0_1px_3px_rgba(0,0,0,0.08)] border border-gray-100 divide-y divide-gray-100 overflow-hidden">
+              <div className="bg-surface rounded-theme shadow-2xs border border-border divide-y divide-border overflow-hidden">
                 {completedDeliveries.map((order) => (
                   <div
                     key={order.id}
                     className="p-3.5 flex items-center justify-between gap-3 min-w-0"
                   >
                     <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                      <span className="w-6 h-6 rounded-full bg-green-100 text-[#16A34A] flex items-center justify-center shrink-0">
+                      <span className="w-6 h-6 rounded-full bg-emerald-500/15 text-emerald-600 flex items-center justify-center shrink-0">
                         <Check className="w-3.5 h-3.5 stroke-[2.5]" />
                       </span>
                       <div className="min-w-0 flex-1">
-                        <p className="text-[14px] font-semibold text-[#111827] tabular-nums truncate">
+                        <p className="text-[14px] font-semibold text-text tabular-nums truncate">
                           {order.orderNumber} · {order.customerName}
                         </p>
-                        <p className="text-[12px] text-[#6B7280] tabular-nums truncate">
+                        <p className="text-[12px] text-muted tabular-nums truncate">
                           {new Date(order.deliveredAt || order.placedAt).toLocaleTimeString([], {
                             hour: '2-digit',
                             minute: '2-digit',
@@ -506,7 +539,7 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
                         </p>
                       </div>
                     </div>
-                    <span className="text-[14px] font-bold text-[#16A34A] tabular-nums whitespace-nowrap shrink-0">
+                    <span className="text-[14px] font-bold text-emerald-600 tabular-nums whitespace-nowrap shrink-0">
                       ₹{order.grandTotal}
                     </span>
                   </div>
@@ -519,7 +552,7 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
 
       {/* Bottom Toast Notification */}
       {toastMsg && (
-        <div className="fixed bottom-4 left-4 right-4 z-50 max-w-md mx-auto bg-[#111827] text-white px-4 py-3 rounded-[12px] shadow-lg text-[14px] font-medium flex items-center justify-between gap-2">
+        <div className="fixed bottom-4 left-4 right-4 z-50 max-w-md mx-auto bg-surface border border-border text-text px-4 py-3 rounded-theme shadow-lg text-[14px] font-medium flex items-center justify-between gap-2">
           <span className="truncate">{toastMsg}</span>
         </div>
       )}
