@@ -633,18 +633,28 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
               razorpaySignature: response.razorpay_signature,
             }),
           });
-          if (verifyRes.ok) {
+          const verifyData = await verifyRes.json().catch(() => ({}));
+          if (verifyRes.ok && verifyData.order?.paymentStatus === 'PAID') {
             setCart([]);
             setCartDrawerOpen(false);
             onOpenTracking(checkoutData.order.trackingToken);
           } else {
             setPaymentFailureMessage(
-              'Payment verification is pending or signature mismatch occurred. Please do not pay twice — check your order status first.'
+              verifyData.error ||
+                'Payment verification is pending or signature mismatch occurred. Please do not pay twice — check your order status first.'
             );
           }
         } finally {
           setVerifyingPayment(false);
         }
+      },
+      modal: {
+        ondismiss: () => {
+          setPaymentFailureMessage(
+            'Payment pending — listening to live order status. Do not pay twice.'
+          );
+          onOpenTracking(checkoutData.order.trackingToken);
+        },
       },
     });
     if (rzp.on) {
@@ -663,7 +673,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
     setPaymentFailureMessage(null);
 
     if (verifyingPayment) {
-      setCheckoutError('Payment verification is already in progress. Please do not pay twice.');
+      setCheckoutError('Payment verification in progress, do not pay twice.');
       return;
     }
 
@@ -799,7 +809,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
       });
       const sigData = await sigRes.json();
 
-      await fetch('/api/payments/verify', {
+      const verifyRes = await fetch('/api/payments/verify', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -809,6 +819,13 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
           razorpaySignature: sigData.razorpaySignature,
         }),
       });
+      const verifyData = await verifyRes.json().catch(() => ({}));
+      if (!verifyRes.ok || verifyData.order?.paymentStatus !== 'PAID') {
+        setPaymentFailureMessage(
+          verifyData.error || 'Payment verification failed. Order was not marked PAID.'
+        );
+        return;
+      }
 
       await fetch('/api/payments/webhook', {
         method: 'POST',
@@ -2531,7 +2548,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
 
               {verifyingPayment && (
                 <div className="rounded-theme border border-primary/40 bg-primary/10 p-3 text-xs font-semibold text-text">
-                  Payment pending — verifying signature &amp; webhook. Please do not close or pay twice.
+                  Payment verification in progress, do not pay twice.
                 </div>
               )}
 
@@ -2549,7 +2566,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   className="w-full min-h-[48px] px-4 rounded-theme bg-emerald-700 hover:bg-emerald-600 text-white text-sm font-semibold whitespace-nowrap cursor-pointer disabled:opacity-50"
                 >
                   {verifyingPayment
-                    ? 'Verifying Payment (Do Not Pay Twice)...'
+                    ? 'Payment verification in progress, do not pay twice...'
                     : paymentFailureMessage
                     ? `Retry Payment · ₹${pendingRazorpayModal.amountPaise / 100}`
                     : `Pay ₹${pendingRazorpayModal.amountPaise / 100} (UPI / Card)`}
@@ -2562,6 +2579,21 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   className="w-full min-h-[48px] px-4 rounded-theme border border-red-500/30 text-red-600 hover:bg-red-500/10 text-sm font-medium whitespace-nowrap cursor-pointer disabled:opacity-50"
                 >
                   Simulate Payment Failure
+                </button>
+
+                <button
+                  type="button"
+                  disabled={verifyingPayment}
+                  onClick={() => {
+                    const tok = pendingRazorpayModal.order.trackingToken;
+                    setPendingRazorpayModal(null);
+                    setCartDrawerOpen(false);
+                    setPaymentFailureMessage('Payment pending — listening to live order status.');
+                    onOpenTracking(tok);
+                  }}
+                  className="w-full min-h-[40px] px-4 rounded-theme border border-border text-muted hover:text-text text-xs font-medium whitespace-nowrap cursor-pointer disabled:opacity-50"
+                >
+                  Dismiss Modal (Payment Pending — Track Live Status)
                 </button>
               </div>
             </div>

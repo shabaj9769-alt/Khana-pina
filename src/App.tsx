@@ -4,7 +4,6 @@
  */
 
 import React, { useEffect, useState } from 'react';
-import { io, Socket } from 'socket.io-client';
 import {
   Clock,
   Flame,
@@ -23,11 +22,11 @@ import { DeliveryPartnerView } from './components/DeliveryPartnerView.tsx';
 import { AdminPortal } from './components/AdminPortal.tsx';
 import { OfflineIndicator } from './components/PWAInstallBanner.tsx';
 import { applyStorefrontThemeToDocument, DEFAULT_STOREFRONT_THEME } from './utils/themeTokens.ts';
+import { subscribeToPublicShopStatus } from './utils/firebaseClient.ts';
 
 type AppView = 'customer' | 'tracking' | 'rider' | 'admin';
 
 export default function App() {
-  const [socket, setSocket] = useState<Socket | null>(null);
   const [activeView, setActiveView] = useState<AppView>('customer');
   const [customerSubTab, setCustomerSubTab] = useState<'home' | 'menu' | 'orders'>('home');
   const [trackingToken, setTrackingToken] = useState<string>('');
@@ -82,16 +81,19 @@ export default function App() {
     }
   }, [activeView, storefrontTheme, guestThemeMode]);
 
-  // Initialize Socket.io real-time connection on same origin (Port 3000) with credentials
+  // Subscribe to Firebase Realtime Database publicStatus node for live shop open/busy status
   useEffect(() => {
-    const sock = io(window.location.origin, {
-      transports: ['websocket', 'polling'],
-      withCredentials: true,
+    const unsub = subscribeToPublicShopStatus({
+      onStatus: (status) => {
+        setHeaderMeta((prev) => ({
+          ...prev,
+          shopName: status.shopName || prev.shopName,
+          isOpen: status.isOpen,
+          busyMode: status.busyMode,
+        }));
+      },
     });
-    setSocket(sock);
-    return () => {
-      sock.disconnect();
-    };
+    return () => unsub();
   }, []);
 
   // Persist guest cart in localStorage
@@ -192,7 +194,6 @@ export default function App() {
     return (
       <div className="min-h-[100dvh] w-full max-w-[100vw] overflow-x-clip flex flex-col bg-bg text-text">
         <AdminPortal
-          socket={socket}
           onRefreshStorefront={() => setStorefrontRefreshKey((k) => k + 1)}
           onOpenRiderPortal={(tok) => {
             setRiderToken(tok);
@@ -420,7 +421,6 @@ export default function App() {
         {activeView === 'tracking' && (
           <OrderTrackingView
             trackingToken={trackingToken}
-            socket={socket}
             onBackToStore={() => {
               setCustomerSubTab('home');
               navigateView('customer', '/');

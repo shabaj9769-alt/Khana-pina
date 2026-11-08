@@ -12,12 +12,17 @@ import {
   Truck,
   XCircle,
 } from 'lucide-react';
-import { Socket } from 'socket.io-client';
-import { OrderRecord, OrderStatus, PaymentRecord, ReviewRecord } from '../types.ts';
+import {
+  OrderRecord,
+  OrderStatus,
+  PaymentRecord,
+  PublicTrackingProjection,
+  ReviewRecord,
+} from '../types.ts';
+import { subscribeToCustomerTracking } from '../utils/firebaseClient.ts';
 
 interface OrderTrackingViewProps {
   trackingToken: string;
-  socket: Socket | null;
   onBackToStore: () => void;
   onReorder: (order: OrderRecord) => void;
 }
@@ -33,11 +38,11 @@ const STATUS_STEPS: { key: OrderStatus; label: string; desc: string }[] = [
 
 export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
   trackingToken,
-  socket,
   onBackToStore,
   onReorder,
 }) => {
   const [order, setOrder] = useState<OrderRecord | null>(null);
+  const [liveProjection, setLiveProjection] = useState<PublicTrackingProjection | null>(null);
   const [, setPayment] = useState<PaymentRecord | null>(null);
   const [, setReview] = useState<ReviewRecord | null>(null);
   const [shopInfo, setShopInfo] = useState<{
@@ -70,6 +75,9 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
         return;
       }
       setOrder(data.order);
+      if (data.trackingProjection) {
+        setLiveProjection(data.trackingProjection);
+      }
       setPayment(data.payment || null);
       if (data.review) {
         setReview(data.review);
@@ -90,22 +98,29 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
     fetchTrackingData();
   }, [trackingToken]);
 
+  // Listen to Firebase Realtime Database path tracking/{trackingToken} via onValue
   useEffect(() => {
-    if (!socket || !trackingToken) return;
-    socket.emit('join:tracking', trackingToken);
-
-    const handleOrderUpdated = (updated: OrderRecord) => {
-      if (updated.trackingToken === trackingToken) {
-        setOrder(updated);
-        fetchTrackingData();
-      }
-    };
-
-    socket.on('order:updated', handleOrderUpdated);
-    return () => {
-      socket.off('order:updated', handleOrderUpdated);
-    };
-  }, [socket, trackingToken]);
+    if (!trackingToken) return;
+    const unsub = subscribeToCustomerTracking({
+      trackingToken,
+      onUpdate: (proj) => {
+        setLiveProjection(proj);
+        setOrder((prev) =>
+          prev
+            ? {
+                ...prev,
+                status: proj.status,
+                paymentStatus: proj.paymentStatus,
+                deliveryBoyName: proj.deliveryBoyName || undefined,
+                deliveryBoyPhone: proj.deliveryBoyPhone || undefined,
+                cancelReason: proj.cancelReason || undefined,
+              }
+            : prev
+        );
+      },
+    });
+    return () => unsub();
+  }, [trackingToken]);
 
   const handleSubmitReview = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -176,7 +191,9 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
   );
   const baseEta = Math.round(28 + order.distanceKm * 2.5);
   const remainingEtaMins =
-    order.status === 'DELIVERED'
+    liveProjection?.etaMins !== undefined
+      ? liveProjection.etaMins
+      : order.status === 'DELIVERED'
       ? 0
       : order.status === 'OUT_FOR_DELIVERY'
       ? Math.max(6, Math.round(order.distanceKm * 3))

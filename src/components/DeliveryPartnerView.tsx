@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { OrderRecord, ThemeMode } from '../types.ts';
 import { applyAdminOrRiderThemeToDocument } from '../utils/themeTokens.ts';
+import { subscribeToRiderOrders } from '../utils/firebaseClient.ts';
 
 interface DeliveryPartnerViewProps {
   initialToken?: string;
@@ -31,6 +32,11 @@ const DEV_MODE_SHOW_OTP =
 
 export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initialToken }) => {
   const [activeToken, setActiveToken] = useState(initialToken || DEMO_RIDERS[0].token);
+  const [riderId, setRiderId] = useState<string>('');
+  const [riderCustomToken, setRiderCustomToken] = useState<string | null>(null);
+  const [firebaseClientConfig, setFirebaseClientConfig] = useState<Record<string, string> | null>(
+    null
+  );
   const [riderName, setRiderName] = useState('Ramesh Pawar');
   const [riderPhone, setRiderPhone] = useState('9876501234');
   const [dailyPin, setDailyPin] = useState<string | undefined>(undefined);
@@ -80,10 +86,13 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
       const res = await fetch(`/api/rider/${encodeURIComponent(token)}`);
       const data = await res.json();
       if (res.ok && data.rider) {
+        setRiderId(data.rider.id);
         setRiderName(data.rider.name);
         setRiderPhone(data.rider.phone);
         setDailyPin(data.rider.dailyPin);
         setOrders(data.orders || []);
+        setRiderCustomToken(data.firebaseCustomToken || null);
+        setFirebaseClientConfig(data.firebaseClientConfig || null);
       } else {
         setAuthError(data.error || 'Invalid, revoked, or expired rider link.');
         setOrders([]);
@@ -102,6 +111,21 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
   useEffect(() => {
     fetchRiderOrders(activeToken);
   }, [activeToken]);
+
+  // Listen to Firebase RTDB riderOrders/{riderId} using rider custom token
+  useEffect(() => {
+    if (!riderId) return;
+    const unsub = subscribeToRiderOrders({
+      riderId,
+      accessToken: activeToken,
+      customToken: riderCustomToken,
+      firebaseConfig: firebaseClientConfig as { databaseURL: string; apiKey?: string; projectId?: string } | null,
+      onOrdersUpdate: (liveOrders) => {
+        setOrders(liveOrders);
+      },
+    });
+    return () => unsub();
+  }, [riderId, activeToken, riderCustomToken, firebaseClientConfig]);
 
   const getOrderDigits = (orderId: string): [string, string, string, string] => {
     return otpDigits[orderId] || ['', '', '', ''];

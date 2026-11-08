@@ -9,7 +9,7 @@ export type OrderStatus =
   | 'REJECTED';
 
 export type PaymentMethod = 'RAZORPAY' | 'COD';
-export type PaymentStatus = 'PENDING' | 'PAID' | 'FAILED' | 'REFUNDED';
+export type PaymentStatus = 'PENDING' | 'PAID' | 'FAILED' | 'REFUNDED' | 'FLAGGED' | 'LATE_CAPTURE';
 export type AdminRole = 'owner' | 'manager' | 'staff';
 
 export type ThemeMode = 'light' | 'dark' | 'auto';
@@ -248,7 +248,8 @@ export interface PaymentRecord {
   razorpaySignature?: string;
   amount: number;
   currency: string;
-  status: 'PENDING' | 'CAPTURED' | 'VERIFIED' | 'FAILED' | 'REFUNDED';
+  status: 'PENDING' | 'CAPTURED' | 'VERIFIED' | 'FAILED' | 'REFUNDED' | 'FLAGGED' | 'LATE_CAPTURE';
+  flagReason?: string;
   serverHmacVerified: boolean;
   webhookVerified: boolean;
   apiAmountMatched: boolean;
@@ -349,6 +350,7 @@ export interface AdminSessionRecord {
   ipAddress: string;
   createdAt: string;
   lastSeenAt: string;
+  expiresAt?: number;
   revoked: boolean;
 }
 
@@ -370,3 +372,45 @@ export interface CheckoutPreviewResponse {
   minOrderMet: boolean;
   minOrderAmount: number;
 }
+
+export interface PublicTrackingProjection {
+  orderId: string;
+  orderNumber: string;
+  trackingToken: string;
+  status: OrderStatus;
+  paymentMethod: PaymentMethod;
+  paymentStatus: PaymentStatus;
+  placedAt: string;
+  scheduledFor: string | null;
+  etaMins: number;
+  distanceKm: number;
+  deliveryOtp: string;
+  deliveryBoyName: string | null;
+  deliveryBoyPhone: string | null;
+  cancelReason: string | null;
+  itemTotal: number;
+  deliveryFee: number;
+  gstAmount: number;
+  discountAmount: number;
+  couponCode: string | null;
+  grandTotal: number;
+  itemsSummary: Array<{
+    itemName: string;
+    variantName?: string;
+    quantity: number;
+    lineTotal: number;
+    itemNote?: string;
+  }>;
+  updatedAt: string;
+}
+
+export interface PublicShopStatus {
+  shopName: string;
+  isOpen: boolean;
+  busyMode: boolean;
+  opensAtText: string;
+  holidaysNote: string;
+  allowPreOrdersWhenClosed: boolean;
+  updatedAt: string;
+}
+

@@ -66,12 +66,11 @@ import {
   getAccessibleContrastColor,
   applyAdminOrRiderThemeToDocument,
 } from '../utils/themeTokens';
-import { io } from 'socket.io-client';
+import { subscribeToAdminOrders } from '../utils/firebaseClient';
 
 interface AdminPortalProps {
   onRefreshStore?: () => void;
   onRefreshStorefront?: () => void;
-  socket?: unknown;
   onOpenRiderPortal?: (token: string) => void;
   onBackToStorefront?: () => void;
 }
@@ -95,10 +94,14 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     if (onRefreshStore) onRefreshStore();
     if (onRefreshStorefront) onRefreshStorefront();
   };
-  // Authentication State (HttpOnly cookie is primary; state tracks current profile)
+  // Authentication State (HttpOnly cookie is primary; state tracks current profile + Firebase Custom Token)
   const [authChecking, setAuthChecking] = useState(true);
   const [adminUser, setAdminUser] = useState<AdminUserPublic | null>(null);
   const [adminRole, setAdminRole] = useState<AdminRole>('owner');
+  const [firebaseCustomToken, setFirebaseCustomToken] = useState<string | null>(null);
+  const [firebaseClientConfig, setFirebaseClientConfig] = useState<Record<string, string> | null>(
+    null
+  );
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [loginTotpCode, setLoginTotpCode] = useState('');
@@ -371,6 +374,9 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const fetchBootstrap = async () => {
     setIsLoading(true);
     try {
+      // Trigger lazy expiry check when Admin panel opens (no cron)
+      await adminFetch('/api/admin/orders/expire-stale', { method: 'POST' }).catch(() => null);
+
       const res = await adminFetch('/api/admin/bootstrap');
       if (!res.ok) return;
       const data = await res.json();
@@ -389,6 +395,12 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       setRefunds(data.refunds || []);
       setBroadcastProviderConfigured(Boolean(data.broadcastProviderConfigured));
 
+      if (data.firebaseCustomToken) {
+        setFirebaseCustomToken(data.firebaseCustomToken);
+      }
+      if (data.firebaseClientConfig) {
+        setFirebaseClientConfig(data.firebaseClientConfig);
+      }
       if (data.settings?.theme) {
         setThemeDraft(data.settings.theme);
         setPreviewModeOverride(data.settings.theme.mode === 'dark' ? 'dark' : 'light');
@@ -421,6 +433,12 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
           const data = await res.json();
           setAdminUser(data.user);
           setAdminRole(data.user.role);
+          if (data.firebaseCustomToken) {
+            setFirebaseCustomToken(data.firebaseCustomToken);
+          }
+          if (data.firebaseClientConfig) {
+            setFirebaseClientConfig(data.firebaseClientConfig);
+          }
           await fetchBootstrap();
         }
       } catch {
@@ -431,37 +449,33 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     })();
   }, []);
 
-  // Connect authenticated Socket.io room
+  // Subscribe to Firebase RTDB adminOrders/ using signInWithCustomToken + onChildAdded / onValue
   useEffect(() => {
     if (!adminUser) return;
-    const socket = io({
-      withCredentials: true,
-    });
-    socket.emit('join:admin', {});
-
-    socket.on('order:new', (newOrder: OrderRecord) => {
-      setOrders((prev) => {
-        if (prev.some((o) => o.id === newOrder.id)) return prev;
-        return [newOrder, ...prev];
-      });
-      setUnreadOrdersCount((c) => c + 1);
-      playOrderChime();
-      triggerBrowserNotification(newOrder);
-      showToast(`New Order ${newOrder.orderNumber} received!`);
-    });
-
-    socket.on('order:updated', (updatedOrder: OrderRecord) => {
-      setOrders((prev) => prev.map((o) => (o.id === updatedOrder.id ? updatedOrder : o)));
-    });
-
-    socket.on('rider:updated', () => {
-      fetchBootstrap();
+    const knownIds = new Set(orders.map((o) => o.id));
+    const unsub = subscribeToAdminOrders({
+      customToken: firebaseCustomToken,
+      firebaseConfig: firebaseClientConfig as { databaseURL: string; apiKey?: string; projectId?: string } | null,
+      knownOrderIds: knownIds,
+      onNewOrder: (newOrder: OrderRecord) => {
+        setOrders((prev) => {
+          if (prev.some((o) => o.id === newOrder.id)) return prev;
+          return [newOrder, ...prev];
+        });
+        setUnreadOrdersCount((c) => c + 1);
+        playOrderChime();
+        triggerBrowserNotification(newOrder);
+        showToast(`New Order ${newOrder.orderNumber} received!`);
+      },
+      onOrdersSnapshot: (allOrders: OrderRecord[]) => {
+        setOrders(allOrders);
+      },
     });
 
     return () => {
-      socket.disconnect();
+      unsub();
     };
-  }, [adminUser, soundEnabled, soundVolume]);
+  }, [adminUser, firebaseCustomToken, firebaseClientConfig, soundEnabled, soundVolume]);
 
   // Save Admin Personal Theme to server
   const handleSaveAdminPersonalTheme = async (mode: ThemeMode, accent: string) => {
@@ -539,6 +553,12 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       }
       setAdminUser(data.user);
       setAdminRole(data.user.role);
+      if (data.firebaseCustomToken) {
+        setFirebaseCustomToken(data.firebaseCustomToken);
+      }
+      if (data.firebaseClientConfig) {
+        setFirebaseClientConfig(data.firebaseClientConfig);
+      }
       setLoginPassword('');
       setLoginTotpCode('');
       setRequiresTwoFactor(false);

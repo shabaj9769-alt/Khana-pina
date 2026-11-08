@@ -1,0 +1,74 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "publicStatus": {
+      ".read": true,
+      ".write": false
+    },
+    "tracking": {
+      ".read": false,
+      ".write": false,
+      "$token": {
+        ".read": "$token.length >= 12",
+        ".write": false
+      }
+    },
+    "adminOrders": {
+      ".read": "auth != null && (auth.token.role === 'owner' || auth.token.role === 'manager' || auth.token.role === 'staff')",
+      ".write": false
+    },
+    "riderOrders": {
+      ".read": false,
+      ".write": false,
+      "$riderId": {
+        ".read": "auth != null && auth.token.riderId === $riderId",
+        ".write": false
+      }
+    },
+    "orders": {
+      ".read": false,
+      ".write": false
+    },
+    "payments": {
+      ".read": false,
+      ".write": false
+    },
+    "paymentLocks": {
+      ".read": false,
+      ".write": false
+    },
+    "webhookEvents": {
+      ".read": false,
+      ".write": false
+    },
+    "menuItems": {
+      ".read": false,
+      ".write": false
+    },
+    "categories": {
+      ".read": false,
+      ".write": false
+    },
+    "settings": {
+      ".read": false,
+      ".write": false
+    },
+    "coupons": {
+      ".read": false,
+      ".write": false
+    },
+    "customers": {
+      ".read": false,
+      ".write": false
+    },
+    "deliveryBoys": {
+      ".read": false,
+      ".write": false
+    },
+    "auditLogs": {
+      ".read": false,
+      ".write": false
+    }
+  }
+}
