@@ -267,6 +267,21 @@ export function applyStorefrontThemeToDocument(
     FONT_PAIR_OPTIONS.find((f) => f.id === cfg.fontPair) || FONT_PAIR_OPTIONS[0];
   const radius = RADIUS_SCALE_MAP[cfg.radiusScale] || RADIUS_SCALE_MAP.rounded;
 
+  // On-demand load secondary theme font pairs only when selected by admin
+  if (typeof document !== 'undefined' && cfg.fontPair !== 'fraunces-jakarta') {
+    const linkId = `aangan-dynamic-font-${cfg.fontPair}`;
+    if (!document.getElementById(linkId)) {
+      const link = document.createElement('link');
+      link.id = linkId;
+      link.rel = 'stylesheet';
+      link.href =
+        cfg.fontPair === 'playfair-inter'
+          ? 'https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Playfair+Display:wght@600;700&display=swap'
+          : 'https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap';
+      document.head.appendChild(link);
+    }
+  }
+
   root.style.setProperty('--color-bg', bg);
   root.style.setProperty('--color-surface', surface);
   root.style.setProperty('--color-text', text);
@@ -332,4 +347,19 @@ export function applyAdminOrRiderThemeToDocument(
   root.style.setProperty('--color-primary-contrast', primaryContrast);
   root.style.setProperty('--color-accent', primary);
   root.style.setProperty('--radius', '0.75rem');
+}
+
+/**
+ * Rewrites built-in local .jpg dish/hero asset paths to their <80KB .webp counterparts
+ * while keeping external/uploaded URLs intact.
+ */
+export function optimizeAssetUrl(url?: string | null): string {
+  if (!url) return '/src/assets/images/dish_royal_biryani_1793975538453.webp';
+  if (url.startsWith('/src/assets/images/') && url.endsWith('.jpg')) {
+    return url.replace(/\.jpg$/, '.webp');
+  }
+  if (url.startsWith('/assets/images/') && url.endsWith('.jpg')) {
+    return `/src${url.replace(/\.jpg$/, '.webp')}`;
+  }
+  return url;
 }

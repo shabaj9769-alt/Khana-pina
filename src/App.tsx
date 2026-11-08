@@ -5,10 +5,12 @@
 
 import React, { useEffect, useState } from 'react';
 import {
+  ChevronDown,
   Clock,
   Flame,
   Home,
   Languages,
+  MapPin,
   Moon,
   ShoppingBag,
   Sun,
@@ -21,7 +23,11 @@ import { OrderTrackingView } from './components/OrderTrackingView.tsx';
 import { DeliveryPartnerView } from './components/DeliveryPartnerView.tsx';
 import { AdminPortal } from './components/AdminPortal.tsx';
 import { OfflineIndicator } from './components/PWAInstallBanner.tsx';
-import { applyStorefrontThemeToDocument, DEFAULT_STOREFRONT_THEME } from './utils/themeTokens.ts';
+import {
+  applyStorefrontThemeToDocument,
+  DEFAULT_STOREFRONT_THEME,
+  optimizeAssetUrl,
+} from './utils/themeTokens.ts';
 import { subscribeToPublicShopStatus } from './utils/firebaseClient.ts';
 
 type AppView = 'customer' | 'tracking' | 'rider' | 'admin';
@@ -33,6 +39,7 @@ export default function App() {
   const [riderToken, setRiderToken] = useState<string>('');
   const [cart, setCart] = useState<CartItem[]>(() => guestAuthLayer.getCart());
   const [cartDrawerOpen, setCartDrawerOpen] = useState(false);
+  const [addressModalTrigger, setAddressModalTrigger] = useState(0);
   const [storefrontRefreshKey, setStorefrontRefreshKey] = useState(0);
   const [menuItemsCache, setMenuItemsCache] = useState<MenuItem[]>([]);
   const [reorderNotice, setReorderNotice] = useState<string | null>(null);
@@ -48,6 +55,14 @@ export default function App() {
     isOpen: true,
     busyMode: false,
     logoUrl: '',
+  });
+
+  const [headerAddressLabel, setHeaderAddressLabel] = useState<string>(() => {
+    const p = guestAuthLayer.getGuestProfile();
+    if ((p.locationPinned || (p.lat !== 0 && p.lng !== 0)) && p.address) {
+      return p.address;
+    }
+    return '';
   });
 
   // Sync URL path if user navigates directly to /track/<token>, /rider/<token>, or /admin
@@ -132,7 +147,6 @@ export default function App() {
     guestAuthLayer.saveGuestLanguage(nextLang);
   };
 
-  // Phase 4: Fix handleReorder so it restores real imageUrl and isVeg from current menu and drops unavailable items with notice
   const handleReorder = (order: OrderRecord, currentMenu?: MenuItem[]) => {
     const pool = currentMenu && currentMenu.length > 0 ? currentMenu : menuItemsCache;
     const restored: CartItem[] = [];
@@ -148,9 +162,11 @@ export default function App() {
         cartLineId: `reorder_${order.id}_${idx}`,
         menuItemId: it.menuItemId,
         name: liveItem ? liveItem.name : it.itemName,
-        imageUrl: liveItem
-          ? liveItem.imageUrl
-          : '/src/assets/images/dish_royal_biryani_1793975538453.jpg',
+        imageUrl: optimizeAssetUrl(
+          liveItem
+            ? liveItem.imageUrl
+            : '/src/assets/images/dish_royal_biryani_1793975538453.webp'
+        ),
         isVeg: liveItem ? liveItem.isVeg : true,
         variantId: liveItem?.variants.find((v) => v.name === it.variantName)?.id,
         variantName: it.variantName,
@@ -180,7 +196,7 @@ export default function App() {
   // ===========================================================================
   if (activeView === 'rider') {
     return (
-      <div className="min-h-[100dvh] w-full max-w-[100vw] overflow-x-clip flex flex-col bg-bg text-text">
+      <div className="min-h-[100dvh] w-full max-w-full overflow-x-hidden flex flex-col bg-bg text-text">
         <DeliveryPartnerView initialToken={riderToken} />
         <OfflineIndicator />
       </div>
@@ -192,7 +208,7 @@ export default function App() {
   // ===========================================================================
   if (activeView === 'admin') {
     return (
-      <div className="min-h-[100dvh] w-full max-w-[100vw] overflow-x-clip flex flex-col bg-bg text-text">
+      <div className="min-h-[100dvh] w-full max-w-full overflow-x-hidden flex flex-col bg-bg text-text">
         <AdminPortal
           onRefreshStorefront={() => setStorefrontRefreshKey((k) => k + 1)}
           onOpenRiderPortal={(tok) => {
@@ -210,83 +226,127 @@ export default function App() {
   }
 
   // ===========================================================================
-  // CUSTOMER STOREFRONT & ORDER TRACKING LAYOUT (Guest-Only, Zero Admin Link)
+  // CUSTOMER STOREFRONT & ORDER TRACKING LAYOUT (Light, Airy, Zero Overflow)
   // ===========================================================================
   return (
-    <div className="min-h-[100dvh] w-full max-w-[100vw] overflow-x-clip flex flex-col bg-bg text-text pb-16 md:pb-6 transition-colors duration-200">
+    <div className="min-h-[100dvh] w-full max-w-full overflow-x-hidden flex flex-col bg-bg text-text pb-16 md:pb-6 transition-colors duration-150">
       {/* Reorder skipped-items toast */}
       {reorderNotice && (
         <div
           role="status"
-          className="fixed top-16 left-1/2 -translate-x-1/2 z-50 max-w-[92vw] px-4 py-2.5 rounded-xl bg-surface border border-border shadow-lg text-xs font-semibold text-text flex items-center gap-2"
+          className="fixed top-14 left-1/2 -translate-x-1/2 z-50 max-w-[92vw] px-3.5 py-2 rounded-full bg-surface border border-border shadow-md text-xs font-semibold text-text flex items-center gap-2"
         >
-          <span>{reorderNotice}</span>
+          <span className="break-words">{reorderNotice}</span>
           <button
             type="button"
             onClick={() => setReorderNotice(null)}
-            className="text-muted hover:text-text font-bold ml-2 cursor-pointer"
+            className="text-muted hover:text-text font-bold ml-1 cursor-pointer"
           >
             ✕
           </button>
         </div>
       )}
 
-      {/* STICKY CUSTOMER HEADER — Full shop name visible, no Admin button */}
-      <header className="sticky top-0 left-0 right-0 z-30 w-full max-w-[100vw] bg-surface/95 backdrop-blur-md border-b border-border overflow-x-clip">
-        <div className="w-full max-w-[480px] md:max-w-[1200px] mx-auto px-4 min-h-[56px] py-1.5 flex items-center justify-between gap-2">
-          <a
-            href="/"
-            onClick={(e) => {
-              e.preventDefault();
-              setCustomerSubTab('home');
-              navigateView('customer', '/');
-            }}
-            className="flex items-center gap-2 min-w-0 flex-1"
-          >
-            {headerMeta.logoUrl ? (
-              <img
-                src={headerMeta.logoUrl}
-                alt={headerMeta.shopName}
-                className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl object-cover border border-border shrink-0"
-              />
-            ) : (
-              <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-primary text-primary-contrast flex items-center justify-center shrink-0">
-                <Flame className="w-4 h-4 sm:w-5 sm:h-5" />
-              </div>
-            )}
-            <div className="min-w-0 flex-1">
-              <span className="block text-[14px] sm:text-[17px] leading-snug font-bold text-text break-words">
-                {headerMeta.shopName}
-              </span>
-              <span className="block text-[11px] leading-tight text-muted break-words">
-                {lang === 'hi' ? '25–30 मिनट · ' : '25–30 mins · '}
-                <strong
-                  className={
-                    headerMeta.isOpen && !headerMeta.busyMode
-                      ? 'text-emerald-600 font-semibold'
-                      : 'text-red-600 font-semibold'
-                  }
-                >
-                  {headerMeta.isOpen
-                    ? headerMeta.busyMode
-                      ? lang === 'hi'
-                        ? 'व्यस्त (Busy)'
-                        : 'Busy mode'
-                      : lang === 'hi'
-                        ? 'अभी खुला है'
-                        : 'Open now'
-                    : lang === 'hi'
-                      ? 'बंद है'
-                      : 'Closed'}
-                </strong>
-              </span>
-            </div>
-          </a>
+      {/* AIRY, SLIM STICKY CUSTOMER HEADER */}
+      <header className="sticky top-0 left-0 right-0 z-30 w-full max-w-full bg-surface/90 backdrop-blur-md border-b border-border/70">
+        <div className="w-full max-w-[1140px] mx-auto px-3 sm:px-4 min-h-[48px] py-1 flex items-center justify-between gap-2">
+          {/* Left: Soft Brand Icon + Shop Name + Live Status & Address */}
+          <div className="flex items-center gap-2 min-w-0 flex-1">
+            <a
+              href="/"
+              onClick={(e) => {
+                e.preventDefault();
+                setCustomerSubTab('home');
+                navigateView('customer', '/');
+              }}
+              className="w-7 h-7 rounded-lg bg-primary/12 text-primary flex items-center justify-center shrink-0 overflow-hidden"
+              aria-label={headerMeta.shopName}
+            >
+              {headerMeta.logoUrl ? (
+                <img
+                  src={optimizeAssetUrl(headerMeta.logoUrl)}
+                  alt={headerMeta.shopName}
+                  width={28}
+                  height={28}
+                  decoding="async"
+                  className="w-7 h-7 object-cover object-center shrink-0"
+                />
+              ) : (
+                <Flame className="w-3.5 h-3.5" />
+              )}
+            </a>
 
-          {/* Desktop Navigation Links (Only 4 Customer Tabs: Home, Menu, Orders, Cart) */}
+            <div className="min-w-0 flex-1">
+              <a
+                href="/"
+                onClick={(e) => {
+                  e.preventDefault();
+                  setCustomerSubTab('home');
+                  navigateView('customer', '/');
+                }}
+                className="block font-display text-[13px] sm:text-[15px] leading-tight font-bold text-text line-clamp-2 break-words"
+              >
+                {headerMeta.shopName}
+              </a>
+
+              <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] leading-tight text-muted mt-0.5">
+                <span className="inline-flex items-center gap-1 whitespace-nowrap">
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                      headerMeta.isOpen && !headerMeta.busyMode
+                        ? 'bg-emerald-500'
+                        : 'bg-red-500'
+                    }`}
+                  />
+                  <strong className="font-medium text-text">
+                    {headerMeta.isOpen
+                      ? headerMeta.busyMode
+                        ? lang === 'hi'
+                          ? 'Busy'
+                          : 'Busy'
+                        : lang === 'hi'
+                        ? 'Khula'
+                        : 'Open'
+                      : lang === 'hi'
+                      ? 'Band'
+                      : 'Closed'}
+                  </strong>
+                  <span className="tabular-nums text-muted">· 25m</span>
+                </span>
+
+                <span aria-hidden="true" className="text-border">
+                  ·
+                </span>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (activeView !== 'customer') {
+                      navigateView('customer', '/');
+                    }
+                    setAddressModalTrigger((n) => n + 1);
+                  }}
+                  title="Delivery address chunein"
+                  className="inline-flex items-center gap-0.5 text-[11px] font-medium text-primary hover:opacity-80 cursor-pointer min-w-0"
+                >
+                  <MapPin className="w-2.5 h-2.5 shrink-0" />
+                  <span className="line-clamp-1 break-all max-w-[115px] sm:max-w-[200px]">
+                    {headerAddressLabel
+                      ? headerAddressLabel
+                      : lang === 'hi'
+                      ? 'Pata chunein'
+                      : 'Set address'}
+                  </span>
+                  <ChevronDown className="w-2.5 h-2.5 shrink-0" />
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Desktop Navigation Links */}
           <nav
             aria-label="Storefront navigation"
-            className="hidden md:flex items-center gap-5 text-sm font-medium text-muted shrink-0"
+            className="hidden lg:flex items-center gap-5 text-[13px] font-medium text-muted shrink-0"
           >
             <button
               type="button"
@@ -296,11 +356,11 @@ export default function App() {
               }}
               className={`hover:text-text whitespace-nowrap cursor-pointer ${
                 activeView === 'customer' && customerSubTab === 'home'
-                  ? 'text-primary font-semibold underline underline-offset-4 decoration-primary'
+                  ? 'text-primary font-semibold'
                   : ''
               }`}
             >
-              {lang === 'hi' ? 'होम' : 'Home'}
+              Home
             </button>
             <button
               type="button"
@@ -310,11 +370,11 @@ export default function App() {
               }}
               className={`hover:text-text whitespace-nowrap cursor-pointer ${
                 activeView === 'customer' && customerSubTab === 'menu'
-                  ? 'text-primary font-semibold underline underline-offset-4 decoration-primary'
+                  ? 'text-primary font-semibold'
                   : ''
               }`}
             >
-              {lang === 'hi' ? 'मेनू' : 'Menu'}
+              Menu
             </button>
             <button
               type="button"
@@ -324,35 +384,24 @@ export default function App() {
               }}
               className={`hover:text-text whitespace-nowrap cursor-pointer ${
                 activeView === 'customer' && customerSubTab === 'orders'
-                  ? 'text-primary font-semibold underline underline-offset-4 decoration-primary'
+                  ? 'text-primary font-semibold'
                   : ''
               }`}
             >
-              {lang === 'hi' ? 'ऑर्डर' : 'Orders'}
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                navigateView('customer', '/');
-                setCartDrawerOpen(true);
-              }}
-              className="hover:text-text whitespace-nowrap cursor-pointer"
-            >
-              {lang === 'hi' ? 'कार्ट' : 'Cart'} ({totalCartItems})
+              Orders
             </button>
           </nav>
 
-          {/* Right: Language Toggle (EN/HI), Guest Light/Dark Toggle & Cart Bag Button */}
-          <div className="flex items-center gap-1.5 shrink-0">
+          {/* Right: Lightweight Icon-only Controls + Sleek Pill Cart Badge */}
+          <div className="flex items-center gap-1 shrink-0">
             <button
               type="button"
               onClick={toggleLanguage}
               aria-label="Toggle Hindi or English language"
-              title="Switch Language (English / हिंदी)"
-              className="min-h-[38px] px-2 rounded-xl border border-border bg-bg hover:bg-surface text-text text-xs font-bold flex items-center gap-1 cursor-pointer"
+              title={lang === 'en' ? 'हिंदी में बदलें' : 'Switch to English'}
+              className="w-7 h-7 rounded-full hover:bg-border/50 text-muted hover:text-text flex items-center justify-center cursor-pointer shrink-0 transition-colors"
             >
-              <Languages className="w-3.5 h-3.5 text-primary shrink-0" />
-              <span>{lang === 'en' ? 'हिं' : 'EN'}</span>
+              <Languages className="w-3.5 h-3.5" />
             </button>
 
             <button
@@ -360,12 +409,12 @@ export default function App() {
               onClick={toggleGuestDarkLight}
               aria-label="Toggle light or dark mode"
               title="Toggle Light / Dark theme"
-              className="min-h-[38px] w-9 rounded-xl border border-border bg-bg hover:bg-surface text-text flex items-center justify-center cursor-pointer"
+              className="w-7 h-7 rounded-full hover:bg-border/50 text-muted hover:text-text flex items-center justify-center cursor-pointer shrink-0 transition-colors"
             >
               {guestThemeMode === 'dark' ? (
-                <Sun className="w-4 h-4 text-accent" />
+                <Sun className="w-3.5 h-3.5 text-accent" />
               ) : (
-                <Moon className="w-4 h-4 text-muted" />
+                <Moon className="w-3.5 h-3.5" />
               )}
             </button>
 
@@ -376,10 +425,14 @@ export default function App() {
                 setCartDrawerOpen(true);
               }}
               aria-label="Open shopping bag"
-              className="relative min-h-[38px] sm:min-h-[42px] px-2.5 sm:px-3 rounded-xl bg-primary text-primary-contrast flex items-center justify-center gap-1.5 shrink-0 transition-opacity hover:opacity-95 cursor-pointer"
+              className={`relative h-7 px-2.5 rounded-full flex items-center justify-center gap-1 shrink-0 transition-all cursor-pointer whitespace-nowrap ${
+                totalCartItems > 0
+                  ? 'bg-primary text-primary-contrast shadow-2xs'
+                  : 'bg-primary/10 text-primary'
+              }`}
             >
-              <ShoppingBag className="w-4 h-4 shrink-0" />
-              <span className="text-xs font-mono font-bold tabular-nums whitespace-nowrap">
+              <ShoppingBag className="w-3 h-3 shrink-0" />
+              <span className="text-[11px] font-bold tabular-nums">
                 {totalCartItems}
               </span>
             </button>
@@ -388,7 +441,7 @@ export default function App() {
       </header>
 
       {/* Main Content Area */}
-      <main className="flex-1 w-full max-w-[100vw] overflow-x-clip min-w-0">
+      <main className="flex-1 w-full max-w-full overflow-x-hidden min-w-0">
         {activeView === 'customer' && (
           <CustomerStore
             key={storefrontRefreshKey}
@@ -399,6 +452,8 @@ export default function App() {
             onOpenTracking={handleOpenTracking}
             cartDrawerOpen={cartDrawerOpen}
             setCartDrawerOpen={setCartDrawerOpen}
+            addressModalTrigger={addressModalTrigger}
+            onAddressChanged={(addr) => setHeaderAddressLabel(addr)}
             lang={lang}
             onReorder={handleReorder}
             onHeaderMetaUpdate={(meta) => {
@@ -430,26 +485,26 @@ export default function App() {
         )}
       </main>
 
-      {/* Customer Mobile Bottom Navigation Bar — ONLY 4 tabs: Home, Menu, Orders, Cart */}
+      {/* Slim Mobile Bottom Navigation Bar */}
       <nav
         aria-label="Mobile bottom navigation"
-        className="md:hidden fixed bottom-0 left-0 right-0 w-full max-w-[100vw] z-40 bg-surface/95 backdrop-blur-md border-t border-border overflow-x-clip"
+        className="md:hidden fixed bottom-0 left-0 right-0 w-full max-w-full z-40 bg-surface/95 backdrop-blur-md border-t border-border/70"
       >
-        <div className="w-full max-w-[480px] mx-auto grid grid-cols-4 items-center min-h-[56px] pb-safe">
+        <div className="w-full max-w-[1140px] mx-auto grid grid-cols-4 items-center h-[50px] pb-safe">
           <button
             type="button"
             onClick={() => {
               setCustomerSubTab('home');
               navigateView('customer', '/');
             }}
-            className={`flex flex-col items-center justify-center min-h-[48px] text-[11px] font-medium whitespace-nowrap cursor-pointer min-w-0 ${
+            className={`flex flex-col items-center justify-center h-full text-[10px] font-medium whitespace-nowrap cursor-pointer min-w-0 ${
               activeView === 'customer' && customerSubTab === 'home'
                 ? 'text-primary font-semibold'
                 : 'text-muted'
             }`}
           >
             <Home className="w-4 h-4 shrink-0" />
-            <span className="mt-0.5 truncate">{lang === 'hi' ? 'होम' : 'Home'}</span>
+            <span className="mt-0.5">Home</span>
           </button>
 
           <button
@@ -458,14 +513,14 @@ export default function App() {
               setCustomerSubTab('menu');
               navigateView('customer', '/');
             }}
-            className={`flex flex-col items-center justify-center min-h-[48px] text-[11px] font-medium whitespace-nowrap cursor-pointer min-w-0 ${
+            className={`flex flex-col items-center justify-center h-full text-[10px] font-medium whitespace-nowrap cursor-pointer min-w-0 ${
               activeView === 'customer' && customerSubTab === 'menu'
                 ? 'text-primary font-semibold'
                 : 'text-muted'
             }`}
           >
             <UtensilsCrossed className="w-4 h-4 shrink-0" />
-            <span className="mt-0.5 truncate">{lang === 'hi' ? 'मेनू' : 'Menu'}</span>
+            <span className="mt-0.5">Menu</span>
           </button>
 
           <button
@@ -474,14 +529,14 @@ export default function App() {
               setCustomerSubTab('orders');
               navigateView('customer', '/');
             }}
-            className={`flex flex-col items-center justify-center min-h-[48px] text-[11px] font-medium whitespace-nowrap cursor-pointer min-w-0 ${
+            className={`flex flex-col items-center justify-center h-full text-[10px] font-medium whitespace-nowrap cursor-pointer min-w-0 ${
               activeView === 'customer' && customerSubTab === 'orders'
                 ? 'text-primary font-semibold'
                 : 'text-muted'
             }`}
           >
             <Clock className="w-4 h-4 shrink-0" />
-            <span className="mt-0.5 truncate">{lang === 'hi' ? 'ऑर्डर' : 'Orders'}</span>
+            <span className="mt-0.5">Orders</span>
           </button>
 
           <button
@@ -490,17 +545,17 @@ export default function App() {
               navigateView('customer', '/');
               setCartDrawerOpen(true);
             }}
-            className="flex flex-col items-center justify-center min-h-[48px] text-[11px] font-medium whitespace-nowrap cursor-pointer text-muted min-w-0"
+            className="flex flex-col items-center justify-center h-full text-[10px] font-medium whitespace-nowrap cursor-pointer text-muted min-w-0"
           >
             <div className="relative">
               <ShoppingBag className="w-4 h-4 shrink-0" />
               {totalCartItems > 0 && (
-                <span className="absolute -top-1.5 -right-2.5 px-1 rounded-full bg-primary text-primary-contrast text-[9px] font-bold tabular-nums">
+                <span className="absolute -top-1 -right-2 px-1 rounded-full bg-primary text-primary-contrast text-[9px] font-bold tabular-nums leading-tight">
                   {totalCartItems}
                 </span>
               )}
             </div>
-            <span className="mt-0.5 truncate">{lang === 'hi' ? 'कार्ट' : 'Cart'}</span>
+            <span className="mt-0.5">Cart</span>
           </button>
         </div>
       </nav>

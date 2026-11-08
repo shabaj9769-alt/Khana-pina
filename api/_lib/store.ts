@@ -32,12 +32,12 @@ import { DEFAULT_STOREFRONT_THEME } from '../../src/utils/themeTokens.ts';
 import { getRtdb } from './firebaseAdmin.ts';
 import { hashPasswordScrypt, parseCookies, verifyJwtRaw } from './security.ts';
 
-// Image URLs
-export const IMG_HERO = '/src/assets/images/hero_artisanal_feast_1793975537331.jpg';
-export const IMG_BIRYANI = '/src/assets/images/dish_royal_biryani_1793975538453.jpg';
-export const IMG_PANEER = '/src/assets/images/dish_paneer_tikka_1793975540023.jpg';
-export const IMG_BUTTER_CHICKEN = '/src/assets/images/dish_butter_chicken_1793975541967.jpg';
-export const IMG_DESSERT = '/src/assets/images/dish_gulab_jamun_dessert_1793975541767.jpg';
+// Image URLs (Optimized <80KB WebP assets)
+export const IMG_HERO = '/src/assets/images/hero_artisanal_feast_1793975537331.webp';
+export const IMG_BIRYANI = '/src/assets/images/dish_royal_biryani_1793975538453.webp';
+export const IMG_PANEER = '/src/assets/images/dish_paneer_tikka_1793975540023.webp';
+export const IMG_BUTTER_CHICKEN = '/src/assets/images/dish_butter_chicken_1793975541967.webp';
+export const IMG_DESSERT = '/src/assets/images/dish_gulab_jamun_dessert_1793975541767.webp';
 
 export interface AdminUserRecord {
   id: string;
