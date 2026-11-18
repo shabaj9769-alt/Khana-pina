@@ -7,7 +7,9 @@ import {
   Check,
   ChevronRight,
   Compass,
+  ExternalLink,
   Heart,
+  Info,
   MapPin,
   MessageCircle,
   Minus,
@@ -19,6 +21,7 @@ import {
   Star,
   Tag,
   Truck,
+  User,
   X,
 } from 'lucide-react';
 import {
@@ -174,13 +177,15 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
   const [activeBannerIdx, setActiveBannerIdx] = useState(0);
   const [copiedCoupon, setCopiedCoupon] = useState<string | null>(null);
 
-  // Part 5: Full-screen multi-page checkout flow ('store' | 'cart' | 'checkout') synced with browser history
-  const [checkoutStep, setCheckoutStep] = useState<'store' | 'cart' | 'checkout'>(() => {
+  // Part 5: Full-screen multi-page checkout flow ('store' | 'cart' | 'checkout' | 'profile' | 'about') synced with browser history
+  const [checkoutStep, setCheckoutStep] = useState<'store' | 'cart' | 'checkout' | 'profile' | 'about'>(() => {
     if (typeof window !== 'undefined') {
       if (window.location.hash === '#/checkout') {
         return cart.length > 0 ? 'checkout' : 'cart';
       }
       if (window.location.hash === '#/cart') return 'cart';
+      if (window.location.hash === '#/profile') return 'profile';
+      if (window.location.hash === '#/about') return 'about';
     }
     return cartDrawerOpen ? 'cart' : 'store';
   });
@@ -239,7 +244,10 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
   const initialProfile = useMemo(() => guestAuthLayer.getGuestProfile(), []);
   const [guestName, setGuestName] = useState(initialProfile.name);
   const [guestPhone, setGuestPhone] = useState(initialProfile.phone);
+  const [guestEmail, setGuestEmail] = useState(initialProfile.email || '');
   const [guestAddress, setGuestAddress] = useState(initialProfile.address);
+  const [guestPincode, setGuestPincode] = useState('');
+  const [profileSavedToast, setProfileSavedToast] = useState(false);
   const [guestLat, setGuestLat] = useState(initialProfile.lat);
   const [guestLng, setGuestLng] = useState(initialProfile.lng);
   const [locationPinned, setLocationPinned] = useState<boolean>(
@@ -295,17 +303,21 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
   const menuSectionRef = useRef<HTMLElement | null>(null);
   const timeSlots = useMemo(() => generateShopHourSlots(), []);
 
-  // Navigate between 'store', 'cart', and 'checkout' and sync with browser history
-  const navigateFlowStep = (nextStep: 'store' | 'cart' | 'checkout', pushHistory = true) => {
+  // Navigate between 'store', 'cart', 'checkout', 'profile', and 'about' and sync with browser history
+  const navigateFlowStep = (nextStep: 'store' | 'cart' | 'checkout' | 'profile' | 'about', pushHistory = true) => {
     const resolvedStep = nextStep === 'checkout' && cart.length === 0 ? 'cart' : nextStep;
     setCheckoutStep(resolvedStep);
-    setCartDrawerOpen(resolvedStep !== 'store');
+    setCartDrawerOpen(resolvedStep !== 'store' && resolvedStep !== 'profile' && resolvedStep !== 'about');
     if (pushHistory && typeof window !== 'undefined') {
       try {
         if (resolvedStep === 'cart' && window.location.hash !== '#/cart') {
           window.history.pushState({ step: 'cart' }, '', '/#/cart');
         } else if (resolvedStep === 'checkout' && window.location.hash !== '#/checkout') {
           window.history.pushState({ step: 'checkout' }, '', '/#/checkout');
+        } else if (resolvedStep === 'profile' && window.location.hash !== '#/profile') {
+          window.history.pushState({ step: 'profile' }, '', '/#/profile');
+        } else if (resolvedStep === 'about' && window.location.hash !== '#/about') {
+          window.history.pushState({ step: 'about' }, '', '/#/about');
         } else if (resolvedStep === 'store' && window.location.hash !== '#/' && window.location.hash !== '') {
           window.history.pushState({ step: 'store' }, '', '/#/');
         }
@@ -354,6 +366,12 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
       } else if (hash === '#/cart') {
         setCheckoutStep('cart');
         setCartDrawerOpen(true);
+      } else if (hash === '#/profile') {
+        setCheckoutStep('profile');
+        setCartDrawerOpen(false);
+      } else if (hash === '#/about') {
+        setCheckoutStep('about');
+        setCartDrawerOpen(false);
       } else {
         setCheckoutStep('store');
         setCartDrawerOpen(false);
@@ -1381,7 +1399,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
 
     if (!item.inStock) {
       return (
-        <span className="min-h-[44px] px-4 rounded-xl border border-border bg-bg text-muted text-[14px] font-bold inline-flex items-center justify-center whitespace-nowrap shrink-0">
+        <span className="h-[36px] px-[14px] rounded-xl border border-border bg-bg text-muted text-[13px] font-bold inline-flex items-center justify-center whitespace-nowrap shrink-0">
           Sold out
         </span>
       );
@@ -1390,16 +1408,16 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
     if (inCartQty > 0) {
       const targetLine = matchingLines[matchingLines.length - 1];
       return (
-        <div className="min-h-[44px] min-w-[96px] rounded-xl bg-[#E23744] text-white flex items-center justify-between px-1 shrink-0 shadow-sm">
+        <div className="h-[36px] min-w-[88px] rounded-xl bg-[#E23744] text-white flex items-center justify-between px-1 shrink-0 shadow-sm">
           <button
             type="button"
             aria-label={`Decrease quantity of ${item.name}`}
             onClick={() => updateCartQty(targetLine.cartLineId, -1)}
-            className="w-8 h-9 flex items-center justify-center rounded-lg hover:bg-black/15 active:scale-[0.95] transition-transform cursor-pointer"
+            className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-black/15 active:scale-[0.95] transition-transform cursor-pointer"
           >
-            <Minus className="w-4 h-4 stroke-[2.5]" />
+            <Minus className="w-3.5 h-3.5 stroke-[2.5]" />
           </button>
-          <span className="text-sm font-extrabold tabular-nums px-1">{inCartQty}</span>
+          <span className="text-[13px] font-extrabold tabular-nums px-1">{inCartQty}</span>
           <button
             type="button"
             aria-label={`Increase quantity of ${item.name}`}
@@ -1410,9 +1428,9 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                 updateCartQty(targetLine.cartLineId, 1);
               }
             }}
-            className="w-8 h-9 flex items-center justify-center rounded-lg hover:bg-black/15 active:scale-[0.95] transition-transform cursor-pointer"
+            className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-black/15 active:scale-[0.95] transition-transform cursor-pointer"
           >
-            <Plus className="w-4 h-4 stroke-[2.5]" />
+            <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
           </button>
         </div>
       );
@@ -1428,10 +1446,10 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
             openCustomizeModal(item);
           }
         }}
-        className="min-h-[44px] px-4 rounded-xl border-2 border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/15 text-[#E23744] hover:bg-[#E23744] hover:text-white text-sm font-extrabold whitespace-nowrap inline-flex items-center justify-center gap-1 transition-all active:scale-[0.98] cursor-pointer shrink-0 shadow-2xs"
+        className="h-[36px] px-[14px] rounded-xl border-2 border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/15 text-[#E23744] hover:bg-[#E23744] hover:text-white text-[13px] font-extrabold whitespace-nowrap inline-flex items-center justify-center gap-1 transition-all active:scale-[0.98] cursor-pointer shrink-0 shadow-2xs"
       >
         <span>ADD</span>
-        <Plus className="w-4 h-4 stroke-[2.5]" />
+        <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
       </button>
     );
   };
@@ -1696,7 +1714,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   <ArrowLeft className="w-5 h-5" />
                 </button>
                 <div className="min-w-0 flex-1">
-                  <h1 className="font-display text-[18px] sm:text-[20px] font-extrabold text-text truncate">
+                  <h1 className="font-display text-[18px] sm:text-[20px] font-extrabold text-text break-words">
                     Your Cart
                   </h1>
                 </div>
@@ -1819,164 +1837,6 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                     </a>
                   </div>
                 </section>
-
-                {/* 2. Upsell row "Add something extra" */}
-                {cartUpsellSuggestions.length > 0 && (
-                  <section
-                    aria-label="Add something extra"
-                    className="rounded-2xl border border-border bg-surface p-4 space-y-3 min-w-0 max-w-full overflow-hidden"
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <h2 className="text-[15px] font-extrabold text-text">
-                        Add something extra
-                      </h2>
-                      <span className="text-[13px] text-muted">Complete your meal</span>
-                    </div>
-                    <div className="w-full max-w-full overflow-x-auto no-scrollbar">
-                      <div className="flex items-stretch gap-3 min-w-0">
-                        {cartUpsellSuggestions.map((sug) => (
-                          <div
-                            key={sug.id}
-                            className="w-[190px] shrink-0 rounded-xl border border-border bg-bg p-3 flex flex-col justify-between gap-2.5"
-                          >
-                            <div className="flex items-start gap-2.5 min-w-0">
-                              <img
-                                src={optimizeAssetUrl(sug.imageUrl)}
-                                alt={sug.name}
-                                width={48}
-                                height={48}
-                                loading="lazy"
-                                decoding="async"
-                                className="w-12 h-12 rounded-lg object-cover shrink-0"
-                              />
-                              <div className="min-w-0 flex-1">
-                                <div className="flex items-center gap-1">
-                                  {renderDietMark(sug.isVeg)}
-                                  <span className="text-[13px] font-bold tabular-nums text-text">
-                                    ₹{sug.basePrice}
-                                  </span>
-                                </div>
-                                <p className="text-[13px] font-semibold text-text line-clamp-2 break-words mt-0.5 leading-snug">
-                                  {sug.name}
-                                </p>
-                              </div>
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() => addItemDirectlyToCart(sug)}
-                              className="w-full min-h-[40px] px-3 rounded-lg border border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/15 text-[#E23744] hover:bg-[#E23744] hover:text-white text-[13px] font-extrabold inline-flex items-center justify-center gap-1 cursor-pointer transition-colors"
-                            >
-                              <span>ADD</span>
-                              <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  </section>
-                )}
-
-                {/* 3. Coupon Entry */}
-                <section
-                  aria-label="Coupon Code"
-                  className="rounded-2xl border border-border bg-surface p-4 space-y-3 min-w-0 max-w-full"
-                >
-                  <div className="flex items-center gap-2">
-                    <Tag className="w-4 h-4 text-[#E23744] shrink-0" />
-                    <h2 className="text-[15px] font-extrabold text-text">
-                      Offers & promo codes
-                    </h2>
-                  </div>
-                  <div className="flex gap-2.5 min-w-0">
-                    <input
-                      type="text"
-                      inputMode="text"
-                      value={couponInput}
-                      onFocus={handleCheckoutInputFocus}
-                      onBlur={handleCheckoutInputBlur}
-                      onChange={(e) => setCouponInput(e.target.value.toUpperCase())}
-                      placeholder="Enter promo code"
-                      className="min-w-0 flex-1 min-h-[48px] px-3.5 py-2.5 rounded-xl border border-border bg-bg text-[16px] uppercase placeholder:normal-case text-text focus:outline-none focus:border-[#E23744]"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setAppliedCouponCode(couponInput.trim().toUpperCase())}
-                      className="min-h-[48px] px-5 rounded-xl bg-[#E23744] text-white text-[15px] font-extrabold whitespace-nowrap shrink-0 cursor-pointer active:scale-[0.98]"
-                    >
-                      Apply
-                    </button>
-                  </div>
-                  {coupons.length > 0 && (
-                    <div className="w-full max-w-full overflow-x-auto no-scrollbar pt-0.5">
-                      <div className="flex items-center gap-2 min-w-0">
-                        {coupons.map((c) => (
-                          <button
-                            key={c.code}
-                            type="button"
-                            onClick={() => handleCopyAndApplyCoupon(c.code)}
-                            className={`min-h-[40px] px-3.5 py-1.5 rounded-full border text-[13px] tabular-nums shrink-0 cursor-pointer whitespace-nowrap ${
-                              appliedCouponCode === c.code
-                                ? 'border-[#1BA672] bg-[#1BA672]/15 text-[#1BA672] font-extrabold'
-                                : 'border-border bg-bg text-muted hover:text-text font-semibold'
-                            }`}
-                          >
-                            {appliedCouponCode === c.code ? `✓ ${c.code}` : c.code}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                  {billPreview?.couponMessage && (
-                    <p
-                      className={`text-[14px] font-semibold break-words ${
-                        billPreview.appliedCoupon ? 'text-[#1BA672]' : 'text-[#E23744]'
-                      }`}
-                    >
-                      {billPreview.couponMessage}
-                    </p>
-                  )}
-                </section>
-
-                {/* 4. Bill Summary Preview */}
-                <section
-                  aria-label="Bill Summary"
-                  className="rounded-2xl border border-border bg-surface p-4 space-y-2.5 text-[14px] min-w-0 max-w-full"
-                >
-                  <h2 className="text-[15px] font-extrabold text-text pb-1">
-                    Bill summary
-                  </h2>
-                  <div className="flex justify-between text-muted">
-                    <span>Item total</span>
-                    <span className="tabular-nums font-semibold text-text">
-                      ₹{billPreview?.itemTotal ?? totalCartAmount}
-                    </span>
-                  </div>
-                  {billPreview && billPreview.discountAmount > 0 && (
-                    <div className="flex justify-between text-[#1BA672] font-bold">
-                      <span>Coupon discount ({billPreview.appliedCoupon})</span>
-                      <span className="tabular-nums">-₹{billPreview.discountAmount}</span>
-                    </div>
-                  )}
-                  <div className="flex justify-between text-muted">
-                    <span>
-                      Delivery fee
-                      {billPreview ? ` (${billPreview.distanceKm} km)` : ''}
-                    </span>
-                    <span className="tabular-nums font-semibold text-text">
-                      {billPreview ? `₹${billPreview.deliveryFee}` : 'Calculated at checkout'}
-                    </span>
-                  </div>
-                  <div className="flex justify-between text-muted">
-                    <span>Taxes (GST {billPreview?.gstPercent ?? settings.gstPercent}%)</span>
-                    <span className="tabular-nums font-semibold text-text">
-                      ₹{estimatedGst}
-                    </span>
-                  </div>
-                  <div className="flex justify-between pt-2.5 border-t border-border text-[16px] font-extrabold text-text">
-                    <span>Total payable</span>
-                    <span className="tabular-nums">₹{estimatedGrandTotal}</span>
-                  </div>
-                </section>
               </>
             )}
           </div>
@@ -2017,10 +1877,10 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   <ArrowLeft className="w-5 h-5" />
                 </button>
                 <div className="min-w-0 flex-1">
-                  <h1 className="font-display text-[18px] sm:text-[20px] font-extrabold text-text truncate">
+                  <h1 className="font-display text-[18px] sm:text-[20px] font-extrabold text-text break-words">
                     Checkout
                   </h1>
-                  <p className="text-[13px] text-muted truncate">
+                  <p className="text-[13px] text-muted break-words">
                     {totalCartItems} {totalCartItems === 1 ? 'item' : 'items'} · Total ₹{estimatedGrandTotal}
                   </p>
                 </div>
@@ -2080,7 +1940,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex items-center gap-2 min-w-0">
                     <MapPin className="w-5 h-5 text-[#E23744] shrink-0" />
-                    <h2 className="text-[16px] font-extrabold text-text truncate">
+                    <h2 className="text-[16px] font-extrabold text-text break-words">
                       1. Delivery address
                     </h2>
                   </div>
@@ -2190,6 +2050,28 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                       {addressFieldError}
                     </p>
                   )}
+                </div>
+
+                {/* Pincode Input */}
+                <div className="space-y-1.5">
+                  <label
+                    htmlFor="checkout-pincode-input"
+                    className="block text-[14px] font-bold text-text"
+                  >
+                    Pincode *
+                  </label>
+                  <input
+                    id="checkout-pincode-input"
+                    type="text"
+                    inputMode="numeric"
+                    maxLength={6}
+                    value={guestPincode}
+                    onFocus={handleCheckoutInputFocus}
+                    onBlur={handleCheckoutInputBlur}
+                    onChange={(e) => setGuestPincode(e.target.value.replace(/\D/g, ''))}
+                    placeholder="e.g. 400050"
+                    className="w-full max-w-full min-h-[48px] px-3.5 py-2.5 rounded-xl border border-border bg-bg text-[16px] tabular-nums text-text box-border focus:outline-none focus:border-[#E23744]"
+                  />
                 </div>
               </section>
 
@@ -2669,6 +2551,267 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
               )}
             </form>
           )}
+        </div>
+      )}
+
+      {/* =====================================================================
+          CUSTOMER PROFILE PAGE (#/profile)
+         ===================================================================== */}
+      {checkoutStep === 'profile' && (
+        <div className="min-h-dvh w-full max-w-full overflow-x-hidden bg-bg text-text pb-36 box-border">
+          <div className="sticky top-0 z-20 w-full max-w-full bg-surface border-b border-border">
+            <div className="w-full max-w-[720px] mx-auto px-4 min-h-[54px] flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                <button
+                  type="button"
+                  onClick={() => navigateFlowStep('store')}
+                  aria-label="Back to store"
+                  className="w-11 h-11 -ml-2 rounded-full flex items-center justify-center text-text hover:bg-border/40 shrink-0 cursor-pointer"
+                >
+                  <ArrowLeft className="w-5 h-5" />
+                </button>
+                <div className="min-w-0 flex-1">
+                  <h1 className="font-display text-[18px] sm:text-[20px] font-extrabold text-text break-words">
+                    My Profile
+                  </h1>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="w-full max-w-[720px] mx-auto px-4 pt-4 space-y-5 min-w-0 box-border">
+            {profileSavedToast && (
+              <div role="status" className="rounded-2xl bg-[#1BA672]/15 border border-[#1BA672]/40 p-4 text-[#1BA672] font-bold text-sm">
+                ✓ Profile saved successfully! Checkout will auto-fill from these details.
+              </div>
+            )}
+
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                guestAuthLayer.saveGuestProfile({
+                  name: guestName,
+                  phone: guestPhone,
+                  email: guestEmail,
+                  address: guestAddress,
+                  landmark: '',
+                  lat: guestLat,
+                  lng: guestLng,
+                  locationPinned,
+                });
+                setProfileSavedToast(true);
+                setTimeout(() => setProfileSavedToast(false), 3000);
+              }}
+              className="space-y-4"
+            >
+              <div className="rounded-2xl border border-border bg-surface p-4 sm:p-5 space-y-4 min-w-0 max-w-full box-border shadow-2xs">
+                <h2 className="text-[16px] font-extrabold text-text">Customer details</h2>
+                
+                <div className="space-y-1.5">
+                  <label className="block text-[14px] font-bold text-text">Full name</label>
+                  <input
+                    type="text"
+                    value={guestName}
+                    onChange={(e) => setGuestName(e.target.value)}
+                    placeholder="Enter your full name"
+                    className="w-full max-w-full min-h-[48px] px-3.5 py-2.5 rounded-xl border border-border bg-bg text-[16px] text-text box-border focus:outline-none focus:border-[#E23744]"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="block text-[14px] font-bold text-text">Phone number</label>
+                  <input
+                    type="tel"
+                    maxLength={10}
+                    value={guestPhone}
+                    onChange={(e) => setGuestPhone(e.target.value.replace(/\D/g, ''))}
+                    placeholder="10-digit mobile number"
+                    className="w-full max-w-full min-h-[48px] px-3.5 py-2.5 rounded-xl border border-border bg-bg text-[16px] tabular-nums text-text box-border focus:outline-none focus:border-[#E23744]"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="block text-[14px] font-bold text-text">Email address (optional)</label>
+                  <input
+                    type="email"
+                    value={guestEmail}
+                    onChange={(e) => setGuestEmail(e.target.value)}
+                    placeholder="your.email@example.com"
+                    className="w-full max-w-full min-h-[48px] px-3.5 py-2.5 rounded-xl border border-border bg-bg text-[16px] text-text box-border focus:outline-none focus:border-[#E23744]"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="block text-[14px] font-bold text-text">Default saved address</label>
+                  <textarea
+                    rows={2}
+                    value={guestAddress}
+                    onChange={(e) => setGuestAddress(e.target.value)}
+                    placeholder="Flat / Building / Street address"
+                    className="w-full max-w-full min-h-[64px] px-3.5 py-3 rounded-xl border border-border bg-bg text-[16px] text-text box-border focus:outline-none focus:border-[#E23744]"
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  className="w-full min-h-[48px] rounded-xl bg-[#E23744] hover:bg-[#c82d39] text-white font-extrabold text-[15px] cursor-pointer active:scale-[0.98] transition-transform"
+                >
+                  Save Profile
+                </button>
+              </div>
+            </form>
+
+            {/* Favorites Section */}
+            <div className="rounded-2xl border border-border bg-surface p-4 sm:p-5 space-y-3 min-w-0 max-w-full box-border shadow-2xs">
+              <h2 className="text-[16px] font-extrabold text-text flex items-center gap-2">
+                <Star className="w-5 h-5 text-[#E23744] fill-[#E23744]" />
+                <span>Favorites ({favourites.length})</span>
+              </h2>
+              {favourites.length === 0 ? (
+                <p className="text-[14px] text-muted">No favorite items saved yet. Tap the heart icon on any dish to save it here.</p>
+              ) : (
+                <div className="space-y-2">
+                  {homeData?.allMenuItems
+                    .filter((m) => favourites.includes(m.id))
+                    .map((item) => (
+                      <div key={item.id} className="flex items-center justify-between gap-3 p-3 rounded-xl border border-border bg-bg min-w-0">
+                        <div className="flex items-center gap-3 min-w-0 flex-1">
+                          <img src={optimizeAssetUrl(item.imageUrl)} alt={item.name} className="w-12 h-12 rounded-lg object-cover shrink-0" />
+                          <div className="min-w-0 flex-1">
+                            <p className="font-bold text-text truncate">{item.name}</p>
+                            <p className="text-xs text-muted">₹{item.basePrice}</p>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setCheckoutStep('store');
+                            openCustomizeModal(item);
+                          }}
+                          className="min-h-[36px] px-3 rounded-lg bg-[#E23744] text-white text-xs font-bold shrink-0 cursor-pointer"
+                        >
+                          Order
+                        </button>
+                      </div>
+                    ))}
+                </div>
+              )}
+            </div>
+
+            {/* Order History Link */}
+            <div className="rounded-2xl border border-border bg-surface p-4 sm:p-5 flex items-center justify-between gap-3 shadow-2xs">
+              <div className="min-w-0 flex-1">
+                <h3 className="text-[15px] font-extrabold text-text">Order History & Tracking</h3>
+                <p className="text-[13px] text-muted truncate">View your recent orders and live tracking tokens</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveSubTab('orders');
+                  navigateFlowStep('store');
+                }}
+                className="min-h-[44px] px-4 rounded-xl border border-[#E23744] text-[#E23744] font-bold text-[14px] hover:bg-[#FFF5F3] shrink-0 cursor-pointer whitespace-nowrap"
+              >
+                View Orders →
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =====================================================================
+          ABOUT RESTAURANT PAGE (#/about)
+         ===================================================================== */}
+      {checkoutStep === 'about' && (
+        <div className="min-h-dvh w-full max-w-full overflow-x-hidden bg-bg text-text pb-36 box-border">
+          <div className="sticky top-0 z-20 w-full max-w-full bg-surface border-b border-border">
+            <div className="w-full max-w-[720px] mx-auto px-4 min-h-[54px] flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                <button
+                  type="button"
+                  onClick={() => navigateFlowStep('store')}
+                  aria-label="Back to store"
+                  className="w-11 h-11 -ml-2 rounded-full flex items-center justify-center text-text hover:bg-border/40 shrink-0 cursor-pointer"
+                >
+                  <ArrowLeft className="w-5 h-5" />
+                </button>
+                <div className="min-w-0 flex-1">
+                  <h1 className="font-display text-[18px] sm:text-[20px] font-extrabold text-text break-words">
+                    About {settings.shopName}
+                  </h1>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="w-full max-w-[720px] mx-auto px-4 pt-4 space-y-5 min-w-0 box-border">
+            {/* Restaurant Story */}
+            <div className="rounded-2xl border border-border bg-surface p-4 sm:p-6 space-y-3 min-w-0 max-w-full box-border shadow-2xs">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 rounded-2xl bg-primary/12 text-primary flex items-center justify-center shrink-0">
+                  <Flame className="w-6 h-6" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <h2 className="font-display text-lg font-extrabold text-text truncate">{settings.shopName}</h2>
+                  <p className="text-xs text-muted truncate">Authentic Artisanal Indian Kitchen</p>
+                </div>
+              </div>
+              <p className="text-[14px] text-muted leading-relaxed break-words pt-1">
+                {settings.heroSubtitle || 'Aangan Artisanal Kitchen brings authentic slow-cooked dum biryani, smoky tandoori kebabs, and rich artisanal curries crafted with heirloom spices and passion. Every meal is freshly prepared in our single-shop kitchen to deliver unmatched taste and quality right to your doorstep.'}
+              </p>
+            </div>
+
+            {/* Hours & Timings */}
+            <div className="rounded-2xl border border-border bg-surface p-4 sm:p-5 space-y-2 min-w-0 max-w-full box-border shadow-2xs">
+              <h3 className="text-[15px] font-extrabold text-text flex items-center gap-2">
+                <Clock className="w-4 h-4 text-[#E23744]" />
+                <span>Operating Hours</span>
+              </h3>
+              <p className="text-[14px] text-text font-semibold break-words">{settings.weeklyTimings || 'Monday – Sunday: 11:00 AM – 11:30 PM'}</p>
+              <p className="text-[13px] text-muted">Pre-orders accepted when kitchen is busy or closed.</p>
+            </div>
+
+            {/* Address & Location */}
+            <div className="rounded-2xl border border-border bg-surface p-4 sm:p-5 space-y-3 min-w-0 max-w-full box-border shadow-2xs">
+              <h3 className="text-[15px] font-extrabold text-text flex items-center gap-2">
+                <MapPin className="w-4 h-4 text-[#E23744]" />
+                <span>Kitchen Location & Delivery Radius</span>
+              </h3>
+              <p className="text-[14px] text-text break-words font-medium">{deliveryZone.shopAddress}</p>
+              <p className="text-[13px] text-muted">Direct delivery within {deliveryZone.radiusKm} km radius from Bandra West, Mumbai.</p>
+              <a
+                href={`https://maps.google.com/?q=${encodeURIComponent(deliveryZone.shopAddress)}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 text-sm font-bold text-[#E23744] hover:underline pt-1 cursor-pointer"
+              >
+                <span>View on Google Maps</span>
+                <ExternalLink className="w-4 h-4" />
+              </a>
+            </div>
+
+            {/* Phone & WhatsApp Contact */}
+            <div className="rounded-2xl border border-border bg-surface p-4 sm:p-5 space-y-3 min-w-0 max-w-full box-border shadow-2xs">
+              <h3 className="text-[15px] font-extrabold text-text">Customer Support & WhatsApp</h3>
+              <p className="text-[14px] text-muted">Have questions or special catering requests? Reach out to us directly:</p>
+              <div className="flex flex-wrap items-center gap-3 pt-1">
+                <a
+                  href={`tel:${settings.supportPhone || '+919820144500'}`}
+                  className="min-h-[44px] px-4 rounded-xl border border-border bg-bg text-text font-bold text-[14px] inline-flex items-center gap-2 hover:bg-border/30 cursor-pointer"
+                >
+                  <span>📞 {settings.supportPhone || '+919820144500'}</span>
+                </a>
+                <a
+                  href={whatsappHref}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="min-h-[44px] px-4 rounded-xl bg-[#1BA672] text-white font-bold text-[14px] inline-flex items-center gap-2 hover:bg-[#15865b] cursor-pointer"
+                >
+                  <span>Chat on WhatsApp →</span>
+                </a>
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
@@ -3435,7 +3578,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                 >
                   <ArrowLeft className="w-5 h-5" />
                 </button>
-                <h1 className="font-display text-[18px] sm:text-[20px] font-extrabold text-text truncate">
+                <h1 className="font-display text-[18px] sm:text-[20px] font-extrabold text-text break-words">
                   Your Orders
                 </h1>
               </div>
@@ -3967,32 +4110,32 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
 
             {/* PART A BUG 2 FIX: Overflow-free bottom bar with 112px stepper (40x40 buttons) & responsive "Add to cart · ₹XXX" / "Add · ₹XXX" CTA */}
             <div className="flex items-center gap-3 px-4 pt-3 pb-[max(12px,env(safe-area-inset-bottom))] w-full box-border overflow-hidden border-t border-border bg-bg shrink-0">
-              <div className="w-[112px] h-10 shrink-0 flex items-center justify-between border border-border rounded-xl bg-surface">
+              <div className="w-[96px] h-[46px] shrink-0 flex items-center justify-between border border-border rounded-xl bg-surface px-1">
                 <button
                   type="button"
                   aria-label="Decrease quantity"
                   onClick={() => setCustomQty((q) => Math.max(1, q - 1))}
-                  className="w-10 h-10 flex items-center justify-center text-text cursor-pointer shrink-0"
+                  className="w-7 h-7 flex items-center justify-center text-text rounded-lg hover:bg-black/10 active:scale-[0.95] cursor-pointer shrink-0"
                 >
-                  <Minus className="w-4 h-4" />
+                  <Minus className="w-3.5 h-3.5" />
                 </button>
-                <span className="text-[15px] font-extrabold tabular-nums">
+                <span className="text-[14px] font-extrabold tabular-nums">
                   {customQty}
                 </span>
                 <button
                   type="button"
                   aria-label="Increase quantity"
                   onClick={() => setCustomQty((q) => q + 1)}
-                  className="w-10 h-10 flex items-center justify-center text-text cursor-pointer shrink-0"
+                  className="w-7 h-7 flex items-center justify-center text-text rounded-lg hover:bg-black/10 active:scale-[0.95] cursor-pointer shrink-0"
                 >
-                  <Plus className="w-4 h-4" />
+                  <Plus className="w-3.5 h-3.5" />
                 </button>
               </div>
 
               <button
                 type="button"
                 onClick={confirmAddToCart}
-                className="flex-1 min-w-0 h-11 px-3 rounded-xl bg-[#E23744] hover:bg-[#c82d39] text-white text-[15px] font-bold whitespace-nowrap flex items-center justify-center cursor-pointer active:scale-[0.98] transition-transform"
+                className="flex-1 min-w-0 h-[46px] px-3 rounded-xl bg-[#E23744] hover:bg-[#c82d39] text-white text-[15px] font-bold whitespace-nowrap flex items-center justify-center cursor-pointer active:scale-[0.98] transition-transform"
               >
                 <span className="hidden min-[380px]:inline">
                   Add to cart · ₹{customModalTotal}

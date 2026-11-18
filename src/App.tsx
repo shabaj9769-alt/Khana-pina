@@ -7,14 +7,19 @@ import React, { useEffect, useState } from 'react';
 import {
   ChevronDown,
   Clock,
+  CreditCard,
   Flame,
   Home,
+  Info,
   Languages,
   MapPin,
+  Menu as MenuIcon,
   Moon,
   ShoppingBag,
   Sun,
+  User,
   UtensilsCrossed,
+  X,
 } from 'lucide-react';
 import { CartItem, MenuItem, OrderRecord, StorefrontThemeConfig, ThemeMode } from './types.ts';
 import { guestAuthLayer } from './auth/guestAuthLayer.ts';
@@ -39,6 +44,7 @@ export default function App() {
   const [riderToken, setRiderToken] = useState<string>('');
   const [cart, setCart] = useState<CartItem[]>(() => guestAuthLayer.getCart());
   const [cartDrawerOpen, setCartDrawerOpen] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [addressModalTrigger, setAddressModalTrigger] = useState(0);
   const [storefrontRefreshKey, setStorefrontRefreshKey] = useState(0);
   const [menuItemsCache, setMenuItemsCache] = useState<MenuItem[]>([]);
@@ -453,7 +459,182 @@ export default function App() {
                   {totalCartItems}
                 </span>
               </button>
+
+              <button
+                type="button"
+                onClick={() => setMobileMenuOpen(true)}
+                aria-label="Open navigation menu"
+                className="w-10 h-10 rounded-full hover:bg-border/50 text-muted hover:text-text flex items-center justify-center cursor-pointer shrink-0 transition-colors"
+              >
+                <MenuIcon className="w-5 h-5 shrink-0" />
+              </button>
             </div>
+
+            {/* Left Slide-In Drawer with Overlay */}
+            {mobileMenuOpen && (
+              <div className="fixed inset-0 z-50 flex overflow-hidden">
+                <div
+                  className="fixed inset-0 bg-black/50 backdrop-blur-xs transition-opacity"
+                  onClick={() => setMobileMenuOpen(false)}
+                />
+                <div className="relative w-[280px] max-w-[80vw] h-full bg-surface text-text shadow-2xl z-10 flex flex-col overflow-y-auto">
+                  <div className="p-4 border-b border-border flex items-center justify-between">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <div className="w-9 h-9 rounded-xl bg-primary/12 text-primary flex items-center justify-center shrink-0">
+                        <Flame className="w-4 h-4" />
+                      </div>
+                      <span className="font-display font-bold text-base text-text truncate">
+                        {headerMeta.shopName}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setMobileMenuOpen(false)}
+                      aria-label="Close menu"
+                      className="w-9 h-9 rounded-full flex items-center justify-center text-muted hover:text-text hover:bg-border/50 cursor-pointer shrink-0"
+                    >
+                      <X className="w-5 h-5" />
+                    </button>
+                  </div>
+
+                  <div className="p-4 space-y-1.5 flex-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMobileMenuOpen(false);
+                        setCartDrawerOpen(false);
+                        setCustomerSubTab('home');
+                        navigateView('customer', '/#/');
+                      }}
+                      className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-left font-bold text-sm transition-colors cursor-pointer ${
+                        activeView === 'customer' && !cartDrawerOpen && customerSubTab === 'home'
+                          ? 'bg-primary text-primary-contrast'
+                          : 'hover:bg-border/40 text-text'
+                      }`}
+                    >
+                      <Home className="w-5 h-5 shrink-0" />
+                      <span>Home</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMobileMenuOpen(false);
+                        setCartDrawerOpen(false);
+                        setCustomerSubTab('menu');
+                        navigateView('customer', '/#/');
+                      }}
+                      className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-left font-bold text-sm transition-colors cursor-pointer ${
+                        activeView === 'customer' && !cartDrawerOpen && customerSubTab === 'menu'
+                          ? 'bg-primary text-primary-contrast'
+                          : 'hover:bg-border/40 text-text'
+                      }`}
+                    >
+                      <UtensilsCrossed className="w-5 h-5 shrink-0" />
+                      <span>Menu</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMobileMenuOpen(false);
+                        setCartDrawerOpen(false);
+                        setCustomerSubTab('orders');
+                        navigateView('customer', '/#/');
+                      }}
+                      className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-left font-bold text-sm transition-colors cursor-pointer ${
+                        activeView === 'customer' && !cartDrawerOpen && (customerSubTab as string) === 'orders'
+                          ? 'bg-primary text-primary-contrast'
+                          : 'hover:bg-border/40 text-text'
+                      }`}
+                    >
+                      <Clock className="w-5 h-5 shrink-0" />
+                      <span>Orders</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMobileMenuOpen(false);
+                        if (cart.length === 0) {
+                          openCartPage();
+                        } else {
+                          window.location.hash = '#/checkout';
+                          window.dispatchEvent(new HashChangeEvent('hashchange'));
+                        }
+                      }}
+                      className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-left font-bold text-sm transition-colors cursor-pointer ${
+                        typeof window !== 'undefined' && window.location.hash === '#/checkout'
+                          ? 'bg-primary text-primary-contrast'
+                          : 'hover:bg-border/40 text-text'
+                      }`}
+                    >
+                      <CreditCard className="w-5 h-5 shrink-0" />
+                      <span>Checkout</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMobileMenuOpen(false);
+                        openCartPage();
+                      }}
+                      className={`w-full flex items-center justify-between px-4 py-3 rounded-xl text-left font-bold text-sm transition-colors cursor-pointer ${
+                        cartDrawerOpen && window.location.hash !== '#/checkout'
+                          ? 'bg-primary text-primary-contrast'
+                          : 'hover:bg-border/40 text-text'
+                      }`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <ShoppingBag className="w-5 h-5 shrink-0" />
+                        <span>Cart</span>
+                      </div>
+                      {totalCartItems > 0 && (
+                        <span className={`px-2 py-0.5 rounded-full text-xs font-extrabold ${cartDrawerOpen && window.location.hash !== '#/checkout' ? 'bg-white text-primary' : 'bg-primary text-primary-contrast'}`}>
+                          {totalCartItems}
+                        </span>
+                      )}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMobileMenuOpen(false);
+                        setCartDrawerOpen(false);
+                        window.location.hash = '#/profile';
+                        window.dispatchEvent(new HashChangeEvent('hashchange'));
+                      }}
+                      className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-left font-bold text-sm transition-colors cursor-pointer ${
+                        typeof window !== 'undefined' && window.location.hash === '#/profile'
+                          ? 'bg-primary text-primary-contrast'
+                          : 'hover:bg-border/40 text-text'
+                      }`}
+                    >
+                      <User className="w-5 h-5 shrink-0" />
+                      <span>Profile</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMobileMenuOpen(false);
+                        setCartDrawerOpen(false);
+                        window.location.hash = '#/about';
+                        window.dispatchEvent(new HashChangeEvent('hashchange'));
+                      }}
+                      className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-left font-bold text-sm transition-colors cursor-pointer ${
+                        typeof window !== 'undefined' && window.location.hash === '#/about'
+                          ? 'bg-primary text-primary-contrast'
+                          : 'hover:bg-border/40 text-text'
+                      }`}
+                    >
+                      <Info className="w-5 h-5 shrink-0" />
+                      <span>About Us</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </header>
       )}

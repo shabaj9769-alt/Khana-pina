@@ -86,7 +86,7 @@
     max-width: 100vw;
     margin: 0;
     padding: 0;
-    overflow-x: clip;
+    overflow-x: hidden;
     font-family: var(--font-body);
     font-size: var(--text-body);
     line-height: 1.5;
@@ -101,7 +101,7 @@
     width: 100%;
     max-width: 100vw;
     min-width: 0;
-    overflow-x: clip;
+    overflow-x: hidden;
   }
 
   img {

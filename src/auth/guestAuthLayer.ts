@@ -11,6 +11,7 @@ import { CartItem, ThemeMode } from '../types.ts';
 export interface GuestProfile {
   name: string;
   phone: string;
+  email?: string;
   address: string;
   landmark: string;
   lat: number;
@@ -50,6 +51,7 @@ const STORAGE_KEYS = {
 const DEFAULT_PROFILE: GuestProfile = {
   name: '',
   phone: '',
+  email: '',
   address: '',
   landmark: '',
   lat: 0,
