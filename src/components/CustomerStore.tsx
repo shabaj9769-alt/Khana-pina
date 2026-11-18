@@ -174,18 +174,32 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
   const [activeBannerIdx, setActiveBannerIdx] = useState(0);
   const [copiedCoupon, setCopiedCoupon] = useState<string | null>(null);
 
-  // Part 1: Full-screen multi-page checkout flow ('store' | 'cart' | 'checkout') synced with browser history
+  // Part 5: Full-screen multi-page checkout flow ('store' | 'cart' | 'checkout') synced with browser history
   const [checkoutStep, setCheckoutStep] = useState<'store' | 'cart' | 'checkout'>(() => {
     if (typeof window !== 'undefined') {
-      if (window.location.hash === '#/checkout') return 'checkout';
+      if (window.location.hash === '#/checkout') {
+        return cart.length > 0 ? 'checkout' : 'cart';
+      }
       if (window.location.hash === '#/cart') return 'cart';
     }
     return cartDrawerOpen ? 'cart' : 'store';
   });
 
-  // On-screen keyboard & mobile input focus state
+  // On-screen keyboard state (detected via window.visualViewport resize)
   const [isKeyboardOpen, setIsKeyboardOpen] = useState(false);
-  const [isInputFocusedOnMobile, setIsInputFocusedOnMobile] = useState(false);
+
+  // Hero & Bestsellers auto-slide refs
+  const heroTouchStartXRef = useRef<number | null>(null);
+  const heroIsTouchingRef = useRef<boolean>(false);
+  const heroPauseUntilRef = useRef<number>(0);
+  const lastHeroSlideAtRef = useRef<number>(Date.now());
+
+  const bestsellersScrollRef = useRef<HTMLDivElement | null>(null);
+  const bestsellersTouchingRef = useRef<boolean>(false);
+  const bestsellersPauseUntilRef = useRef<number>(0);
+  const bestsellersProgrammaticScrollRef = useRef<boolean>(false);
+  const lastBestsellerSlideAtRef = useRef<number>(Date.now());
+  const bestsellerIdxRef = useRef<number>(0);
 
   // Field-level validation touched states
   const [checkoutTouched, setCheckoutTouched] = useState(false);
@@ -283,16 +297,17 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
 
   // Navigate between 'store', 'cart', and 'checkout' and sync with browser history
   const navigateFlowStep = (nextStep: 'store' | 'cart' | 'checkout', pushHistory = true) => {
-    setCheckoutStep(nextStep);
-    setCartDrawerOpen(nextStep !== 'store');
+    const resolvedStep = nextStep === 'checkout' && cart.length === 0 ? 'cart' : nextStep;
+    setCheckoutStep(resolvedStep);
+    setCartDrawerOpen(resolvedStep !== 'store');
     if (pushHistory && typeof window !== 'undefined') {
       try {
-        if (nextStep === 'cart' && window.location.hash !== '#/cart') {
+        if (resolvedStep === 'cart' && window.location.hash !== '#/cart') {
           window.history.pushState({ step: 'cart' }, '', '/#/cart');
-        } else if (nextStep === 'checkout' && window.location.hash !== '#/checkout') {
+        } else if (resolvedStep === 'checkout' && window.location.hash !== '#/checkout') {
           window.history.pushState({ step: 'checkout' }, '', '/#/checkout');
-        } else if (nextStep === 'store' && window.location.hash !== '') {
-          window.history.pushState({ step: 'store' }, '', '/');
+        } else if (resolvedStep === 'store' && window.location.hash !== '#/' && window.location.hash !== '') {
+          window.history.pushState({ step: 'store' }, '', '/#/');
         }
       } catch {
         // Ignore history push errors in restricted iframes
@@ -303,13 +318,39 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
     }
   };
 
+  // Redirect #/checkout to #/cart if cart is empty
+  useEffect(() => {
+    if (checkoutStep === 'checkout' && cart.length === 0) {
+      setCheckoutStep('cart');
+      setCartDrawerOpen(true);
+      try {
+        if (window.location.hash === '#/checkout') {
+          window.history.replaceState({ step: 'cart' }, '', '/#/cart');
+        }
+      } catch {
+        // Ignore history errors
+      }
+    }
+  }, [checkoutStep, cart.length]);
+
   // Sync checkoutStep when browser Back/Forward button is pressed
   useEffect(() => {
     const syncStepFromLocation = () => {
       const hash = window.location.hash;
       if (hash === '#/checkout') {
-        setCheckoutStep('checkout');
-        setCartDrawerOpen(true);
+        const currentCart = guestAuthLayer.getCart();
+        if (currentCart.length === 0) {
+          setCheckoutStep('cart');
+          setCartDrawerOpen(true);
+          try {
+            window.history.replaceState({ step: 'cart' }, '', '/#/cart');
+          } catch {
+            // Ignore
+          }
+        } else {
+          setCheckoutStep('checkout');
+          setCartDrawerOpen(true);
+        }
       } else if (hash === '#/cart') {
         setCheckoutStep('cart');
         setCartDrawerOpen(true);
@@ -330,19 +371,110 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
   // Sync when cartDrawerOpen prop is toggled from App header or bottom nav
   useEffect(() => {
     if (cartDrawerOpen && checkoutStep === 'store') {
-      const target = window.location.hash === '#/checkout' ? 'checkout' : 'cart';
+      const target =
+        window.location.hash === '#/checkout' && cart.length > 0 ? 'checkout' : 'cart';
       navigateFlowStep(target, true);
     } else if (!cartDrawerOpen && checkoutStep !== 'store') {
       setCheckoutStep('store');
       if (window.location.hash === '#/cart' || window.location.hash === '#/checkout') {
         try {
-          window.history.pushState({ step: 'store' }, '', '/');
+          window.history.pushState({ step: 'store' }, '', '/#/');
         } catch {
           // Ignore
         }
       }
     }
   }, [cartDrawerOpen]);
+
+  // PART 4A: Hero Banner Auto-Slide (every 4s, pauses on touch/drag, pauses 6s after manual swipe/dot tap, pauses on hidden tab or reduced motion)
+  useEffect(() => {
+    const bannerCount = homeData?.banners?.length ?? 0;
+    if (bannerCount <= 1 || checkoutStep !== 'store' || activeSubTab !== 'home' || Boolean(searchQuery)) {
+      return;
+    }
+
+    lastHeroSlideAtRef.current = Date.now();
+
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        lastHeroSlideAtRef.current = Date.now();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    const intervalId = window.setInterval(() => {
+      if (document.hidden) return;
+      if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        return;
+      }
+      if (heroIsTouchingRef.current) return;
+      const now = Date.now();
+      if (now < heroPauseUntilRef.current) return;
+      if (now - lastHeroSlideAtRef.current >= 4000) {
+        lastHeroSlideAtRef.current = now;
+        setActiveBannerIdx((prev) => (prev + 1) % bannerCount);
+      }
+    }, 250);
+
+    return () => {
+      window.clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [homeData?.banners?.length, checkoutStep, activeSubTab, searchQuery]);
+
+  // PART 4B: Bestsellers Auto-Slide (every 3s, smooth scroll one card, loops back to start, pauses on touch/scroll and for 5s after manual interaction)
+  useEffect(() => {
+    if (!homeData || checkoutStep !== 'store' || activeSubTab !== 'home' || Boolean(searchQuery)) {
+      return;
+    }
+
+    lastBestsellerSlideAtRef.current = Date.now();
+
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        lastBestsellerSlideAtRef.current = Date.now();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    const intervalId = window.setInterval(() => {
+      if (document.hidden) return;
+      if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        return;
+      }
+      if (bestsellersTouchingRef.current) return;
+      const container = bestsellersScrollRef.current;
+      if (!container) return;
+
+      const now = Date.now();
+      if (now < bestsellersPauseUntilRef.current) return;
+      if (now - lastBestsellerSlideAtRef.current >= 3000) {
+        const cards = container.querySelectorAll('article');
+        if (cards.length <= 1) return;
+
+        const atEnd =
+          container.scrollLeft + container.clientWidth >= container.scrollWidth - 12;
+        const nextIdx = atEnd ? 0 : (bestsellerIdxRef.current + 1) % cards.length;
+        bestsellerIdxRef.current = nextIdx;
+
+        const targetCard = cards[nextIdx] as HTMLElement | undefined;
+        const targetLeft = nextIdx === 0 || !targetCard ? 0 : targetCard.offsetLeft;
+
+        bestsellersProgrammaticScrollRef.current = true;
+        container.scrollTo({ left: targetLeft, behavior: 'smooth' });
+        window.setTimeout(() => {
+          bestsellersProgrammaticScrollRef.current = false;
+        }, 650);
+
+        lastBestsellerSlideAtRef.current = now;
+      }
+    }, 250);
+
+    return () => {
+      window.clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [homeData, checkoutStep, activeSubTab, searchQuery, selectedCategory, dietFilter]);
 
   // Detect on-screen keyboard open via window.visualViewport resize
   useEffect(() => {
@@ -360,9 +492,6 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
     e: React.FocusEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>
   ) => {
     const el = e.currentTarget;
-    if (window.innerWidth < 768) {
-      setIsInputFocusedOnMobile(true);
-    }
     setTimeout(() => {
       try {
         el.scrollIntoView({ block: 'center', behavior: 'smooth' });
@@ -373,9 +502,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
   };
 
   const handleCheckoutInputBlur = () => {
-    setTimeout(() => {
-      setIsInputFocusedOnMobile(false);
-    }, 100);
+    // Keep state intact on blur
   };
 
   // Safe localStorage favorite toggle
@@ -1185,7 +1312,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
         aria-label="Loading menu"
         className="w-full max-w-[1200px] mx-auto px-4 py-4 space-y-5 overflow-x-hidden min-w-0"
       >
-        <div className="w-full h-[340px] rounded-3xl skeleton-shimmer" />
+        <div className="w-full h-[200px] sm:h-[240px] md:h-[280px] rounded-2xl skeleton-shimmer" />
         <div className="flex gap-3 overflow-hidden">
           {[1, 2, 3, 4].map((n) => (
             <div key={n} className="h-11 w-36 shrink-0 rounded-full skeleton-shimmer" />
@@ -1263,16 +1390,16 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
     if (inCartQty > 0) {
       const targetLine = matchingLines[matchingLines.length - 1];
       return (
-        <div className="min-h-[44px] min-w-[112px] rounded-xl bg-[#E23744] text-white flex items-center justify-between px-1 shrink-0 shadow-sm">
+        <div className="min-h-[44px] min-w-[96px] rounded-xl bg-[#E23744] text-white flex items-center justify-between px-1 shrink-0 shadow-sm">
           <button
             type="button"
             aria-label={`Decrease quantity of ${item.name}`}
             onClick={() => updateCartQty(targetLine.cartLineId, -1)}
-            className="w-9 h-9 flex items-center justify-center rounded-lg hover:bg-black/15 active:scale-[0.95] transition-transform cursor-pointer"
+            className="w-8 h-9 flex items-center justify-center rounded-lg hover:bg-black/15 active:scale-[0.95] transition-transform cursor-pointer"
           >
             <Minus className="w-4 h-4 stroke-[2.5]" />
           </button>
-          <span className="text-[15px] font-extrabold tabular-nums px-1.5">{inCartQty}</span>
+          <span className="text-sm font-extrabold tabular-nums px-1">{inCartQty}</span>
           <button
             type="button"
             aria-label={`Increase quantity of ${item.name}`}
@@ -1283,7 +1410,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                 updateCartQty(targetLine.cartLineId, 1);
               }
             }}
-            className="w-9 h-9 flex items-center justify-center rounded-lg hover:bg-black/15 active:scale-[0.95] transition-transform cursor-pointer"
+            className="w-8 h-9 flex items-center justify-center rounded-lg hover:bg-black/15 active:scale-[0.95] transition-transform cursor-pointer"
           >
             <Plus className="w-4 h-4 stroke-[2.5]" />
           </button>
@@ -1301,7 +1428,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
             openCustomizeModal(item);
           }
         }}
-        className="min-h-[44px] min-w-[104px] px-5 rounded-xl border-2 border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/15 text-[#E23744] hover:bg-[#E23744] hover:text-white text-[15px] font-extrabold whitespace-nowrap inline-flex items-center justify-center gap-1 transition-all active:scale-[0.98] cursor-pointer shrink-0 shadow-2xs"
+        className="min-h-[44px] px-4 rounded-xl border-2 border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/15 text-[#E23744] hover:bg-[#E23744] hover:text-white text-sm font-extrabold whitespace-nowrap inline-flex items-center justify-center gap-1 transition-all active:scale-[0.98] cursor-pointer shrink-0 shadow-2xs"
       >
         <span>ADD</span>
         <Plus className="w-4 h-4 stroke-[2.5]" />
@@ -1309,8 +1436,13 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
     );
   };
 
-  // Photo-first Zomato/Swiggy Dish Card (rounded-2xl, 4:3 image, top-left veg/non-veg square dot, bottom-left badge, 18px name, 14px 2-line description, 18px bold price + ADD/stepper)
-  const renderMenuListRow = (item: MenuItem, isCompactRail = false, isComboSection = false) => {
+  // Photo-first Zomato/Swiggy Dish Card (rounded-2xl, 4:3 image, top-left veg/non-veg square dot, bottom-left badge, line-clamp-2 name & description, non-overlapping price + Customisable + ADD)
+  const renderMenuListRow = (
+    item: MenuItem,
+    isCompactRail = false,
+    isComboSection = false,
+    isBestsellerCarousel = false
+  ) => {
     const isFav = favourites.includes(item.id);
     const comboSavings = isComboSection ? getComboSavingsAmount(item) : 0;
 
@@ -1334,7 +1466,11 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
       <article
         key={item.id}
         className={`${
-          isCompactRail ? 'w-[264px] sm:w-[285px] shrink-0 snap-start' : 'w-full h-full'
+          isBestsellerCarousel
+            ? 'w-[75%] sm:w-[280px] shrink-0 snap-start h-auto'
+            : isCompactRail
+            ? 'w-[75%] sm:w-[280px] shrink-0 snap-start h-auto'
+            : 'w-full h-auto'
         } rounded-2xl border ${
           isComboSection
             ? 'border-[#1BA672]/40 bg-[#FFF5F3]/40 dark:bg-[#1C1C1C]'
@@ -1370,7 +1506,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
 
             {/* Bottom-left badge (Bestseller / New / Chef's Pick / Save ₹X) */}
             <div
-              className={`absolute bottom-2.5 left-2.5 px-2.5 py-1 rounded-lg text-[13px] font-bold tracking-tight leading-none shadow-xs ${badgeBgClass}`}
+              className={`absolute bottom-2.5 left-2.5 px-2.5 py-1 rounded-lg text-xs font-bold tracking-tight leading-none shadow-xs ${badgeBgClass}`}
             >
               {badgeLabel}
             </div>
@@ -1395,35 +1531,36 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
             </button>
           </div>
 
-          {/* 18px Dish Name */}
+          {/* Dish Name: line-clamp-2 text-base font-bold */}
           <h3
             onClick={() => openCustomizeModal(item)}
-            className="mt-3.5 text-[18px] font-bold text-text leading-snug line-clamp-2 break-words cursor-pointer hover:text-[#E23744] transition-colors"
+            title={item.name}
+            className="mt-3 text-base font-bold text-text leading-snug line-clamp-2 break-words cursor-pointer hover:text-[#E23744] transition-colors"
           >
             {item.name}
           </h3>
 
-          {/* 14px 2-Line Description */}
-          <p className="mt-1.5 text-[14px] text-muted leading-relaxed line-clamp-2 break-words">
+          {/* 2-Line Description: line-clamp-2 text-sm text-muted */}
+          <p className="mt-1 text-sm text-muted leading-snug line-clamp-2 break-words">
             {item.description}
           </p>
         </div>
 
-        {/* Footer: 18px Bold Price + ADD / (− 1 +) Stepper */}
-        <div className="mt-4 pt-3 border-t border-[#E8E8E8]/70 dark:border-[#2E2E2E] flex items-center justify-between gap-2 min-w-0">
-          <div className="min-w-0">
+        {/* Footer: Price on left (shrink-0) + Customisable on its own line in text-xs directly under price; ADD button on right (shrink-0, min-h-[44px]) */}
+        <div className="mt-3.5 pt-3 border-t border-[#E8E8E8]/70 dark:border-[#2E2E2E] flex items-center justify-between gap-2.5 min-w-0">
+          <div className="shrink-0">
             <div className="flex items-baseline gap-1.5">
-              <span className="text-[18px] font-bold text-text tabular-nums leading-none">
+              <span className="text-base sm:text-lg font-bold text-text tabular-nums leading-none">
                 ₹{item.basePrice}
               </span>
               {isComboSection && comboSavings > 0 && (
-                <span className="text-[13px] text-muted line-through tabular-nums">
+                <span className="text-xs text-muted line-through tabular-nums">
                   ₹{item.basePrice + comboSavings}
                 </span>
               )}
             </div>
             {(item.variants.length > 0 || item.addons.length > 0) && (
-              <span className="text-[13px] text-muted font-medium mt-1 block">
+              <span className="text-xs text-muted font-medium mt-1 block leading-tight">
                 Customisable
               </span>
             )}
@@ -1508,10 +1645,18 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
     ? `Minimum order amount for delivery is ₹${billPreview.minOrderAmount}.`
     : null;
 
-  const hideStickyBarForKeyboard = isKeyboardOpen || isInputFocusedOnMobile;
+  const hideStickyBarForKeyboard = isKeyboardOpen;
 
   return (
-    <div className="w-full max-w-full overflow-x-clip min-w-0 pb-24">
+    <div
+      className={`w-full max-w-full overflow-x-clip min-w-0 ${
+        checkoutStep === 'store'
+          ? totalCartItems > 0
+            ? 'pb-[calc(160px+env(safe-area-inset-bottom))] md:pb-24'
+            : 'pb-[calc(88px+env(safe-area-inset-bottom))] md:pb-20'
+          : ''
+      }`}
+    >
       {/* 1. SHOP CLOSED / HOLIDAY / PRE-ORDER TIMINGS BANNER */}
       {(!settings.isOpen || settings.holidaysNote) && (
         <div className="w-full max-w-full bg-[#FFF5F3] dark:bg-[#2A1618] border-b border-[#E23744]/25 px-4 py-2.5">
@@ -1539,7 +1684,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
       {checkoutStep === 'cart' && (
         <div className="min-h-dvh w-full max-w-full overflow-x-clip bg-bg text-text pb-36">
           {/* Sticky Cart Top Bar */}
-          <div className="sticky top-[56px] z-20 w-full max-w-full bg-surface/95 backdrop-blur-md border-b border-border">
+          <div className="sticky top-0 z-20 w-full max-w-full bg-surface border-b border-border">
             <div className="w-full max-w-[720px] mx-auto px-4 min-h-[54px] flex items-center justify-between gap-3">
               <div className="flex items-center gap-2.5 min-w-0 flex-1">
                 <button
@@ -1750,8 +1895,8 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                       onFocus={handleCheckoutInputFocus}
                       onBlur={handleCheckoutInputBlur}
                       onChange={(e) => setCouponInput(e.target.value.toUpperCase())}
-                      placeholder="Enter promo code (e.g. FEAST150)"
-                      className="min-w-0 flex-1 min-h-[48px] px-3.5 py-2.5 rounded-xl border border-border bg-bg text-[16px] uppercase text-text focus:outline-none focus:border-[#E23744]"
+                      placeholder="Enter promo code"
+                      className="min-w-0 flex-1 min-h-[48px] px-3.5 py-2.5 rounded-xl border border-border bg-bg text-[16px] uppercase placeholder:normal-case text-text focus:outline-none focus:border-[#E23744]"
                     />
                     <button
                       type="button"
@@ -1860,7 +2005,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
       {checkoutStep === 'checkout' && (
         <div className="min-h-dvh w-full max-w-full overflow-x-clip bg-bg text-text pb-40">
           {/* Sticky Checkout Top Bar */}
-          <div className="sticky top-[56px] z-20 w-full max-w-full bg-surface/95 backdrop-blur-md border-b border-border">
+          <div className="sticky top-0 z-20 w-full max-w-full bg-surface border-b border-border">
             <div className="w-full max-w-[720px] mx-auto px-4 min-h-[54px] flex items-center justify-between gap-3">
               <div className="flex items-center gap-2.5 min-w-0 flex-1">
                 <button
@@ -2532,270 +2677,182 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
          ===================================================================== */}
       {checkoutStep === 'store' && (activeSubTab === 'home' || activeSubTab === 'menu') && (
         <div className="w-full max-w-full overflow-x-hidden min-w-0">
-          <div className="w-full max-w-[1200px] mx-auto px-4 pt-4 space-y-5 min-w-0 max-w-full">
-            {/* 3. BOLD ~340px HERO BANNER (rounded-3xl, bottom dark gradient, red tag pill, clamp(28px,7vw,48px) 800 heading, subline "30-min delivery · Free above ₹499" with text-balance, red CTA "Order now") */}
+          <div className="w-full max-w-[1200px] mx-auto px-4 pt-3 space-y-3 min-w-0 max-w-full">
+            {/* PART 3: COMPACT HERO BANNER WITH AUTO-SLIDE (h-[200px] sm:h-[240px] md:h-[280px], rounded-2xl, p-4, clamp(20px,5.5vw,28px) line-clamp-2 heading, text-sm line-clamp-1 subline, 40px CTA button) */}
             {activeSubTab === 'home' && !searchQuery && (
               <section
                 aria-label="Featured Kitchen Hero"
-                className="w-full max-w-full min-w-0 space-y-3.5"
+                className="w-full max-w-full min-w-0"
               >
-                <div className="relative w-full max-w-full h-[330px] sm:h-[345px] md:h-[360px] rounded-3xl overflow-hidden bg-[#121212] border border-[#E8E8E8] dark:border-[#2E2E2E] shadow-md">
-                  <img
-                    src={optimizeAssetUrl(
-                      currentBanner?.imageUrl ||
-                        '/src/assets/images/hero_artisanal_feast_1793975537331.webp'
-                    )}
-                    alt={
-                      currentBanner?.title ||
-                      'Slow-Cooked Awadhi Handis, Delivered Seal-Intact'
-                    }
-                    width={1200}
-                    height={675}
-                    fetchPriority="high"
-                    decoding="async"
-                    referrerPolicy="no-referrer"
-                    className="w-full h-full object-cover object-center"
-                  />
-                  <div className="absolute inset-0 bg-gradient-to-t from-black/95 via-black/55 to-black/15 p-5 sm:p-7 md:p-8 flex flex-col justify-end">
-                    <div className="max-w-3xl min-w-0 space-y-2.5">
-                      <span className="inline-flex items-center px-3.5 py-1 rounded-full bg-[#E23744] text-[13px] font-extrabold text-white tracking-wide shadow-sm">
-                        Clay pot · Freshly cooked
-                      </span>
-
-                      <h1 className="font-display text-[clamp(28px,7vw,48px)] font-extrabold text-white leading-[1.08] line-clamp-3 break-words">
-                        {currentBanner?.title ||
-                          'Slow-Cooked Awadhi Dum Biryani & Charcoal Kebabs'}
-                      </h1>
-
-                      <p className="text-[15px] sm:text-[16px] font-semibold text-white/95 text-balance break-words">
-                        30-min delivery · Free above ₹499
-                      </p>
-
-                      <div className="pt-1.5 flex flex-wrap items-center justify-between gap-3">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (currentBanner?.linkType === 'COUPON') {
-                              handleCopyAndApplyCoupon(currentBanner.linkTarget);
-                            } else if (currentBanner?.linkType === 'CATEGORY') {
-                              setSelectedCategory(currentBanner.linkTarget);
-                            }
-                            menuSectionRef.current?.scrollIntoView({
-                              behavior: 'smooth',
-                              block: 'start',
-                            });
-                          }}
-                          className="min-h-[48px] px-6 rounded-2xl bg-[#E23744] hover:bg-[#c82d39] text-white text-[16px] font-extrabold whitespace-nowrap inline-flex items-center justify-center gap-2 shadow-lg cursor-pointer transition-all active:scale-[0.98]"
-                        >
-                          <span>Order now</span>
-                          <ChevronRight className="w-5 h-5 stroke-[2.5]" />
-                        </button>
-
-                        {banners.length > 1 && (
-                          <div className="flex items-center gap-1.5">
-                            {banners.map((b, idx) => (
-                              <button
-                                key={b.id}
-                                type="button"
-                                aria-label={`Slide ${idx + 1}`}
-                                onClick={() => setActiveBannerIdx(idx)}
-                                className="min-w-[32px] min-h-[44px] flex items-center justify-center cursor-pointer"
-                              >
-                                <span
-                                  className={`h-2 rounded-full transition-all ${
-                                    idx === activeBannerIdx % banners.length
-                                      ? 'w-7 bg-[#E23744]'
-                                      : 'w-2 bg-white/60'
-                                  }`}
-                                />
-                              </button>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* 4. PERK CHIPS UNDER THE HERO (horizontal scroll inside overflow-x-auto container) */}
                 <div
-                  aria-label="Storefront Perks and Offers"
-                  className="w-full max-w-full overflow-x-auto no-scrollbar"
+                  onTouchStart={(e) => {
+                    heroIsTouchingRef.current = true;
+                    heroTouchStartXRef.current = e.touches[0]?.clientX ?? null;
+                  }}
+                  onTouchMove={() => {
+                    heroIsTouchingRef.current = true;
+                  }}
+                  onTouchEnd={(e) => {
+                    heroIsTouchingRef.current = false;
+                    const startX = heroTouchStartXRef.current;
+                    const endX = e.changedTouches[0]?.clientX ?? null;
+                    if (startX !== null && endX !== null && banners.length > 1) {
+                      const diff = startX - endX;
+                      if (Math.abs(diff) > 40) {
+                        setActiveBannerIdx((prev) =>
+                          diff > 0
+                            ? (prev + 1) % banners.length
+                            : (prev - 1 + banners.length) % banners.length
+                        );
+                      }
+                    }
+                    heroTouchStartXRef.current = null;
+                    heroPauseUntilRef.current = Date.now() + 6000;
+                    lastHeroSlideAtRef.current = Date.now() + 2000;
+                  }}
+                  onTouchCancel={() => {
+                    heroIsTouchingRef.current = false;
+                    heroTouchStartXRef.current = null;
+                    heroPauseUntilRef.current = Date.now() + 6000;
+                    lastHeroSlideAtRef.current = Date.now() + 2000;
+                  }}
+                  className="relative w-full max-w-full h-[200px] sm:h-[240px] md:h-[280px] rounded-2xl overflow-hidden bg-[#121212] border border-[#E8E8E8] dark:border-[#2E2E2E] shadow-sm"
                 >
-                  <div className="flex items-center gap-2.5 min-w-0">
-                    {/* Chip 1: Rating */}
-                    <div className="min-h-[44px] px-4 rounded-2xl border border-[#E8E8E8] dark:border-[#2E2E2E] bg-[#FFF5F3] dark:bg-[#1C1C1C] flex items-center gap-2 shrink-0 whitespace-nowrap">
-                      <span className="w-6 h-6 rounded-lg bg-[#1BA672] text-white flex items-center justify-center">
-                        <Star className="w-3.5 h-3.5 fill-white text-white" />
-                      </span>
-                      <span className="text-[14px] font-extrabold text-text tabular-nums">
-                        4.8 ★
-                      </span>
-                      <span className="text-[13px] font-medium text-muted">
-                        (1.2k+ ratings)
-                      </span>
-                    </div>
-
-                    {/* Chip 2: Free Delivery Threshold */}
-                    <div className="min-h-[44px] px-4 rounded-2xl border border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface flex items-center gap-2 shrink-0 whitespace-nowrap">
-                      <Truck className="w-4 h-4 text-[#E23744] shrink-0" />
-                      <span className="text-[14px] font-bold text-text">
-                        Free delivery above ₹499
-                      </span>
-                    </div>
-
-                    {/* Chip 3: Coupon Code(s) */}
-                    {primaryCoupon ? (
-                      <button
-                        type="button"
-                        onClick={() => handleCopyAndApplyCoupon(primaryCoupon.code)}
-                        className={`min-h-[44px] px-4 rounded-2xl border flex items-center gap-2 shrink-0 whitespace-nowrap cursor-pointer transition-all active:scale-[0.98] ${
-                          copiedCoupon === primaryCoupon.code ||
-                          appliedCouponCode === primaryCoupon.code
-                            ? 'border-[#1BA672] bg-[#1BA672]/10 text-text'
-                            : 'border-[#E23744]/30 bg-[#FFF5F3] dark:bg-[#2A1618] text-text hover:border-[#E23744]'
-                        }`}
+                  <div
+                    className="flex w-full h-full transition-transform duration-[450ms] ease-out"
+                    style={{
+                      transform:
+                        banners.length > 1
+                          ? `translateX(-${(activeBannerIdx % banners.length) * 100}%)`
+                          : undefined,
+                    }}
+                  >
+                    {(banners.length > 0
+                      ? banners
+                      : [
+                          {
+                            id: 'fallback_hero',
+                            title: 'Slow-Cooked Awadhi Handis, Delivered Seal-Intact',
+                            subtitle: '30-min delivery · Free above ₹499',
+                            ctaText: 'Order now',
+                            imageUrl:
+                              '/src/assets/images/hero_artisanal_feast_1793975537331.webp',
+                            linkType: 'CATEGORY' as const,
+                            linkTarget: 'ALL',
+                            sortOrder: 1,
+                            isVisible: true,
+                            startDate: '',
+                            endDate: '',
+                          },
+                        ]
+                    ).map((banner, idx) => (
+                      <div
+                        key={banner.id}
+                        aria-hidden={
+                          banners.length > 1 && idx !== activeBannerIdx % banners.length
+                        }
+                        className="relative w-full min-w-full shrink-0 h-full flex flex-col justify-end overflow-hidden"
                       >
-                        <Tag className="w-4 h-4 text-[#E23744] shrink-0" />
-                        <span className="text-[14px] font-semibold text-text">
-                          {primaryCoupon.description}
-                        </span>
-                        <span className="text-[13px] font-extrabold text-[#E23744] tabular-nums">
-                          {copiedCoupon === primaryCoupon.code ||
-                          appliedCouponCode === primaryCoupon.code
-                            ? `✓ ${primaryCoupon.code}`
-                            : `· ${primaryCoupon.code}`}
-                        </span>
-                      </button>
-                    ) : null}
-
-                    {/* Additional Coupons */}
-                    {coupons.slice(1).map((c) => {
-                      const isApplied =
-                        copiedCoupon === c.code || appliedCouponCode === c.code;
-                      return (
-                        <button
-                          key={c.code}
-                          type="button"
-                          onClick={() => handleCopyAndApplyCoupon(c.code)}
-                          className={`min-h-[44px] px-4 rounded-2xl border flex items-center gap-2 shrink-0 whitespace-nowrap cursor-pointer transition-all active:scale-[0.98] ${
-                            isApplied
-                              ? 'border-[#1BA672] bg-[#1BA672]/10 text-text'
-                              : 'border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface text-text hover:border-[#E23744]'
-                          }`}
-                        >
-                          <Tag className="w-4 h-4 text-[#E23744] shrink-0" />
-                          <span className="text-[14px] font-semibold text-text">
-                            {c.description}
-                          </span>
-                          <span className="text-[13px] font-extrabold text-[#E23744] tabular-nums">
-                            {isApplied ? `✓ ${c.code}` : `· ${c.code}`}
-                          </span>
-                        </button>
-                      );
-                    })}
-
-                    {/* Chip 4: Schedule Order */}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsScheduled((prev) => {
-                          const next = !prev;
-                          if (next && !scheduledFor && timeSlots[0]) {
-                            setScheduledFor(timeSlots[0].iso);
+                        <img
+                          src={optimizeAssetUrl(
+                            banner.imageUrl ||
+                              '/src/assets/images/hero_artisanal_feast_1793975537331.webp'
+                          )}
+                          alt={
+                            banner.title ||
+                            'Slow-Cooked Awadhi Handis, Delivered Seal-Intact'
                           }
-                          return next;
-                        });
-                        navigateFlowStep('cart');
-                      }}
-                      className={`min-h-[44px] px-4 rounded-2xl border flex items-center gap-2 shrink-0 whitespace-nowrap cursor-pointer transition-all active:scale-[0.98] ${
-                        isScheduled
-                          ? 'border-[#1BA672] bg-[#1BA672]/10 text-text'
-                          : 'border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface text-text hover:border-[#E23744]'
-                      }`}
-                    >
-                      <CalendarClock className="w-4 h-4 text-[#1BA672] shrink-0" />
-                      <span className="text-[14px] font-bold text-text">
-                        Schedule order
-                      </span>
-                      <span className="text-[13px] text-muted">
-                        · {settings.weeklyTimings}
-                      </span>
-                    </button>
+                          width={1200}
+                          height={675}
+                          fetchPriority={idx === 0 ? 'high' : 'auto'}
+                          decoding="async"
+                          referrerPolicy="no-referrer"
+                          className="absolute inset-0 w-full h-full object-cover object-center"
+                        />
+                        <div className="relative z-10 w-full h-full bg-gradient-to-t from-black/95 via-black/60 to-black/15 p-4 flex flex-col justify-end">
+                          <div className="w-full max-w-full min-w-0 space-y-1.5">
+                            <h1 className="font-display text-[clamp(20px,5.5vw,28px)] font-extrabold leading-tight line-clamp-2 text-white break-words">
+                              {banner.title ||
+                                'Slow-Cooked Awadhi Dum Biryani & Charcoal Kebabs'}
+                            </h1>
+
+                            <p className="text-sm font-medium text-white/95 line-clamp-1">
+                              {banner.subtitle || '30-min delivery · Free above ₹499'}
+                            </p>
+
+                            <div className="pt-1 flex items-center justify-between gap-2">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (banner.linkType === 'COUPON') {
+                                    handleCopyAndApplyCoupon(banner.linkTarget);
+                                  } else if (banner.linkType === 'CATEGORY') {
+                                    setSelectedCategory(banner.linkTarget);
+                                  }
+                                  menuSectionRef.current?.scrollIntoView({
+                                    behavior: 'smooth',
+                                    block: 'start',
+                                  });
+                                }}
+                                className="h-10 px-4 rounded-xl bg-[#E23744] hover:bg-[#c82d39] text-white text-sm font-extrabold whitespace-nowrap inline-flex items-center justify-center gap-1.5 shadow-md cursor-pointer transition-all active:scale-[0.98]"
+                              >
+                                <span>Order now</span>
+                                <ChevronRight className="w-4 h-4 stroke-[2.5]" />
+                              </button>
+
+                              {banners.length > 1 && (
+                                <div className="flex items-center gap-0.5">
+                                  {banners.map((b, dotIdx) => (
+                                    <button
+                                      key={b.id}
+                                      type="button"
+                                      aria-label={`Slide ${dotIdx + 1}`}
+                                      onClick={() => {
+                                        setActiveBannerIdx(dotIdx);
+                                        heroPauseUntilRef.current = Date.now() + 6000;
+                                        lastHeroSlideAtRef.current = Date.now() + 2000;
+                                      }}
+                                      className="min-w-[32px] min-h-[32px] flex items-center justify-center cursor-pointer"
+                                    >
+                                      <span
+                                        className={`h-1.5 rounded-full transition-all ${
+                                          dotIdx === activeBannerIdx % banners.length
+                                            ? 'w-5 bg-[#E23744]'
+                                            : 'w-1.5 bg-white/60'
+                                        }`}
+                                      />
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 </div>
-
-                {/* PART C.4 & PART 3: PROMINENT "ORDER AGAIN" CARD (items wrap up to 2 lines with line-clamp-2) */}
-                {recentOrders.length > 0 && (
-                  <div
-                    aria-label="Order again"
-                    className="w-full max-w-full rounded-2xl border border-[#E8E8E8] dark:border-[#2E2E2E] bg-[#FFF5F3] dark:bg-[#1C1C1C] p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3.5"
-                  >
-                    <div className="flex items-start gap-3 min-w-0 flex-1">
-                      <div className="w-11 h-11 rounded-xl bg-[#E23744]/12 text-[#E23744] flex items-center justify-center shrink-0">
-                        <RotateCcw className="w-5 h-5" />
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <h2 className="text-[16px] font-extrabold text-text">
-                            Order again
-                          </h2>
-                          <span className="text-[13px] font-semibold text-muted tabular-nums">
-                            #{recentOrders[0].orderNumber} · ₹{recentOrders[0].grandTotal}
-                          </span>
-                        </div>
-                        <p className="text-[14px] text-muted line-clamp-2 break-words mt-0.5">
-                          {recentOrders[0].items
-                            .map((i) => `${i.quantity}x ${i.itemName}`)
-                            .join(', ')}
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-2 shrink-0">
-                      <button
-                        type="button"
-                        onClick={() => onOpenTracking(recentOrders[0].trackingToken)}
-                        className="min-h-[44px] px-3.5 rounded-xl border border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface text-[13px] font-bold text-text whitespace-nowrap cursor-pointer active:scale-[0.98]"
-                      >
-                        Track order
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (onReorder) {
-                            onReorder(recentOrders[0], homeData.allMenuItems);
-                          }
-                        }}
-                        className="min-h-[44px] px-4 rounded-xl bg-[#E23744] hover:bg-[#c82d39] text-white text-[14px] font-extrabold whitespace-nowrap inline-flex items-center gap-1.5 cursor-pointer active:scale-[0.98] shadow-xs"
-                      >
-                        <RotateCcw className="w-4 h-4" />
-                        <span>Order again</span>
-                      </button>
-                    </div>
-                  </div>
-                )}
               </section>
             )}
 
-            {/* 5. LARGE SEARCH BAR (rounded-2xl, padding 14px) + GREEN VEG TOGGLE SWITCH */}
-            <div className="flex items-stretch gap-3 w-full max-w-full min-w-0">
+            {/* SEARCH BAR + GREEN VEG TOGGLE SWITCH (Immediately below Hero so both Hero, Search, and start of first menu section are visible on 360x740 without scrolling) */}
+            <div className="flex items-stretch gap-2.5 w-full max-w-full min-w-0">
               <div className="relative flex-1 min-w-0">
-                <Search className="w-5 h-5 text-[#E23744] absolute left-4 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <Search className="w-5 h-5 text-[#E23744] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                 <input
                   type="search"
                   aria-label="Search menu dishes"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   placeholder="Search dishes..."
-                  className="w-full min-h-[54px] py-[14px] pl-12 pr-10 rounded-2xl border border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface text-[16px] font-medium text-text placeholder:text-muted focus:outline-none focus:border-[#E23744] shadow-2xs"
+                  className="w-full min-h-[48px] py-2.5 pl-11 pr-9 rounded-2xl border border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface text-base font-medium text-text placeholder:text-muted focus:outline-none focus:border-[#E23744] shadow-2xs"
                 />
                 {searchQuery && (
                   <button
                     type="button"
                     aria-label="Clear search query"
                     onClick={() => setSearchQuery('')}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 w-10 h-10 flex items-center justify-center text-muted hover:text-text cursor-pointer"
+                    className="absolute right-1.5 top-1/2 -translate-y-1/2 w-9 h-9 flex items-center justify-center text-muted hover:text-text cursor-pointer"
                   >
                     <X className="w-4 h-4" />
                   </button>
@@ -2811,33 +2868,33 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                 onClick={() =>
                   setDietFilter((d) => (d === 'VEG' ? 'ALL' : 'VEG'))
                 }
-                className={`min-h-[54px] px-3.5 sm:px-4 rounded-2xl border flex items-center gap-2.5 shrink-0 cursor-pointer transition-all active:scale-[0.98] ${
+                className={`min-h-[48px] px-3 sm:px-4 rounded-2xl border flex items-center gap-2 shrink-0 cursor-pointer transition-all active:scale-[0.98] ${
                   dietFilter === 'VEG'
                     ? 'border-[#1BA672] bg-[#1BA672]/10 text-text shadow-2xs'
                     : 'border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface text-text'
                 }`}
               >
                 <div className="flex flex-col items-start leading-none">
-                  <span className="text-[14px] font-extrabold text-text">VEG</span>
-                  <span className="text-[13px] font-medium text-muted mt-0.5 hidden sm:inline">
+                  <span className="text-xs font-extrabold text-text">VEG</span>
+                  <span className="text-[11px] font-medium text-muted mt-0.5 hidden sm:inline">
                     Only
                   </span>
                 </div>
                 <span
-                  className={`w-11 h-6 rounded-full p-0.5 flex items-center transition-colors ${
+                  className={`w-10 h-5.5 rounded-full p-0.5 flex items-center transition-colors ${
                     dietFilter === 'VEG'
                       ? 'bg-[#1BA672] justify-end'
                       : 'bg-zinc-300 dark:bg-zinc-700 justify-start'
                   }`}
                 >
-                  <span className="w-5 h-5 rounded-full bg-white shadow-xs flex items-center justify-center">
+                  <span className="w-4.5 h-4.5 rounded-full bg-white shadow-xs flex items-center justify-center">
                     <span className="w-2 h-2 rounded-full bg-[#1BA672]" />
                   </span>
                 </span>
               </button>
             </div>
 
-            {/* SECONDARY FILTER CHIPS (44px tap targets, >=13px text, overflow-x-auto) */}
+            {/* SECONDARY FILTER CHIPS */}
             <div className="w-full max-w-full overflow-x-auto no-scrollbar">
               <div className="flex items-center gap-2 min-w-0">
                 <button
@@ -2845,7 +2902,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   onClick={() =>
                     setDietFilter((d) => (d === 'NON_VEG' ? 'ALL' : 'NON_VEG'))
                   }
-                  className={`min-h-[44px] px-4 rounded-full border text-[14px] font-bold flex items-center gap-2 shrink-0 whitespace-nowrap cursor-pointer transition-all active:scale-[0.98] ${
+                  className={`min-h-[40px] px-3.5 rounded-full border text-xs sm:text-sm font-bold flex items-center gap-1.5 shrink-0 whitespace-nowrap cursor-pointer transition-all active:scale-[0.98] ${
                     dietFilter === 'NON_VEG'
                       ? 'border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/20 text-[#E23744]'
                       : 'border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface text-text'
@@ -2858,20 +2915,20 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                 <button
                   type="button"
                   onClick={() => setSortSheetOpen(true)}
-                  className={`min-h-[44px] px-4 rounded-full border text-[14px] font-bold flex items-center gap-1.5 shrink-0 whitespace-nowrap cursor-pointer transition-all active:scale-[0.98] ${
+                  className={`min-h-[40px] px-3.5 rounded-full border text-xs sm:text-sm font-bold flex items-center gap-1.5 shrink-0 whitespace-nowrap cursor-pointer transition-all active:scale-[0.98] ${
                     sortBy !== 'POPULAR'
                       ? 'border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/20 text-[#E23744]'
                       : 'border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface text-text'
                   }`}
                 >
-                  <ArrowUpDown className="w-4 h-4 text-[#E23744] shrink-0" />
+                  <ArrowUpDown className="w-3.5 h-3.5 text-[#E23744] shrink-0" />
                   <span>Sort: {sortLabelMap[sortBy]}</span>
                 </button>
 
                 <button
                   type="button"
                   onClick={() => setFilterBestseller((v) => !v)}
-                  className={`min-h-[44px] px-4 rounded-full text-[14px] font-bold whitespace-nowrap shrink-0 border transition-all active:scale-[0.98] cursor-pointer ${
+                  className={`min-h-[40px] px-3.5 rounded-full text-xs sm:text-sm font-bold whitespace-nowrap shrink-0 border transition-all active:scale-[0.98] cursor-pointer ${
                     filterBestseller
                       ? 'border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/20 text-[#E23744]'
                       : 'border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface text-text'
@@ -2883,7 +2940,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                 <button
                   type="button"
                   onClick={() => setFilterUnder350((v) => !v)}
-                  className={`min-h-[44px] px-4 rounded-full text-[14px] font-bold whitespace-nowrap shrink-0 border transition-all active:scale-[0.98] cursor-pointer ${
+                  className={`min-h-[40px] px-3.5 rounded-full text-xs sm:text-sm font-bold whitespace-nowrap shrink-0 border transition-all active:scale-[0.98] cursor-pointer ${
                     filterUnder350
                       ? 'border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/20 text-[#E23744]'
                       : 'border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface text-text'
@@ -2895,7 +2952,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                 <button
                   type="button"
                   onClick={() => setFilterRating4Plus((v) => !v)}
-                  className={`min-h-[44px] px-4 rounded-full text-[14px] font-bold whitespace-nowrap shrink-0 border transition-all active:scale-[0.98] cursor-pointer ${
+                  className={`min-h-[40px] px-3.5 rounded-full text-xs sm:text-sm font-bold whitespace-nowrap shrink-0 border transition-all active:scale-[0.98] cursor-pointer ${
                     filterRating4Plus
                       ? 'border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/20 text-[#E23744]'
                       : 'border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface text-text'
@@ -2907,7 +2964,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                 <button
                   type="button"
                   onClick={() => setFilterSavedOnly((v) => !v)}
-                  className={`min-h-[44px] px-4 rounded-full text-[14px] font-bold whitespace-nowrap shrink-0 border transition-all active:scale-[0.98] cursor-pointer ${
+                  className={`min-h-[40px] px-3.5 rounded-full text-xs sm:text-sm font-bold whitespace-nowrap shrink-0 border transition-all active:scale-[0.98] cursor-pointer ${
                     filterSavedOnly
                       ? 'border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/20 text-[#E23744]'
                       : 'border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface text-text'
@@ -2920,8 +2977,8 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
           </div>
 
           {/* LARGE ROUNDED-FULL CATEGORY CHIPS (selected chip dark/filled + Favorites chip when >=1 favorite exists) */}
-          <div className="sticky top-[56px] left-0 right-0 z-20 w-full max-w-full bg-bg/95 backdrop-blur-md border-b border-[#E8E8E8] dark:border-[#2E2E2E] mt-4">
-            <div className="w-full max-w-[1200px] mx-auto px-4 py-2.5 min-w-0 max-w-full">
+          <div className="sticky top-0 left-0 right-0 z-20 w-full max-w-full bg-bg/95 backdrop-blur-md border-b border-[#E8E8E8] dark:border-[#2E2E2E] mt-2.5">
+            <div className="w-full max-w-[1200px] mx-auto px-4 py-2 min-w-0 max-w-full">
               <div
                 role="tablist"
                 aria-label="Menu Categories"
@@ -3015,9 +3072,9 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
             ref={(el) => {
               menuSectionRef.current = el;
             }}
-            className="w-full max-w-[1200px] mx-auto px-4 pt-6 space-y-8 min-w-0 max-w-full overflow-x-hidden"
+            className="w-full max-w-[1200px] mx-auto px-4 pt-4 space-y-6 min-w-0 max-w-full overflow-x-hidden"
           >
-            {/* ADMIN-DEFINED CURATED SECTIONS (Including Styled COMBO_OFFERS Section in Part C.3) */}
+            {/* ADMIN-DEFINED CURATED SECTIONS (Including PART 4 Bestsellers Auto-Slide Carousel & Styled COMBO_OFFERS Section) */}
             {activeSubTab === 'home' &&
               !searchQuery &&
               selectedCategory === 'ALL' &&
@@ -3025,48 +3082,276 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
               sections.map((section) => {
                 if (section.items.length === 0) return null;
                 const isComboSection = section.sectionType === 'COMBO_OFFERS';
+                const isBestsellerSection = section.sectionType === 'BESTSELLERS';
 
                 return (
                   <section
                     key={section.id}
                     aria-label={section.title}
-                    className={`w-full max-w-full min-w-0 space-y-3.5 overflow-hidden ${
+                    className={`w-full max-w-full min-w-0 space-y-3 overflow-hidden ${
                       isComboSection
-                        ? 'rounded-3xl border border-[#1BA672]/35 bg-[#FFF5F3]/60 dark:bg-[#1C1C1C] p-4 sm:p-5'
+                        ? 'rounded-2xl border border-[#1BA672]/35 bg-[#FFF5F3]/60 dark:bg-[#1C1C1C] p-4 sm:p-5'
                         : ''
                     }`}
                   >
                     <div className="min-w-0 flex flex-wrap items-center justify-between gap-2">
                       <div className="min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
-                          <h2 className="font-display text-[clamp(20px,3vw,24px)] font-extrabold text-text leading-snug break-words">
+                          <h2 className="font-display text-[clamp(18px,3vw,22px)] font-extrabold text-text leading-snug break-words">
                             {section.title}
                           </h2>
                           {isComboSection && (
-                            <span className="px-2.5 py-0.5 rounded-full bg-[#1BA672] text-white text-[13px] font-bold inline-flex items-center gap-1">
+                            <span className="px-2.5 py-0.5 rounded-full bg-[#1BA672] text-white text-xs font-bold inline-flex items-center gap-1">
                               <Sparkles className="w-3.5 h-3.5" />
                               <span>Combo Savings</span>
                             </span>
                           )}
                         </div>
                         {section.subtitle && (
-                          <p className="text-[14px] text-muted mt-0.5 break-words">
+                          <p className="text-sm text-muted mt-0.5 break-words">
                             {section.subtitle}
                           </p>
                         )}
                       </div>
                     </div>
 
-                    <div className="w-full max-w-full overflow-x-auto no-scrollbar snap-x pb-2">
-                      <div className="flex gap-4 sm:gap-5 min-w-0 items-stretch">
+                    <div
+                      ref={isBestsellerSection ? bestsellersScrollRef : undefined}
+                      onTouchStart={
+                        isBestsellerSection
+                          ? () => {
+                              bestsellersTouchingRef.current = true;
+                              bestsellersPauseUntilRef.current = Date.now() + 5000;
+                              lastBestsellerSlideAtRef.current = Date.now() + 2000;
+                            }
+                          : undefined
+                      }
+                      onTouchEnd={
+                        isBestsellerSection
+                          ? () => {
+                              bestsellersTouchingRef.current = false;
+                              bestsellersPauseUntilRef.current = Date.now() + 5000;
+                              lastBestsellerSlideAtRef.current = Date.now() + 2000;
+                            }
+                          : undefined
+                      }
+                      onTouchCancel={
+                        isBestsellerSection
+                          ? () => {
+                              bestsellersTouchingRef.current = false;
+                              bestsellersPauseUntilRef.current = Date.now() + 5000;
+                              lastBestsellerSlideAtRef.current = Date.now() + 2000;
+                            }
+                          : undefined
+                      }
+                      onPointerDown={
+                        isBestsellerSection
+                          ? () => {
+                              bestsellersPauseUntilRef.current = Date.now() + 5000;
+                              lastBestsellerSlideAtRef.current = Date.now() + 2000;
+                            }
+                          : undefined
+                      }
+                      onWheel={
+                        isBestsellerSection
+                          ? () => {
+                              bestsellersPauseUntilRef.current = Date.now() + 5000;
+                              lastBestsellerSlideAtRef.current = Date.now() + 2000;
+                            }
+                          : undefined
+                      }
+                      onScroll={
+                        isBestsellerSection
+                          ? () => {
+                              if (!bestsellersProgrammaticScrollRef.current) {
+                                bestsellersPauseUntilRef.current = Date.now() + 5000;
+                                lastBestsellerSlideAtRef.current = Date.now() + 2000;
+                              }
+                            }
+                          : undefined
+                      }
+                      className="w-full max-w-full overflow-x-auto no-scrollbar snap-x snap-mandatory pb-2"
+                    >
+                      <div className="flex gap-3.5 sm:gap-4 min-w-0 items-start">
                         {section.items.map((item) =>
-                          renderMenuListRow(item, true, isComboSection)
+                          renderMenuListRow(
+                            item,
+                            true,
+                            isComboSection,
+                            isBestsellerSection
+                          )
                         )}
                       </div>
                     </div>
                   </section>
                 );
               })}
+
+            {/* PERKS & "ORDER AGAIN" STRIP (Below Curated Bestsellers so Hero, Search, and start of first menu section are visible above the fold on 360x740) */}
+            {activeSubTab === 'home' && !searchQuery && (
+              <section
+                aria-label="Storefront Perks and Recent Orders"
+                className="w-full max-w-full min-w-0 space-y-3"
+              >
+                <div
+                  aria-label="Storefront Perks and Offers"
+                  className="w-full max-w-full overflow-x-auto no-scrollbar"
+                >
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    {/* Chip 1: Rating */}
+                    <div className="min-h-[42px] px-3.5 rounded-2xl border border-[#E8E8E8] dark:border-[#2E2E2E] bg-[#FFF5F3] dark:bg-[#1C1C1C] flex items-center gap-2 shrink-0 whitespace-nowrap">
+                      <span className="w-5.5 h-5.5 rounded-lg bg-[#1BA672] text-white flex items-center justify-center">
+                        <Star className="w-3.5 h-3.5 fill-white text-white" />
+                      </span>
+                      <span className="text-sm font-extrabold text-text tabular-nums">
+                        4.8 ★
+                      </span>
+                      <span className="text-xs font-medium text-muted">
+                        (1.2k+ ratings)
+                      </span>
+                    </div>
+
+                    {/* Chip 2: Free Delivery Threshold */}
+                    <div className="min-h-[42px] px-3.5 rounded-2xl border border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface flex items-center gap-2 shrink-0 whitespace-nowrap">
+                      <Truck className="w-4 h-4 text-[#E23744] shrink-0" />
+                      <span className="text-sm font-bold text-text">
+                        Free delivery above ₹499
+                      </span>
+                    </div>
+
+                    {/* Chip 3: Coupon Code(s) */}
+                    {primaryCoupon ? (
+                      <button
+                        type="button"
+                        onClick={() => handleCopyAndApplyCoupon(primaryCoupon.code)}
+                        className={`min-h-[42px] px-3.5 rounded-2xl border flex items-center gap-2 shrink-0 whitespace-nowrap cursor-pointer transition-all active:scale-[0.98] ${
+                          copiedCoupon === primaryCoupon.code ||
+                          appliedCouponCode === primaryCoupon.code
+                            ? 'border-[#1BA672] bg-[#1BA672]/10 text-text'
+                            : 'border-[#E23744]/30 bg-[#FFF5F3] dark:bg-[#2A1618] text-text hover:border-[#E23744]'
+                        }`}
+                      >
+                        <Tag className="w-4 h-4 text-[#E23744] shrink-0" />
+                        <span className="text-sm font-semibold text-text">
+                          {primaryCoupon.description}
+                        </span>
+                        <span className="text-xs font-extrabold text-[#E23744] tabular-nums">
+                          {copiedCoupon === primaryCoupon.code ||
+                          appliedCouponCode === primaryCoupon.code
+                            ? `✓ ${primaryCoupon.code}`
+                            : `· ${primaryCoupon.code}`}
+                        </span>
+                      </button>
+                    ) : null}
+
+                    {/* Additional Coupons */}
+                    {coupons.slice(1).map((c) => {
+                      const isApplied =
+                        copiedCoupon === c.code || appliedCouponCode === c.code;
+                      return (
+                        <button
+                          key={c.code}
+                          type="button"
+                          onClick={() => handleCopyAndApplyCoupon(c.code)}
+                          className={`min-h-[42px] px-3.5 rounded-2xl border flex items-center gap-2 shrink-0 whitespace-nowrap cursor-pointer transition-all active:scale-[0.98] ${
+                            isApplied
+                              ? 'border-[#1BA672] bg-[#1BA672]/10 text-text'
+                              : 'border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface text-text hover:border-[#E23744]'
+                          }`}
+                        >
+                          <Tag className="w-4 h-4 text-[#E23744] shrink-0" />
+                          <span className="text-sm font-semibold text-text">
+                            {c.description}
+                          </span>
+                          <span className="text-xs font-extrabold text-[#E23744] tabular-nums">
+                            {isApplied ? `✓ ${c.code}` : `· ${c.code}`}
+                          </span>
+                        </button>
+                      );
+                    })}
+
+                    {/* Chip 4: Schedule Order */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsScheduled((prev) => {
+                          const next = !prev;
+                          if (next && !scheduledFor && timeSlots[0]) {
+                            setScheduledFor(timeSlots[0].iso);
+                          }
+                          return next;
+                        });
+                        navigateFlowStep('cart');
+                      }}
+                      className={`min-h-[42px] px-3.5 rounded-2xl border flex items-center gap-2 shrink-0 whitespace-nowrap cursor-pointer transition-all active:scale-[0.98] ${
+                        isScheduled
+                          ? 'border-[#1BA672] bg-[#1BA672]/10 text-text'
+                          : 'border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface text-text hover:border-[#E23744]'
+                      }`}
+                    >
+                      <CalendarClock className="w-4 h-4 text-[#1BA672] shrink-0" />
+                      <span className="text-sm font-bold text-text">
+                        Schedule order
+                      </span>
+                      <span className="text-xs text-muted">
+                        · {settings.weeklyTimings}
+                      </span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* PROMINENT "ORDER AGAIN" CARD */}
+                {recentOrders.length > 0 && (
+                  <div
+                    aria-label="Order again"
+                    className="w-full max-w-full rounded-2xl border border-[#E8E8E8] dark:border-[#2E2E2E] bg-[#FFF5F3] dark:bg-[#1C1C1C] p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3.5"
+                  >
+                    <div className="flex items-start gap-3 min-w-0 flex-1">
+                      <div className="w-11 h-11 rounded-xl bg-[#E23744]/12 text-[#E23744] flex items-center justify-center shrink-0">
+                        <RotateCcw className="w-5 h-5" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <h2 className="text-base font-extrabold text-text">
+                            Order again
+                          </h2>
+                          <span className="text-xs font-semibold text-muted tabular-nums">
+                            #{recentOrders[0].orderNumber} · ₹{recentOrders[0].grandTotal}
+                          </span>
+                        </div>
+                        <p className="text-sm text-muted line-clamp-2 break-words mt-0.5">
+                          {recentOrders[0].items
+                            .map((i) => `${i.quantity}x ${i.itemName}`)
+                            .join(', ')}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => onOpenTracking(recentOrders[0].trackingToken)}
+                        className="min-h-[44px] px-3.5 rounded-xl border border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface text-xs font-bold text-text whitespace-nowrap cursor-pointer active:scale-[0.98]"
+                      >
+                        Track order
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (onReorder) {
+                            onReorder(recentOrders[0], homeData.allMenuItems);
+                          }
+                        }}
+                        className="min-h-[44px] px-4 rounded-xl bg-[#E23744] hover:bg-[#c82d39] text-white text-sm font-extrabold whitespace-nowrap inline-flex items-center gap-1.5 cursor-pointer active:scale-[0.98] shadow-xs"
+                      >
+                        <RotateCcw className="w-4 h-4" />
+                        <span>Order again</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </section>
+            )}
 
             {/* 6. FULL MENU GRID GROUPED BY CATEGORY (1-2 cols mobile, 3-4 cols desktop, gap 16-20px) */}
             <section
@@ -3137,7 +3422,34 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
           MY RECENT ORDERS TAB + "FIND MY ORDER" GUEST LOOKUP
          ===================================================================== */}
       {checkoutStep === 'store' && activeSubTab === 'orders' && (
-        <div className="w-full max-w-[1200px] mx-auto px-4 py-5 space-y-5 min-w-0 max-w-full overflow-x-hidden">
+        <div className="min-h-dvh w-full max-w-full overflow-x-clip bg-bg text-text">
+          {/* Orders Top Bar with Back Arrow */}
+          <div className="sticky top-0 z-20 w-full max-w-full bg-surface border-b border-border">
+            <div className="w-full max-w-[1200px] mx-auto px-4 min-h-[54px] flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                <button
+                  type="button"
+                  onClick={() => setActiveSubTab('home')}
+                  aria-label="Back to home"
+                  className="w-11 h-11 -ml-2 rounded-full flex items-center justify-center text-text hover:bg-border/40 shrink-0 cursor-pointer"
+                >
+                  <ArrowLeft className="w-5 h-5" />
+                </button>
+                <h1 className="font-display text-[18px] sm:text-[20px] font-extrabold text-text truncate">
+                  Your Orders
+                </h1>
+              </div>
+              <button
+                type="button"
+                onClick={loadRecentOrders}
+                className="min-h-[40px] px-3.5 rounded-full border border-border bg-bg text-xs font-bold text-text whitespace-nowrap shrink-0 cursor-pointer active:scale-[0.98] transition-transform"
+              >
+                Refresh
+              </button>
+            </div>
+          </div>
+
+          <div className="w-full max-w-[1200px] mx-auto px-4 py-5 space-y-5 min-w-0 max-w-full overflow-x-hidden">
           <div className="rounded-2xl border border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface p-5 space-y-4">
             <div>
               <h2 className="font-display text-[20px] font-extrabold text-text break-words">
@@ -3266,6 +3578,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
               ))}
             </div>
           )}
+          </div>
         </div>
       )}
 
@@ -3336,15 +3649,10 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
       )}
 
       {/* =====================================================================
-          7. GREEN STICKY CART BAR ("2 items · ₹658 | View cart →", safe-area-inset-bottom)
+          7. GREEN STICKY CART BAR ("2 items · ₹658 | View cart →", directly above bottom nav)
          ===================================================================== */}
       {totalCartItems > 0 && checkoutStep === 'store' && (
-        <div
-          style={{
-            paddingBottom: 'env(safe-area-inset-bottom, 0px)',
-          }}
-          className="fixed bottom-[56px] md:bottom-5 left-0 right-0 w-full max-w-full z-30 px-4 pointer-events-none animate-cart-bar"
-        >
+        <div className="fixed bottom-[calc(56px+env(safe-area-inset-bottom,0px)+8px)] md:bottom-5 left-0 right-0 w-full max-w-full z-30 px-4 pointer-events-none animate-cart-bar">
           <div className="w-full max-w-[540px] mx-auto pointer-events-auto">
             <button
               type="button"

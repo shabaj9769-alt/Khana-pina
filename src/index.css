@@ -139,6 +139,14 @@
   padding-bottom: max(0.75rem, env(safe-area-inset-bottom, 0px));
 }
 
+.pb-page-nav {
+  padding-bottom: calc(88px + env(safe-area-inset-bottom, 0px));
+}
+
+.pb-page-nav-cart {
+  padding-bottom: calc(160px + env(safe-area-inset-bottom, 0px));
+}
+
 /* Shimmer Skeleton Loading for Menu & Cards */
 @keyframes aanganShimmer {
   0% {
