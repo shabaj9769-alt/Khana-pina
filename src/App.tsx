@@ -298,12 +298,12 @@ export default function App() {
         </div>
       )}
 
-      {/* PART 1 & PART 2: COMPACT, NON-STICKY HEADER (Single ~56px row, Home & Menu only, no 25 min, no Set delivery address chip) */}
+      {/* STICKY STOREFRONT HEADER (Auto height, safe area top padding, no status clipping) */}
       {showStorefrontHeader && (
-        <header className="w-full max-w-full h-14 max-h-[56px] box-border bg-surface border-b border-border overflow-hidden">
-          <div className="w-full max-w-[1200px] mx-auto px-4 h-full flex items-center justify-between gap-2 overflow-hidden">
-            {/* Left: Desktop-only Brand Icon + Single-row Shop Name & Compact Status */}
-            <div className="flex items-center gap-2.5 flex-1 min-w-0 overflow-hidden">
+        <header className="sticky top-0 z-30 w-full max-w-full box-border bg-surface border-b border-border pt-[calc(10px+env(safe-area-inset-top,0px))] pb-2.5 min-h-[56px] shadow-2xs">
+          <div className="w-full max-w-[1200px] mx-auto px-4 flex items-center justify-between gap-3">
+            {/* Left: Desktop-only Brand Icon + Column with Shop Name & Live Status */}
+            <div className="flex items-center gap-2.5 flex-1 min-w-0">
               <a
                 href="/#/"
                 onClick={(e) => {
@@ -329,7 +329,7 @@ export default function App() {
                 )}
               </a>
 
-              <div className="flex-1 min-w-0 overflow-hidden">
+              <div className="flex-1 min-w-0 flex flex-col justify-center">
                 <a
                   href="/#/"
                   onClick={(e) => {
@@ -338,12 +338,12 @@ export default function App() {
                     setCustomerSubTab('home');
                     navigateView('customer', '/#/');
                   }}
-                  className="block font-display text-base font-bold leading-tight text-text break-words overflow-wrap-anywhere"
+                  className="block font-display text-[17px] font-bold leading-[1.25] text-text break-words overflow-wrap-anywhere"
                 >
                   {headerMeta.shopName}
                 </a>
 
-                <div className="flex items-center gap-1.5 text-xs leading-none text-muted mt-0.5 truncate">
+                <div className="flex items-center gap-1.5 text-[13px] leading-[1.3] text-muted mt-0.5">
                   <span
                     className={`w-2 h-2 rounded-full shrink-0 ${
                       headerMeta.isOpen && !headerMeta.busyMode
@@ -353,7 +353,7 @@ export default function App() {
                         : 'bg-[#E23744]'
                     }`}
                   />
-                  <span className="font-semibold text-text truncate">
+                  <span className="font-semibold text-text">
                     {headerMeta.isOpen
                       ? headerMeta.busyMode
                         ? 'Busy'
@@ -412,18 +412,8 @@ export default function App() {
               </button>
             </nav>
 
-            {/* Right: Compact 40x40 Icon Controls + Desktop-Only Cart Button (md:flex) */}
+            {/* Right: Controls (Dark mode toggle, Cart button, Navigation menu) */}
             <div className="flex items-center gap-1 shrink-0">
-              <button
-                type="button"
-                onClick={toggleLanguage}
-                aria-label="Switch language"
-                title="Switch language"
-                className="w-10 h-10 rounded-full hover:bg-border/50 text-muted hover:text-text flex items-center justify-center cursor-pointer shrink-0 transition-colors"
-              >
-                <Languages className="w-4 h-4 shrink-0" />
-              </button>
-
               <button
                 type="button"
                 onClick={toggleGuestDarkLight}
@@ -625,6 +615,45 @@ export default function App() {
                       <Info className="w-5 h-5 shrink-0" />
                       <span>About Us</span>
                     </button>
+                  </div>
+
+                  {/* Language switch at bottom of drawer */}
+                  <div className="p-3.5 border-t border-border mt-auto shrink-0 bg-surface">
+                    <div className="flex items-center justify-between px-3 py-2 rounded-xl border border-border bg-bg text-xs font-semibold text-text">
+                      <div className="flex items-center gap-2 text-muted">
+                        <Languages className="w-4 h-4 shrink-0" />
+                        <span>Language:</span>
+                      </div>
+                      <div className="flex items-center gap-1 text-[13px]">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (lang !== 'en') toggleLanguage();
+                          }}
+                          className={`px-1.5 py-0.5 rounded cursor-pointer transition-colors ${
+                            lang === 'en'
+                              ? 'text-primary font-bold underline'
+                              : 'text-muted hover:text-text'
+                          }`}
+                        >
+                          English
+                        </button>
+                        <span className="text-muted/40">|</span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (lang !== 'hi') toggleLanguage();
+                          }}
+                          className={`px-1.5 py-0.5 rounded cursor-pointer transition-colors ${
+                            lang === 'hi'
+                              ? 'text-primary font-bold underline'
+                              : 'text-muted hover:text-text'
+                          }`}
+                        >
+                          हिन्दी
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
