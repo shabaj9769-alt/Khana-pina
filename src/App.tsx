@@ -267,12 +267,8 @@ export default function App() {
     );
   }
 
-  const showMobileBottomNav = activeView === 'customer' && !cartDrawerOpen;
-  const showStorefrontHeader =
-    activeView === 'customer' &&
-    !cartDrawerOpen &&
-    (customerSubTab === 'home' || customerSubTab === 'menu');
-  const hasStickyCartBar = showMobileBottomNav && totalCartItems > 0;
+  const showStorefrontHeader = activeView === 'customer' && !cartDrawerOpen;
+  const hasStickyCartBar = activeView === 'customer' && totalCartItems > 0 && window.location.hash !== '#/checkout' && !cartDrawerOpen;
 
   // ===========================================================================
   // CUSTOMER STOREFRONT & ORDER TRACKING LAYOUT (Light, Airy, Zero Overflow)
@@ -281,9 +277,7 @@ export default function App() {
     <div
       className={`min-h-dvh w-full max-w-full overflow-x-clip flex flex-col bg-bg text-text transition-colors duration-150 ${
         hasStickyCartBar
-          ? 'pb-[calc(160px+env(safe-area-inset-bottom))] md:pb-8'
-          : showMobileBottomNav
-          ? 'pb-[calc(88px+env(safe-area-inset-bottom))] md:pb-8'
+          ? 'pb-[calc(100px+env(safe-area-inset-bottom))] md:pb-8'
           : 'pb-8'
       }`}
     >
@@ -344,7 +338,7 @@ export default function App() {
                     setCustomerSubTab('home');
                     navigateView('customer', '/#/');
                   }}
-                  className="block font-display text-base font-bold leading-tight text-text truncate"
+                  className="block font-display text-base font-bold leading-tight text-text break-words overflow-wrap-anywhere"
                 >
                   {headerMeta.shopName}
                 </a>
@@ -448,7 +442,7 @@ export default function App() {
                 type="button"
                 onClick={openCartPage}
                 aria-label="Open cart"
-                className={`hidden md:flex relative h-10 px-3.5 rounded-full items-center justify-center gap-1.5 shrink-0 transition-all cursor-pointer whitespace-nowrap ${
+                className={`flex relative h-10 px-3.5 rounded-full items-center justify-center gap-1.5 shrink-0 transition-all cursor-pointer whitespace-nowrap ${
                   totalCartItems > 0
                     ? 'bg-primary text-primary-contrast shadow-2xs'
                     : 'bg-primary/10 text-primary'
@@ -479,11 +473,11 @@ export default function App() {
                 />
                 <div className="relative w-[280px] max-w-[80vw] h-full bg-surface text-text shadow-2xl z-10 flex flex-col overflow-y-auto">
                   <div className="p-4 border-b border-border flex items-center justify-between">
-                    <div className="flex items-center gap-2.5 min-w-0">
+                    <div className="flex items-center gap-2.5 min-w-0 flex-1">
                       <div className="w-9 h-9 rounded-xl bg-primary/12 text-primary flex items-center justify-center shrink-0">
                         <Flame className="w-4 h-4" />
                       </div>
-                      <span className="font-display font-bold text-base text-text truncate">
+                      <span className="font-display font-bold text-[16px] leading-[1.25] text-text break-words overflow-wrap-anywhere flex-1 min-w-0">
                         {headerMeta.shopName}
                       </span>
                     </div>
@@ -708,83 +702,6 @@ export default function App() {
           </div>
         )}
       </main>
-
-      {/* PART 3: Mobile Bottom Navigation Bar (solid background, z-40, >=12px labels, >=48px tap targets, hidden on Cart, Checkout & Order Confirmation pages) */}
-      {showMobileBottomNav && (
-        <nav
-          aria-label="Mobile bottom navigation"
-          className="md:hidden fixed bottom-0 left-0 right-0 w-full max-w-full z-40 bg-surface border-t border-border pb-[env(safe-area-inset-bottom)]"
-        >
-          <div className="w-full max-w-[1200px] mx-auto grid grid-cols-4 items-center min-h-[56px]">
-            <button
-              type="button"
-              onClick={() => {
-                setCartDrawerOpen(false);
-                setCustomerSubTab('home');
-                navigateView('customer', '/#/');
-              }}
-              className={`flex flex-col items-center justify-center min-h-[48px] h-full py-1.5 text-[12px] font-medium whitespace-nowrap cursor-pointer min-w-0 ${
-                activeView === 'customer' && customerSubTab === 'home'
-                  ? 'text-primary font-bold'
-                  : 'text-muted'
-              }`}
-            >
-              <Home className="w-4 h-4 shrink-0" />
-              <span className="mt-1 text-[12px] leading-none">Home</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                setCartDrawerOpen(false);
-                setCustomerSubTab('menu');
-                navigateView('customer', '/#/');
-              }}
-              className={`flex flex-col items-center justify-center min-h-[48px] h-full py-1.5 text-[12px] font-medium whitespace-nowrap cursor-pointer min-w-0 ${
-                activeView === 'customer' && customerSubTab === 'menu'
-                  ? 'text-primary font-bold'
-                  : 'text-muted'
-              }`}
-            >
-              <UtensilsCrossed className="w-4 h-4 shrink-0" />
-              <span className="mt-1 text-[12px] leading-none">Menu</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                setCartDrawerOpen(false);
-                setCustomerSubTab('orders');
-                navigateView('customer', '/#/');
-              }}
-              className={`flex flex-col items-center justify-center min-h-[48px] h-full py-1.5 text-[12px] font-medium whitespace-nowrap cursor-pointer min-w-0 ${
-                activeView === 'customer' && customerSubTab === 'orders'
-                  ? 'text-primary font-bold'
-                  : 'text-muted'
-              }`}
-            >
-              <Clock className="w-4 h-4 shrink-0" />
-              <span className="mt-1 text-[12px] leading-none">Orders</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={openCartPage}
-              className="flex flex-col items-center justify-center min-h-[48px] h-full py-1.5 text-[12px] font-medium whitespace-nowrap cursor-pointer text-muted min-w-0"
-            >
-              <div className="relative">
-                <ShoppingBag className="w-4 h-4 shrink-0" />
-                {totalCartItems > 0 && (
-                  <span className="absolute -top-1.5 -right-2.5 px-1 rounded-full bg-primary text-primary-contrast text-[11px] font-bold tabular-nums leading-tight">
-                    {totalCartItems}
-                  </span>
-                )}
-              </div>
-              <span className="mt-1 text-[12px] leading-none">Cart</span>
-            </button>
-          </div>
-        </nav>
-      )}
 
       <OfflineIndicator />
     </div>

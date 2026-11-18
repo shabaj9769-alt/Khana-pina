@@ -2754,7 +2754,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   <Flame className="w-6 h-6" />
                 </div>
                 <div className="min-w-0 flex-1">
-                  <h2 className="font-display text-lg font-extrabold text-text truncate">{settings.shopName}</h2>
+                  <h2 className="font-display text-lg font-extrabold text-text break-words">{settings.shopName}</h2>
                   <p className="text-xs text-muted truncate">Authentic Artisanal Indian Kitchen</p>
                 </div>
               </div>
@@ -3797,7 +3797,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
           7. GREEN STICKY CART BAR ("2 items · ₹658 | View cart →", directly above bottom nav)
          ===================================================================== */}
       {totalCartItems > 0 && checkoutStep === 'store' && (
-        <div className="fixed bottom-[calc(56px+env(safe-area-inset-bottom,0px)+8px)] md:bottom-5 left-0 right-0 w-full max-w-full z-30 px-4 pointer-events-none animate-cart-bar">
+        <div className="fixed bottom-[max(16px,env(safe-area-inset-bottom))] left-0 right-0 w-full max-w-full z-30 px-4 pointer-events-none animate-cart-bar">
           <div className="w-full max-w-[540px] mx-auto pointer-events-auto">
             <button
               type="button"
