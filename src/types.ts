@@ -110,6 +110,7 @@ export interface ShopSettings {
   busyMode: boolean;
   weeklyTimings: string;
   opensAtText?: string;
+  heroSubtitle?: string;
   allowPreOrdersWhenClosed?: boolean;
   holidaysNote: string;
   minOrderAmount: number;
