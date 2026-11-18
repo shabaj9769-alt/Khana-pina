@@ -372,16 +372,26 @@ export function applyAdminOrRiderThemeToDocument(
 }
 
 /**
+ * Normalizes leading /src/assets/images/ to /assets/images/ for production compatibility
+ */
+export function normalizeImageUrl(url?: string | null): string {
+  if (!url) return '/assets/images/dish_royal_biryani_1793975538453.webp';
+  let clean = url.trim();
+  if (clean.startsWith('/src/assets/images/')) {
+    clean = clean.replace('/src/assets/images/', '/assets/images/');
+  }
+  return clean;
+}
+
+/**
  * Rewrites built-in local .jpg dish/hero asset paths to their <80KB .webp counterparts
  * while keeping external/uploaded URLs intact.
  */
 export function optimizeAssetUrl(url?: string | null): string {
-  if (!url) return '/src/assets/images/dish_royal_biryani_1793975538453.webp';
-  if (url.startsWith('/src/assets/images/') && url.endsWith('.jpg')) {
-    return url.replace(/\.jpg$/, '.webp');
+  const normalized = normalizeImageUrl(url);
+  if (!normalized) return '/assets/images/dish_royal_biryani_1793975538453.webp';
+  if (normalized.startsWith('/assets/images/') && normalized.endsWith('.jpg')) {
+    return normalized.replace(/\.jpg$/, '.webp');
   }
-  if (url.startsWith('/assets/images/') && url.endsWith('.jpg')) {
-    return `/src${url.replace(/\.jpg$/, '.webp')}`;
-  }
-  return url;
+  return normalized;
 }

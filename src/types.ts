@@ -43,6 +43,7 @@ export interface Category {
   sortOrder: number;
   isActive: boolean;
   isDeleted?: boolean;
+  imageUrl?: string;
 }
 
 export interface ItemVariant {

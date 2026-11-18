@@ -37,6 +37,7 @@ import {
   FileSpreadsheet,
   Smartphone,
 } from 'lucide-react';
+import { SafeImage } from './SafeImage.tsx';
 import {
   MenuItem,
   Category,
@@ -1897,10 +1898,11 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                           key={item.id}
                           className="bg-surface rounded-2xl border border-border p-3.5 flex gap-3 items-start justify-between min-w-0"
                         >
-                          <img
+                          <SafeImage
                             src={item.imageUrl}
                             alt={item.name}
                             className="w-16 h-16 rounded-xl object-cover shrink-0 bg-bg"
+                            containerClassName="w-16 h-16 rounded-xl object-cover shrink-0 bg-bg"
                           />
                           <div className="flex-1 min-w-0 space-y-1">
                             <div className="flex items-center gap-1.5 flex-wrap">
@@ -2417,10 +2419,11 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         className="p-3 rounded-xl border border-border flex items-center justify-between gap-3"
                       >
                         <div className="flex items-center gap-3 min-w-0">
-                          <img
+                          <SafeImage
                             src={b.imageUrl}
                             alt={b.title}
                             className="w-14 h-10 rounded-lg object-cover shrink-0"
+                            containerClassName="w-14 h-10 rounded-lg object-cover shrink-0"
                           />
                           <div className="min-w-0">
                             <p className="font-bold text-xs text-text truncate">{b.title}</p>
@@ -2776,10 +2779,11 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                           >
                             <div className="flex items-center gap-2">
                               {themeDraft.logoUrl ? (
-                                <img
+                                <SafeImage
                                   src={themeDraft.logoUrl}
                                   alt="Logo"
                                   className="w-7 h-7 rounded-md object-cover"
+                                  containerClassName="w-7 h-7 rounded-md object-cover"
                                 />
                               ) : (
                                 <div

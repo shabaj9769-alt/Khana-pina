@@ -42,7 +42,8 @@ import {
 } from '../types.ts';
 import { guestAuthLayer } from '../auth/guestAuthLayer.ts';
 import { calculateHaversineKm } from '../utils/haversine.ts';
-import { optimizeAssetUrl } from '../utils/themeTokens.ts';
+import { optimizeAssetUrl, normalizeImageUrl } from '../utils/themeTokens.ts';
+import { SafeImage } from './SafeImage.tsx';
 
 interface ResolvedHomeSection extends HomeSection {
   items: MenuItem[];
@@ -113,10 +114,10 @@ const LOCATION_PRESETS = [
 ];
 
 const CATEGORY_THUMBS: Record<string, string> = {
-  cat_biryani: '/src/assets/images/dish_royal_biryani_1793975538453.webp',
-  cat_kebabs: '/src/assets/images/dish_paneer_tikka_1793975540023.webp',
-  cat_curries: '/src/assets/images/dish_butter_chicken_1793975541967.webp',
-  cat_desserts: '/src/assets/images/dish_gulab_jamun_dessert_1793975541767.webp',
+  cat_biryani: '/assets/images/dish_royal_biryani_1793975538453.webp',
+  cat_kebabs: '/assets/images/dish_paneer_tikka_1793975540023.webp',
+  cat_curries: '/assets/images/dish_butter_chicken_1793975541967.webp',
+  cat_desserts: '/assets/images/dish_gulab_jamun_dessert_1793975541767.webp',
 };
 
 function generateShopHourSlots(): { label: string; iso: string }[] {
@@ -242,6 +243,18 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
   const [selectedAddonIds, setSelectedAddonIds] = useState<string[]>([]);
   const [customQty, setCustomQty] = useState(1);
   const [customItemNote, setCustomItemNote] = useState('');
+  const [descExpanded, setDescExpanded] = useState(false);
+
+  useEffect(() => {
+    if (customizingItem || addressSheetOpen || cartDrawerOpen) {
+      document.body.style.overflow = 'hidden';
+    } else {
+      document.body.style.overflow = '';
+    }
+    return () => {
+      document.body.style.overflow = '';
+    };
+  }, [customizingItem, addressSheetOpen, cartDrawerOpen]);
 
   // Guest Checkout State
   const initialProfile = useMemo(() => guestAuthLayer.getGuestProfile(), []);
@@ -735,6 +748,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
     setSelectedAddonIds([]);
     setCustomQty(1);
     setCustomItemNote('');
+    setDescExpanded(false);
   };
 
   // Direct one-tap add for upsells or base items
@@ -1416,7 +1430,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
 
     if (!item.inStock) {
       return (
-        <span className="h-[36px] px-[14px] rounded-xl border border-border bg-bg text-muted text-[13px] font-bold inline-flex items-center justify-center whitespace-nowrap shrink-0">
+        <span className="h-[34px] px-3 rounded-xl border border-border bg-bg text-muted text-[13px] font-bold inline-flex items-center justify-center whitespace-nowrap shrink-0">
           Sold out
         </span>
       );
@@ -1425,12 +1439,12 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
     if (inCartQty > 0) {
       const targetLine = matchingLines[matchingLines.length - 1];
       return (
-        <div className="h-[36px] min-w-[88px] rounded-xl bg-[#E23744] text-white flex items-center justify-between px-1 shrink-0 shadow-sm">
+        <div className="h-[34px] min-w-[84px] rounded-xl bg-[#E23744] text-white flex items-center justify-between px-1 shrink-0 shadow-sm">
           <button
             type="button"
             aria-label={`Decrease quantity of ${item.name}`}
             onClick={() => updateCartQty(targetLine.cartLineId, -1)}
-            className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-black/15 active:scale-[0.95] transition-transform cursor-pointer"
+            className="w-6 h-6 flex items-center justify-center rounded-lg hover:bg-black/15 active:scale-[0.95] transition-transform cursor-pointer"
           >
             <Minus className="w-3.5 h-3.5 stroke-[2.5]" />
           </button>
@@ -1445,7 +1459,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                 updateCartQty(targetLine.cartLineId, 1);
               }
             }}
-            className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-black/15 active:scale-[0.95] transition-transform cursor-pointer"
+            className="w-6 h-6 flex items-center justify-center rounded-lg hover:bg-black/15 active:scale-[0.95] transition-transform cursor-pointer"
           >
             <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
           </button>
@@ -1463,7 +1477,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
             openCustomizeModal(item);
           }
         }}
-        className="h-[36px] px-[14px] rounded-xl border-2 border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/15 text-[#E23744] hover:bg-[#E23744] hover:text-white text-[13px] font-extrabold whitespace-nowrap inline-flex items-center justify-center gap-1 transition-all active:scale-[0.98] cursor-pointer shrink-0 shadow-2xs"
+        className="h-[34px] px-3 rounded-xl border-2 border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/15 text-[#E23744] hover:bg-[#E23744] hover:text-white text-[13px] font-extrabold whitespace-nowrap inline-flex items-center justify-center gap-1 transition-all active:scale-[0.98] cursor-pointer shrink-0 shadow-2xs"
       >
         <span>ADD</span>
         <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
@@ -1510,9 +1524,10 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
           isComboSection
             ? 'border-[#1BA672]/40 bg-[#FFF5F3]/40 dark:bg-[#1C1C1C]'
             : 'border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface'
-        } p-3.5 sm:p-4 shadow-[0_2px_10px_rgba(0,0,0,0.04)] flex flex-col justify-between min-w-0 transition-all duration-150 hover:shadow-md active:scale-[0.98] ${
+        } p-3.5 sm:p-4 shadow-[0_2px_10px_rgba(0,0,0,0.04)] flex flex-col justify-between min-w-0 overflow-hidden box-border transition-all duration-150 hover:shadow-md active:scale-[0.98] ${
           !item.inStock ? 'grayscale opacity-75' : ''
         }`}
+        style={{ boxSizing: 'border-box' }}
       >
         <div className="min-w-0 flex flex-col">
           {/* 4:3 Food Photo with Top-Left FSSAI Dot & Bottom-Left Badge */}
@@ -1520,18 +1535,10 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
             onClick={() => openCustomizeModal(item)}
             className="relative w-full aspect-[4/3] rounded-xl bg-[#FFF5F3] dark:bg-[#2A1618] overflow-hidden shrink-0 cursor-pointer"
           >
-            <img
-              src={optimizeAssetUrl(item.imageUrl)}
+            <SafeImage
+              src={item.imageUrl}
               alt={item.name}
-              width={400}
-              height={300}
-              loading="lazy"
-              decoding="async"
-              referrerPolicy="no-referrer"
               className="w-full h-full object-cover object-center transition-transform duration-300 hover:scale-[1.03]"
-              onError={(e) => {
-                (e.currentTarget as HTMLImageElement).style.display = 'none';
-              }}
             />
 
             {/* Top-left floating FSSAI Veg/Non-veg square dot */}
@@ -1581,10 +1588,10 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
           </p>
         </div>
 
-        {/* Footer: Price on left (shrink-0) + Customisable on its own line in text-xs directly under price; ADD button on right (shrink-0, min-h-[44px]) */}
+        {/* Footer */}
         <div className="mt-3.5 pt-3 border-t border-[#E8E8E8]/70 dark:border-[#2E2E2E] flex items-center justify-between gap-2.5 min-w-0">
-          <div className="shrink-0">
-            <div className="flex items-baseline gap-1.5">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-baseline gap-1.5 flex-wrap">
               <span className="text-base sm:text-lg font-bold text-text tabular-nums leading-none">
                 ₹{item.basePrice}
               </span>
@@ -1595,7 +1602,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
               )}
             </div>
             {(item.variants.length > 0 || item.addons.length > 0) && (
-              <span className="text-xs text-muted font-medium mt-1 block leading-tight">
+              <span className="text-[11px] text-muted font-medium mt-1 block leading-tight truncate">
                 Customisable
               </span>
             )}
@@ -2695,7 +2702,12 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                     .map((item) => (
                       <div key={item.id} className="flex items-center justify-between gap-3 p-3 rounded-xl border border-border bg-bg min-w-0">
                         <div className="flex items-center gap-3 min-w-0 flex-1">
-                          <img src={optimizeAssetUrl(item.imageUrl)} alt={item.name} className="w-12 h-12 rounded-lg object-cover shrink-0" />
+                          <SafeImage
+                            src={item.imageUrl}
+                            alt={item.name}
+                            className="w-12 h-12 rounded-lg object-cover shrink-0"
+                            containerClassName="w-12 h-12 rounded-lg object-cover shrink-0"
+                          />
                           <div className="min-w-0 flex-1">
                             <p className="font-bold text-text truncate">{item.name}</p>
                             <p className="text-xs text-muted">₹{item.basePrice}</p>
@@ -2898,7 +2910,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                             subtitle: '30-min delivery · Free above ₹499',
                             ctaText: 'Order now',
                             imageUrl:
-                              '/src/assets/images/hero_artisanal_feast_1793975537331.webp',
+                              '/assets/images/hero_artisanal_feast_1793975537331.webp',
                             linkType: 'CATEGORY' as const,
                             linkTarget: 'ALL',
                             sortOrder: 1,
@@ -2915,21 +2927,14 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                         }
                         className="relative w-full min-w-full shrink-0 h-full flex flex-col justify-end overflow-hidden"
                       >
-                        <img
-                          src={optimizeAssetUrl(
-                            banner.imageUrl ||
-                              '/src/assets/images/hero_artisanal_feast_1793975537331.webp'
-                          )}
+                        <SafeImage
+                          src={banner.imageUrl || '/assets/images/hero_artisanal_feast_1793975537331.webp'}
                           alt={
                             banner.title ||
                             'Slow-Cooked Awadhi Handis, Delivered Seal-Intact'
                           }
-                          width={1200}
-                          height={675}
-                          fetchPriority={idx === 0 ? 'high' : 'auto'}
-                          decoding="async"
-                          referrerPolicy="no-referrer"
                           className="absolute inset-0 w-full h-full object-cover object-center"
+                          containerClassName="absolute inset-0 w-full h-full object-cover object-center"
                         />
                         <div className="relative z-10 w-full h-full bg-gradient-to-t from-black/95 via-black/60 to-black/15 p-4 flex flex-col justify-end">
                           <div className="w-full max-w-full min-w-0 space-y-1.5">
@@ -3152,20 +3157,17 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                     role="tab"
                     aria-selected={selectedCategory === 'ALL'}
                     onClick={() => setSelectedCategory('ALL')}
-                    className={`min-h-[46px] pl-2 pr-4 rounded-full border flex items-center gap-2.5 shrink-0 transition-all active:scale-[0.98] cursor-pointer whitespace-nowrap ${
+                    className={`min-h-[46px] pl-2.5 pr-4 rounded-full border flex items-center gap-2 shrink-0 transition-all active:scale-[0.98] cursor-pointer whitespace-nowrap ${
                       selectedCategory === 'ALL'
                         ? 'border-[#1C1C1C] bg-[#1C1C1C] text-white dark:border-white dark:bg-white dark:text-[#121212] font-extrabold shadow-sm'
                         : 'border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface text-text hover:border-[#E23744] font-bold'
                     }`}
                   >
-                    <img
-                      src="/src/assets/images/hero_artisanal_feast_1793975537331.webp"
-                      alt="All dishes"
-                      width={30}
-                      height={30}
-                      loading="lazy"
-                      decoding="async"
-                      className="w-7.5 h-7.5 rounded-full object-cover object-center shrink-0"
+                    <SafeImage
+                      src="/assets/images/hero_artisanal_feast_1793975537331.webp"
+                      alt=""
+                      className="w-8 h-8 rounded-full object-cover shrink-0"
+                      containerClassName="w-8 h-8 rounded-full object-cover shrink-0"
                     />
                     <span className="text-[14px]">All Dishes</span>
                   </button>
@@ -3196,9 +3198,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
 
                   {categories.map((cat) => {
                     const isActive = selectedCategory === cat.id;
-                    const thumb =
-                      CATEGORY_THUMBS[cat.id] ||
-                      '/src/assets/images/dish_royal_biryani_1793975538453.webp';
+                    const thumb = CATEGORY_THUMBS[cat.id];
                     return (
                       <button
                         key={cat.id}
@@ -3206,21 +3206,20 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                         role="tab"
                         aria-selected={isActive}
                         onClick={() => setSelectedCategory(cat.id)}
-                        className={`min-h-[46px] pl-2 pr-4 rounded-full border flex items-center gap-2.5 shrink-0 transition-all active:scale-[0.98] cursor-pointer whitespace-nowrap ${
+                        className={`min-h-[46px] ${thumb ? 'pl-2.5' : 'px-4'} pr-4 rounded-full border flex items-center gap-2 shrink-0 transition-all active:scale-[0.98] cursor-pointer whitespace-nowrap ${
                           isActive
                             ? 'border-[#1C1C1C] bg-[#1C1C1C] text-white dark:border-white dark:bg-white dark:text-[#121212] font-extrabold shadow-sm'
                             : 'border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface text-text hover:border-[#E23744] font-bold'
                         }`}
                       >
-                        <img
-                          src={optimizeAssetUrl(thumb)}
-                          alt={cat.name}
-                          width={30}
-                          height={30}
-                          loading="lazy"
-                          decoding="async"
-                          className="w-7.5 h-7.5 rounded-full object-cover object-center shrink-0"
-                        />
+                        {thumb ? (
+                          <SafeImage
+                            src={thumb}
+                            alt=""
+                            className="w-8 h-8 rounded-full object-cover shrink-0"
+                            containerClassName="w-8 h-8 rounded-full object-cover shrink-0"
+                          />
+                        ) : null}
                         <span className="text-[14px]">{cat.name}</span>
                       </button>
                     );
@@ -3236,7 +3235,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
             }}
             className="w-full max-w-[1200px] mx-auto px-4 pt-4 space-y-6 min-w-0 max-w-full overflow-x-hidden"
           >
-            {/* ADMIN-DEFINED CURATED SECTIONS (Including PART 4 Bestsellers Auto-Slide Carousel & Styled COMBO_OFFERS Section) */}
+            {/* ADMIN-DEFINED CURATED SECTIONS (Including PART 4 Bestsellers Auto-Slide Carousel & COMBO_OFFERS Section) */}
             {activeSubTab === 'home' &&
               !searchQuery &&
               selectedCategory === 'ALL' &&
@@ -3250,11 +3249,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   <section
                     key={section.id}
                     aria-label={section.title}
-                    className={`w-full max-w-full min-w-0 space-y-3 overflow-hidden ${
-                      isComboSection
-                        ? 'rounded-2xl border border-[#1BA672]/35 bg-[#FFF5F3]/60 dark:bg-[#1C1C1C] p-4 sm:p-5'
-                        : ''
-                    }`}
+                    className="w-full max-w-full min-w-0 space-y-3"
                   >
                     <div className="min-w-0 flex flex-wrap items-center justify-between gap-2">
                       <div className="min-w-0">
@@ -3262,12 +3257,6 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                           <h2 className="font-display text-[clamp(18px,3vw,22px)] font-extrabold text-text leading-snug break-words">
                             {section.title}
                           </h2>
-                          {isComboSection && (
-                            <span className="px-2.5 py-0.5 rounded-full bg-[#1BA672] text-white text-xs font-bold inline-flex items-center gap-1">
-                              <Sparkles className="w-3.5 h-3.5" />
-                              <span>Combo Savings</span>
-                            </span>
-                          )}
                         </div>
                         {section.subtitle && (
                           <p className="text-sm text-muted mt-0.5 break-words">
@@ -4004,44 +3993,71 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
          ===================================================================== */}
       {customizingItem && (
         <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-xs">
-          <div className="w-full max-w-lg max-h-[90dvh] rounded-t-3xl sm:rounded-3xl bg-surface text-text border border-border flex flex-col overflow-hidden overflow-x-hidden box-border animate-sheet-up">
-            <div className="w-10 h-1 bg-border rounded-full mx-auto mt-3 sm:hidden shrink-0" />
-            <div className="p-4 sm:p-5 border-b border-border flex items-start justify-between gap-3 min-w-0 max-w-full">
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2 text-[13px] font-semibold text-muted">
-                  {renderDietMark(customizingItem.isVeg)}
-                  <span>Ready in {customizingItem.prepTimeMins} mins</span>
-                </div>
-                <h3 className="mt-1.5 font-display text-[18px] sm:text-[20px] font-extrabold text-text leading-snug break-words whitespace-normal">
-                  {customizingItem.name}
-                </h3>
-                {customizingItem.description && (
-                  <p className="mt-1 text-[14px] text-muted leading-relaxed break-words">
-                    {customizingItem.description}
-                  </p>
-                )}
-              </div>
+          <div className="w-full max-w-lg max-h-[90dvh] rounded-t-[24px] sm:rounded-3xl bg-surface text-text border border-border flex flex-col overflow-hidden box-border">
+            {/* Top Bar with Drag Handle & Close Button */}
+            <div className="flex items-center justify-between px-4 pt-3 pb-2 shrink-0 border-b border-border relative">
+              <div className="w-10 h-1 bg-border rounded-full mx-auto sm:hidden absolute left-1/2 -translate-x-1/2 top-2.5" />
+              <span className="text-[14px] font-bold text-muted">Customize Dish</span>
               <button
                 type="button"
                 onClick={() => setCustomizingItem(null)}
                 aria-label="Close customization sheet"
-                className="w-10 h-10 rounded-full flex items-center justify-center text-muted hover:text-text shrink-0 cursor-pointer"
+                className="w-9 h-9 rounded-full flex items-center justify-center text-muted hover:text-text cursor-pointer ml-auto"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <div className="p-4 sm:p-5 overflow-y-auto overflow-x-hidden space-y-5 flex-1 min-w-0 max-w-full">
+            {/* ONE Scrollable Area for ALL content */}
+            <div 
+              className="flex-1 overflow-y-auto overflow-x-hidden p-4 sm:p-5 space-y-4 pb-24"
+              style={{ WebkitOverflowScrolling: 'touch' }}
+            >
+              {/* Dish image at top (~180px height, object-fit: cover, rounded) */}
+              <div className="w-full h-[180px] rounded-xl overflow-hidden bg-gray-100 dark:bg-gray-800 shrink-0">
+                <SafeImage
+                  src={customizingItem.imageUrl}
+                  alt={customizingItem.name}
+                  className="w-full h-full object-cover object-center"
+                />
+              </div>
+
+              <div className="flex items-center gap-2 text-[13px] font-semibold text-muted">
+                {renderDietMark(customizingItem.isVeg)}
+                <span>Ready in {customizingItem.prepTimeMins} mins</span>
+              </div>
+
+              <h3 className="font-display text-[20px] font-extrabold text-text leading-snug break-words whitespace-normal">
+                {customizingItem.name}
+              </h3>
+
+              {customizingItem.description && (
+                <div className="text-[14px] text-muted leading-relaxed break-words">
+                  <p className={descExpanded ? '' : 'line-clamp-3'}>
+                    {customizingItem.description}
+                  </p>
+                  {customizingItem.description.length > 90 && (
+                    <button
+                      type="button"
+                      onClick={() => setDescExpanded(!descExpanded)}
+                      className="mt-1 text-xs font-bold text-[#E23744] hover:underline cursor-pointer inline-flex items-center"
+                    >
+                      {descExpanded ? 'Show less' : 'Read more'}
+                    </button>
+                  )}
+                </div>
+              )}
+
               {customizingItem.variants.length > 0 && (
-                <div className="min-w-0 max-w-full">
-                  <h4 className="text-[14px] font-bold text-text mb-2.5">
+                <div className="space-y-2.5 pt-2">
+                  <h4 className="text-[14px] font-bold text-text">
                     Choose portion size (Required)
                   </h4>
-                  <div className="space-y-2.5">
+                  <div className="space-y-2">
                     {customizingItem.variants.map((v) => (
                       <label
                         key={v.id}
-                        className={`flex items-center justify-between gap-2 p-3.5 rounded-2xl border cursor-pointer min-w-0 max-w-full ${
+                        className={`flex items-center justify-between gap-2 p-3.5 rounded-2xl border cursor-pointer ${
                           selectedVariantId === v.id
                             ? 'border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/15'
                             : 'border-border bg-bg'
@@ -4069,17 +4085,17 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
               )}
 
               {customizingItem.addons.length > 0 && (
-                <div className="min-w-0 max-w-full">
-                  <h4 className="text-[14px] font-bold text-text mb-2.5">
+                <div className="space-y-2.5 pt-2">
+                  <h4 className="text-[14px] font-bold text-text">
                     Add extras (Optional)
                   </h4>
-                  <div className="space-y-2.5">
+                  <div className="space-y-2">
                     {customizingItem.addons.map((addon) => {
                       const checked = selectedAddonIds.includes(addon.id);
                       return (
                         <label
                           key={addon.id}
-                          className={`flex items-center justify-between gap-2 p-3.5 rounded-2xl border cursor-pointer min-w-0 max-w-full ${
+                          className={`flex items-center justify-between gap-3 p-3.5 rounded-2xl border cursor-pointer ${
                             checked
                               ? 'border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/15'
                               : 'border-border bg-bg'
@@ -4098,7 +4114,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                               }
                               className="accent-[#E23744] w-4 h-4 shrink-0"
                             />
-                            <span className="text-[15px] font-medium text-text break-words min-w-0">
+                            <span className="text-[15px] font-medium text-text line-clamp-2 break-words min-w-0">
                               {addon.name}
                             </span>
                           </div>
@@ -4112,7 +4128,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                 </div>
               )}
 
-              <div className="min-w-0 max-w-full">
+              <div className="pt-2">
                 <label className="block text-[14px] font-bold text-text mb-1.5">
                   Special cooking instructions (Optional)
                 </label>
@@ -4122,13 +4138,13 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   value={customItemNote}
                   onChange={(e) => setCustomItemNote(e.target.value)}
                   placeholder="Add a note (e.g. less spicy, Jain preparation)"
-                  className="w-full max-w-full min-h-[48px] px-3.5 py-2.5 rounded-2xl border border-border bg-bg text-[16px] text-text box-border"
+                  className="w-full min-h-[48px] px-3.5 py-2.5 rounded-2xl border border-border bg-bg text-[16px] text-text box-border"
                 />
               </div>
             </div>
 
-            {/* PART A BUG 2 FIX: Overflow-free bottom bar with 112px stepper (40x40 buttons) & responsive "Add to cart · ₹XXX" / "Add · ₹XXX" CTA */}
-            <div className="flex items-center gap-3 px-4 pt-3 pb-[max(12px,env(safe-area-inset-bottom))] w-full box-border overflow-hidden border-t border-border bg-bg shrink-0">
+            {/* Fixed Bottom Bar */}
+            <div className="flex items-center gap-3 px-4 pt-3 pb-[max(12px,env(safe-area-inset-bottom))] w-full box-border border-t border-border bg-bg shrink-0">
               <div className="w-[96px] h-[46px] shrink-0 flex items-center justify-between border border-border rounded-xl bg-surface px-1">
                 <button
                   type="button"
@@ -4154,7 +4170,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
               <button
                 type="button"
                 onClick={confirmAddToCart}
-                className="flex-1 min-w-0 h-[46px] px-3 rounded-xl bg-[#E23744] hover:bg-[#c82d39] text-white text-[15px] font-bold whitespace-nowrap flex items-center justify-center cursor-pointer active:scale-[0.98] transition-transform"
+                className="flex-1 min-w-0 h-[46px] px-3 rounded-xl bg-[#E23744] hover:bg-[#c82d39] text-white text-[15px] font-bold whitespace-nowrap flex items-center justify-center cursor-pointer active:scale-[0.98] transition-transform shadow-sm"
               >
                 <span className="hidden min-[380px]:inline">
                   Add to cart · ₹{customModalTotal}

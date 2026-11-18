@@ -33,11 +33,20 @@ import { getRtdb } from './firebaseAdmin.ts';
 import { hashPasswordScrypt, isRazorpayConfigured, parseCookies, verifyJwtRaw } from './security.ts';
 
 // Image URLs (Optimized <80KB WebP assets)
-export const IMG_HERO = '/src/assets/images/hero_artisanal_feast_1793975537331.webp';
-export const IMG_BIRYANI = '/src/assets/images/dish_royal_biryani_1793975538453.webp';
-export const IMG_PANEER = '/src/assets/images/dish_paneer_tikka_1793975540023.webp';
-export const IMG_BUTTER_CHICKEN = '/src/assets/images/dish_butter_chicken_1793975541967.webp';
-export const IMG_DESSERT = '/src/assets/images/dish_gulab_jamun_dessert_1793975541767.webp';
+export function normalizeImageUrl(url?: string | null): string {
+  if (!url) return '/assets/images/dish_royal_biryani_1793975538453.webp';
+  let clean = url.trim();
+  if (clean.startsWith('/src/assets/images/')) {
+    clean = clean.replace('/src/assets/images/', '/assets/images/');
+  }
+  return clean;
+}
+
+export const IMG_HERO = '/assets/images/hero_artisanal_feast_1793975537331.webp';
+export const IMG_BIRYANI = '/assets/images/dish_royal_biryani_1793975538453.webp';
+export const IMG_PANEER = '/assets/images/dish_paneer_tikka_1793975540023.webp';
+export const IMG_BUTTER_CHICKEN = '/assets/images/dish_butter_chicken_1793975541967.webp';
+export const IMG_DESSERT = '/assets/images/dish_gulab_jamun_dessert_1793975541767.webp';
 
 export interface AdminUserRecord {
   id: string;
@@ -943,15 +952,24 @@ export async function ensureFirebaseSeeded(): Promise<DatabaseState> {
   db.nextOrderSequence = Number(rootVal.counters?.nextOrderSequence || 1046);
   db.settings = { ...db.settings, ...rootVal.settings };
   db.deliveryZone = { ...db.deliveryZone, ...rootVal.deliveryZone };
-  db.categories = recordToArray<Category>(rootVal.categories).sort(
-    (a, b) => a.sortOrder - b.sortOrder
-  );
+  db.categories = recordToArray<Category>(rootVal.categories)
+    .map((c) => ({
+      ...c,
+      imageUrl: normalizeImageUrl(c.imageUrl),
+    }))
+    .sort((a, b) => a.sortOrder - b.sortOrder);
   db.menuItems = recordToArray<MenuItem>(rootVal.menuItems).map((m) => ({
     ...m,
+    imageUrl: normalizeImageUrl(m.imageUrl),
     variants: recordToArray<ItemVariant>(m.variants),
     addons: recordToArray<ItemAddon>(m.addons),
   }));
-  db.banners = recordToArray<Banner>(rootVal.banners).sort((a, b) => a.sortOrder - b.sortOrder);
+  db.banners = recordToArray<Banner>(rootVal.banners)
+    .map((b) => ({
+      ...b,
+      imageUrl: normalizeImageUrl(b.imageUrl),
+    }))
+    .sort((a, b) => a.sortOrder - b.sortOrder);
   db.homeSections = recordToArray<HomeSection>(rootVal.homeSections)
     .map((s) => ({
       ...s,

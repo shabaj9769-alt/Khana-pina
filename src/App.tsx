@@ -31,8 +31,10 @@ import { OfflineIndicator } from './components/PWAInstallBanner.tsx';
 import {
   applyStorefrontThemeToDocument,
   DEFAULT_STOREFRONT_THEME,
+  normalizeImageUrl,
   optimizeAssetUrl,
 } from './utils/themeTokens.ts';
+import { SafeImage } from './components/SafeImage.tsx';
 import { subscribeToPublicShopStatus } from './utils/firebaseClient.ts';
 
 type AppView = 'customer' | 'tracking' | 'rider' | 'admin';
@@ -207,7 +209,7 @@ export default function App() {
         imageUrl: optimizeAssetUrl(
           liveItem
             ? liveItem.imageUrl
-            : '/src/assets/images/dish_royal_biryani_1793975538453.webp'
+            : '/assets/images/dish_royal_biryani_1793975538453.webp'
         ),
         isVeg: liveItem ? liveItem.isVeg : true,
         variantId: liveItem?.variants.find((v) => v.name === it.variantName)?.id,
@@ -316,13 +318,13 @@ export default function App() {
                 aria-label={headerMeta.shopName}
               >
                 {headerMeta.logoUrl ? (
-                  <img
-                    src={optimizeAssetUrl(headerMeta.logoUrl)}
+                  <SafeImage
+                    src={headerMeta.logoUrl}
                     alt={headerMeta.shopName}
                     width={36}
                     height={36}
-                    decoding="async"
                     className="w-9 h-9 object-cover object-center shrink-0"
+                    containerClassName="w-9 h-9 object-cover object-center shrink-0"
                   />
                 ) : (
                   <Flame className="w-4 h-4 shrink-0" />
