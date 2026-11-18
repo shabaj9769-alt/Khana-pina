@@ -2,34 +2,39 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 @theme inline {
-  --color-bg: var(--aangan-bg, #F8F7F4);
+  --color-bg: var(--aangan-bg, #FFFFFF);
   --color-surface: var(--aangan-surface, #FFFFFF);
-  --color-text: var(--aangan-text, #1C1917);
-  --color-muted: var(--aangan-muted, #68635D);
-  --color-border: var(--aangan-border, #EAE6DF);
-  --color-primary: var(--aangan-primary, #B45309);
+  --color-soft-tint: var(--aangan-soft-tint, #FFF5F3);
+  --color-text: var(--aangan-text, #1C1C1C);
+  --color-muted: var(--aangan-muted, #686B78);
+  --color-border: var(--aangan-border, #E8E8E8);
+  --color-primary: var(--aangan-primary, #E23744);
   --color-primary-contrast: var(--aangan-primary-contrast, #FFFFFF);
-  --color-accent: var(--aangan-accent, #D97706);
-  --radius-sm: 0.5rem;
-  --radius-theme: var(--radius, 0.75rem);
-  --radius-lg: 1.25rem;
-  --font-display: var(--aangan-font-display, 'Fraunces', Georgia, serif);
+  --color-accent: var(--aangan-accent, #1BA672);
+  --color-veg: #1BA672;
+  --radius-sm: 0.625rem;
+  --radius-theme: var(--radius, 1rem);
+  --radius-lg: 1.5rem;
+  --font-display: var(--aangan-font-display, 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif);
   --font-body: var(--aangan-font-body, 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif);
 }
 
 @layer base {
   :root {
-    --color-bg: #F8F7F4;
+    --color-bg: #FFFFFF;
     --color-surface: #FFFFFF;
-    --color-text: #1C1917;
-    --color-muted: #68635D;
-    --color-border: #EAE6DF;
-    --color-primary: #B45309;
+    --color-soft-tint: #FFF5F3;
+    --color-text: #1C1C1C;
+    --color-muted: #5C5F66;
+    --color-border: #E8E8E8;
+    --color-primary: #E23744;
     --color-primary-contrast: #FFFFFF;
-    --color-accent: #D97706;
+    --color-accent: #1BA672;
+    --color-veg: #1BA672;
 
     --aangan-bg: var(--color-bg);
     --aangan-surface: var(--color-surface);
+    --aangan-soft-tint: var(--color-soft-tint);
     --aangan-text: var(--color-text);
     --aangan-muted: var(--color-muted);
     --aangan-border: var(--color-border);
@@ -37,18 +42,18 @@
     --aangan-primary-contrast: var(--color-primary-contrast);
     --aangan-accent: var(--color-accent);
 
-    --radius-sm: 0.5rem;
-    --radius: 0.75rem;
-    --radius-lg: 1.25rem;
+    --radius-sm: 0.625rem;
+    --radius: 1rem;
+    --radius-lg: 1.5rem;
 
-    --text-hero: clamp(18px, 5vw, 26px);
-    --text-section: clamp(15px, 2.2vw, 19px);
-    --text-card-title: 0.875rem;
-    --text-price: 0.9375rem;
-    --text-body: 0.875rem;
-    --text-meta: 0.75rem;
+    --text-hero: clamp(28px, 7vw, 48px);
+    --text-section: clamp(20px, 3vw, 24px);
+    --text-card-title: 1.125rem;
+    --text-price: 1.125rem;
+    --text-body: 1rem;
+    --text-meta: 0.8125rem;
 
-    --font-display: 'Fraunces', Georgia, serif;
+    --font-display: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
     --font-body: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
     --font-mono: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
     --font-ops: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
@@ -57,14 +62,16 @@
   }
 
   .dark {
-    --color-bg: #11100F;
-    --color-surface: #1A1816;
-    --color-text: #F5F4F0;
-    --color-muted: #A39E97;
-    --color-border: #282522;
-    --color-primary: #EA580C;
+    --color-bg: #121212;
+    --color-surface: #1C1C1C;
+    --color-soft-tint: #2A1618;
+    --color-text: #F4F4F4;
+    --color-muted: #A1A1AA;
+    --color-border: #2E2E2E;
+    --color-primary: #E23744;
     --color-primary-contrast: #FFFFFF;
-    --color-accent: #F59E0B;
+    --color-accent: #1BA672;
+    --color-veg: #1BA672;
   }
 
   *,
@@ -76,13 +83,13 @@
   html,
   body {
     width: 100%;
-    max-width: 100%;
+    max-width: 100vw;
     margin: 0;
     padding: 0;
-    overflow-x: hidden;
+    overflow-x: clip;
     font-family: var(--font-body);
     font-size: var(--text-body);
-    line-height: 1.45;
+    line-height: 1.5;
     background-color: var(--color-bg);
     color: var(--color-text);
     -webkit-tap-highlight-color: transparent;
@@ -92,8 +99,9 @@
   #root,
   main {
     width: 100%;
-    max-width: 100%;
-    overflow-x: hidden;
+    max-width: 100vw;
+    min-width: 0;
+    overflow-x: clip;
   }
 
   img {
@@ -115,6 +123,20 @@
     font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
   }
+}
+
+/* Hide horizontal scrollbar on chip strips */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Safe area bottom helper */
+.pb-safe {
+  padding-bottom: max(0.75rem, env(safe-area-inset-bottom, 0px));
 }
 
 /* Shimmer Skeleton Loading for Menu & Cards */
@@ -199,61 +221,5 @@
   }
   .skeleton-shimmer {
     animation: none !important;
-  }
-}
-
-.admin-ops-theme,
-.admin-ops-theme h1,
-.admin-ops-theme h2,
-.admin-ops-theme h3,
-.admin-ops-theme h4,
-.admin-ops-theme .font-display,
-.admin-ops-theme .font-mono,
-.admin-ops-theme .tabular-nums {
-  font-family: var(--font-ops);
-}
-
-.admin-ops-theme .tabular-nums {
-  font-variant-numeric: tabular-nums;
-}
-
-.no-scrollbar::-webkit-scrollbar {
-  display: none;
-}
-.no-scrollbar {
-  -ms-overflow-style: none;
-  scrollbar-width: none;
-}
-
-.pb-safe {
-  padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
-}
-
-.mb-safe {
-  margin-bottom: env(safe-area-inset-bottom);
-}
-
-@media print {
-  html,
-  body {
-    background: #FFFFFF !important;
-    color: #000000 !important;
-  }
-  body * {
-    visibility: hidden;
-  }
-  #printable-area,
-  #printable-area * {
-    visibility: visible;
-    color: #000000 !important;
-    background: #FFFFFF !important;
-  }
-  #printable-area {
-    position: absolute;
-    left: 0;
-    top: 0;
-    width: 100%;
-    box-shadow: none !important;
-    border: none !important;
   }
 }

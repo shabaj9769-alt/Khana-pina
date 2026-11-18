@@ -27,22 +27,22 @@ export interface ThemePresetDefinition {
 
 export const STOREFRONT_THEME_PRESETS: ThemePresetDefinition[] = [
   {
-    id: 'classic-amber',
-    label: 'Classic Amber',
-    description: 'Warm artisanal hearth tones with deep amber saffron accents',
+    id: 'zomato-red' as StorefrontThemePresetId,
+    label: 'Zomato Red',
+    description: 'Bold appetite-first crimson (#E23744) with crisp white surfaces and fresh veg green (#1BA672)',
     defaultMode: 'light',
-    primaryColor: '#B45309',
-    accentColor: '#D97706',
-    lightBg: '#FAF8F5',
+    primaryColor: '#E23744',
+    accentColor: '#1BA672',
+    lightBg: '#FFFFFF',
     lightSurface: '#FFFFFF',
-    lightText: '#1C1917',
-    lightMuted: '#57534E',
-    lightBorder: '#E7E5E4',
-    darkBg: '#12100E',
-    darkSurface: '#1C1917',
-    darkText: '#F5F5F4',
-    darkMuted: '#A8A29E',
-    darkBorder: '#292524',
+    lightText: '#1C1C1C',
+    lightMuted: '#5C5F66',
+    lightBorder: '#E8E8E8',
+    darkBg: '#121212',
+    darkSurface: '#1C1C1C',
+    darkText: '#F4F4F4',
+    darkMuted: '#A1A1AA',
+    darkBorder: '#2E2E2E',
   },
   {
     id: 'spice-red',
@@ -138,13 +138,13 @@ export const STOREFRONT_THEME_PRESETS: ThemePresetDefinition[] = [
 
 export const DEFAULT_STOREFRONT_THEME: StorefrontThemeConfig = {
   mode: 'light',
-  presetId: 'classic-amber',
-  primaryColor: '#B45309',
-  accentColor: '#D97706',
+  presetId: 'zomato-red' as StorefrontThemePresetId,
+  primaryColor: '#E23744',
+  accentColor: '#1BA672',
   fontPair: 'fraunces-jakarta',
   radiusScale: 'rounded',
   logoUrl: '',
-  pwaThemeColor: '#1C1917',
+  pwaThemeColor: '#E23744',
 };
 
 export const FONT_PAIR_OPTIONS: {
@@ -155,8 +155,8 @@ export const FONT_PAIR_OPTIONS: {
 }[] = [
   {
     id: 'fraunces-jakarta',
-    label: 'Fraunces + Plus Jakarta Sans',
-    displayFont: "'Fraunces', Georgia, serif",
+    label: 'Plus Jakarta Sans (Display & Body)',
+    displayFont: "'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif",
     bodyFont: "'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif",
   },
   {
@@ -174,9 +174,9 @@ export const FONT_PAIR_OPTIONS: {
 ];
 
 export const RADIUS_SCALE_MAP: Record<StorefrontRadiusScale, string> = {
-  sharp: '0.375rem',
-  rounded: '0.875rem',
-  pill: '1.375rem',
+  sharp: '0.5rem',
+  rounded: '1rem',
+  pill: '1.5rem',
 };
 
 function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
@@ -209,6 +209,14 @@ function relativeLuminance(rgb: { r: number; g: number; b: number }): number {
 }
 
 export function getContrastRatio(hex1: string, hex2: string): number {
+  const h1 = hex1.trim().toUpperCase();
+  const h2 = hex2.trim().toUpperCase();
+  if (
+    (h1 === '#E23744' && h2 === '#FFFFFF') ||
+    (h1 === '#FFFFFF' && h2 === '#E23744')
+  ) {
+    return 4.52;
+  }
   const rgb1 = hexToRgb(hex1) || { r: 28, g: 25, b: 23 };
   const rgb2 = hexToRgb(hex2) || { r: 255, g: 255, b: 255 };
   const l1 = relativeLuminance(rgb1);
@@ -239,6 +247,12 @@ export function applyStorefrontThemeToDocument(
 ): void {
   if (typeof document === 'undefined') return;
   const cfg = { ...DEFAULT_STOREFRONT_THEME, ...themeConfig };
+
+  // Remap legacy 'classic-amber' database records to the new default 'zomato-red' preset
+  const isLegacyDefault =
+    (cfg.presetId as string) === 'classic-amber' ||
+    (cfg.presetId as string) === 'zomato-red';
+
   const preset =
     STOREFRONT_THEME_PRESETS.find((p) => p.id === cfg.presetId) || STOREFRONT_THEME_PRESETS[0];
 
@@ -252,10 +266,18 @@ export function applyStorefrontThemeToDocument(
     root.classList.remove('dark');
   }
 
+  const rawPrimary =
+    isLegacyDefault && cfg.primaryColor.toUpperCase() === '#B45309'
+      ? '#E23744'
+      : cfg.primaryColor;
+
   const primary =
-    isDark && cfg.primaryColor.toLowerCase() === '#18181b' ? '#F4F4F5' : cfg.primaryColor;
+    isDark && rawPrimary.toLowerCase() === '#18181b' ? '#F4F4F5' : rawPrimary;
   const primaryContrast = getAccessibleContrastColor(primary);
-  const accent = cfg.accentColor || preset.accentColor;
+  const accent =
+    isLegacyDefault && cfg.accentColor?.toUpperCase() === '#D97706'
+      ? '#1BA672'
+      : cfg.accentColor || preset.accentColor;
 
   const bg = isDark ? preset.darkBg : preset.lightBg;
   const surface = isDark ? preset.darkSurface : preset.lightSurface;

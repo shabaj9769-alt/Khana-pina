@@ -39,38 +39,38 @@ const STATUS_STEPS: {
 }[] = [
   {
     key: 'PLACED',
-    label: 'Order mila (Placed)',
-    desc: 'Kitchen ko aapka order mil gaya hai',
+    label: 'Order Placed',
+    desc: 'The kitchen has received your order',
     icon: ClipboardCheck,
   },
   {
     key: 'ACCEPTED',
-    label: 'Confirm ho gaya (Accepted)',
-    desc: 'Chef ne order confirm kar diya hai',
+    label: 'Order Accepted',
+    desc: 'Our chef has confirmed your order',
     icon: ChefHat,
   },
   {
     key: 'PREPARING',
-    label: 'Taza ban raha hai (Preparing)',
-    desc: 'Handi aur tandoor par pak raha hai',
+    label: 'Preparing Fresh',
+    desc: 'Slow-cooking in sealed handis and over the tandoor',
     icon: Flame,
   },
   {
     key: 'READY',
-    label: 'Pack ho gaya (Ready)',
-    desc: 'Garam pack hokar rider ke liye taiyar',
+    label: 'Ready for Pickup',
+    desc: 'Packed hot and ready for the delivery partner',
     icon: PackageCheck,
   },
   {
     key: 'OUT_FOR_DELIVERY',
-    label: 'Raste me hai (Out for delivery)',
-    desc: 'Rider aapke pate par nikal chuka hai',
+    label: 'Out for Delivery',
+    desc: 'Your delivery partner is on the way to your address',
     icon: Truck,
   },
   {
     key: 'DELIVERED',
-    label: 'Pahunch gaya (Delivered)',
-    desc: 'Doorstep OTP se verify hokar deliver hua',
+    label: 'Delivered',
+    desc: 'Verified with doorstep OTP and delivered',
     icon: Check,
   },
 ];
@@ -187,7 +187,7 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
       const data = await res.json();
       if (res.ok) {
         setReview(data.review);
-        setReviewFeedback('Shukriya! Aapka feedback save ho gaya hai.');
+        setReviewFeedback('Thank you! Your feedback has been saved.');
       } else {
         setReviewFeedback(data.error || 'Failed to submit review.');
       }
@@ -213,15 +213,15 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
         <div className="rounded-theme border border-border bg-surface p-6">
           <XCircle className="w-10 h-10 text-red-600 mx-auto mb-3" />
           <h2 className="font-display text-lg font-bold text-text">
-            Tracking link nahi mila
+            Tracking link not found
           </h2>
-          <p className="mt-2 text-xs text-muted">{error}</p>
+          <p className="mt-2 text-sm text-muted">{error}</p>
           <button
             type="button"
             onClick={onBackToStore}
-            className="mt-5 w-full min-h-[46px] px-4 rounded-sm bg-primary text-primary-contrast text-sm font-semibold whitespace-nowrap cursor-pointer"
+            className="mt-5 w-full min-h-[46px] px-4 rounded-xl bg-primary text-primary-contrast text-sm font-semibold whitespace-nowrap cursor-pointer"
           >
-            Menu par wapas jayein
+            Back to menu
           </button>
         </div>
       </div>
@@ -280,10 +280,10 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
         <button
           type="button"
           onClick={onBackToStore}
-          className="min-h-[42px] inline-flex items-center gap-1.5 text-sm font-semibold text-muted hover:text-text whitespace-nowrap cursor-pointer"
+          className="min-h-[44px] inline-flex items-center gap-1.5 text-sm font-semibold text-muted hover:text-text whitespace-nowrap cursor-pointer"
         >
           <ArrowLeft className="w-4 h-4 shrink-0" />
-          <span>Menu par wapas</span>
+          <span>Back to menu</span>
         </button>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -293,42 +293,42 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
               complaintTextareaRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
               setTimeout(() => complaintTextareaRef.current?.focus(), 300);
             }}
-            className="min-h-[40px] px-3 rounded-sm border border-red-500/30 bg-red-500/10 text-xs font-semibold text-red-600 whitespace-nowrap shrink-0 inline-flex items-center gap-1.5 cursor-pointer"
+            className="min-h-[44px] px-3.5 rounded-xl border border-red-500/30 bg-red-500/10 text-[13px] font-semibold text-red-600 whitespace-nowrap shrink-0 inline-flex items-center gap-1.5 cursor-pointer"
           >
-            <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+            <AlertCircle className="w-4 h-4 shrink-0" />
             <span>Help / Issue</span>
           </button>
 
           <button
             type="button"
             onClick={() => onReorder(order)}
-            className="min-h-[40px] px-3 rounded-sm border border-border bg-surface text-xs font-semibold text-text whitespace-nowrap shrink-0 inline-flex items-center gap-1.5 cursor-pointer"
+            className="min-h-[44px] px-3.5 rounded-xl border border-border bg-surface text-[13px] font-semibold text-text whitespace-nowrap shrink-0 inline-flex items-center gap-1.5 cursor-pointer"
           >
-            <RotateCcw className="w-3.5 h-3.5 shrink-0" />
-            <span>Dobara mangayein</span>
+            <RotateCcw className="w-4 h-4 shrink-0" />
+            <span>Order again</span>
           </button>
 
           <button
             type="button"
             onClick={() => window.print()}
-            className="min-h-[40px] px-3 rounded-sm bg-primary text-primary-contrast text-xs font-semibold whitespace-nowrap shrink-0 inline-flex items-center gap-1.5 cursor-pointer"
+            className="min-h-[44px] px-3.5 rounded-xl bg-primary text-primary-contrast text-[13px] font-semibold whitespace-nowrap shrink-0 inline-flex items-center gap-1.5 cursor-pointer"
           >
-            <Printer className="w-3.5 h-3.5 shrink-0" />
-            <span>Bill print</span>
+            <Printer className="w-4 h-4 shrink-0" />
+            <span>Print bill</span>
           </button>
         </div>
       </div>
 
       {/* Main Live Status Card with Prominent ETA & Step Tracker */}
       <section
-        className={`rounded-theme border border-border bg-surface p-4 sm:p-6 space-y-5 transition-transform duration-200 ${
+        className={`rounded-2xl border border-border bg-surface p-4 sm:p-6 space-y-5 transition-transform duration-200 ${
           statusPulse ? 'animate-tick-pop' : ''
         }`}
       >
         {/* Header: Order Meta + Big ETA + Doorstep OTP */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-border">
           <div className="min-w-0 flex-1 space-y-1">
-            <p className="text-xs text-muted tabular-nums truncate">
+            <p className="text-[13px] text-muted tabular-nums truncate">
               Order #{order.orderNumber} ·{' '}
               {new Date(order.placedAt).toLocaleTimeString([], {
                 hour: '2-digit',
@@ -343,19 +343,19 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
             </p>
             <h1 className="font-display text-xl sm:text-2xl font-bold text-text">
               {isCancelledOrRejected
-                ? `Order ${order.status === 'CANCELLED' ? 'Cancel ho gaya' : 'Reject ho gaya'}`
+                ? `Order ${order.status === 'CANCELLED' ? 'Cancelled' : 'Rejected'}`
                 : STATUS_STEPS[Math.max(0, currentStepIndex)]?.label || order.status}
             </h1>
             {!isCancelledOrRejected && order.status !== 'DELIVERED' && (
               <p className="text-base sm:text-lg font-bold text-primary tabular-nums">
-                Lagbhag {remainingEtaMins} min me aapke paas
+                Arriving in ~{remainingEtaMins} mins
               </p>
             )}
           </div>
 
           {!isCancelledOrRejected && (
-            <div className="rounded-sm border border-border bg-bg px-4 py-3 flex sm:flex-col items-center sm:items-end justify-between gap-2 shrink-0">
-              <div className="flex items-center gap-1.5 text-xs text-muted">
+            <div className="rounded-xl border border-border bg-bg px-4 py-3 flex sm:flex-col items-center sm:items-end justify-between gap-2 shrink-0">
+              <div className="flex items-center gap-1.5 text-[13px] text-muted">
                 <KeyRound className="w-3.5 h-3.5 text-primary shrink-0" />
                 <span>Delivery OTP</span>
               </div>
@@ -368,26 +368,26 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
 
         {/* Clean Rider Card (Name + Call Button) */}
         {order.deliveryBoyName && !isCancelledOrRejected && (
-          <div className="rounded-sm border border-border bg-bg p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="rounded-xl border border-border bg-bg p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div className="flex items-center gap-3 min-w-0">
-              <div className="w-11 h-11 rounded-sm bg-primary/15 text-primary flex items-center justify-center shrink-0">
+              <div className="w-11 h-11 rounded-xl bg-primary/15 text-primary flex items-center justify-center shrink-0">
                 <Truck className="w-5 h-5" />
               </div>
               <div className="min-w-0 flex-1">
                 <p className="text-sm font-bold text-text truncate">
                   {order.deliveryBoyName} (Delivery Partner)
                 </p>
-                <p className="text-xs text-muted tabular-nums truncate">
-                  +91 {order.deliveryBoyPhone} · Shop se {order.distanceKm} km
+                <p className="text-[13px] text-muted tabular-nums truncate">
+                  +91 {order.deliveryBoyPhone} · {order.distanceKm} km from kitchen
                 </p>
               </div>
               {order.deliveryBoyPhone && (
                 <a
                   href={`tel:+91${order.deliveryBoyPhone}`}
-                  className="min-h-[42px] px-3.5 rounded-sm bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-semibold inline-flex items-center gap-1.5 shrink-0 cursor-pointer"
+                  className="min-h-[44px] px-3.5 rounded-xl bg-[#1BA672] hover:bg-[#158f61] text-white text-[13px] font-semibold inline-flex items-center gap-1.5 shrink-0 cursor-pointer"
                 >
                   <Phone className="w-3.5 h-3.5" />
-                  <span>Rider ko call karein</span>
+                  <span>Call rider</span>
                 </a>
               )}
             </div>
@@ -400,7 +400,7 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
                   value={riderOtpInput}
                   onChange={(e) => setRiderOtpInput(e.target.value.replace(/\D/g, ''))}
                   placeholder="Enter OTP"
-                  className="min-w-0 flex-1 sm:w-28 min-h-[40px] px-3 text-xs tabular-nums border border-border bg-surface text-text rounded-sm"
+                  className="min-w-0 flex-1 sm:w-28 min-h-[44px] px-3 text-[13px] tabular-nums border border-border bg-surface text-text rounded-xl"
                 />
                 <button
                   type="button"
@@ -419,23 +419,23 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
                       setRiderOtpMsg(data.error || 'OTP error');
                     }
                   }}
-                  className="min-h-[40px] px-3.5 rounded-sm bg-primary text-primary-contrast text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer"
+                  className="min-h-[44px] px-3.5 rounded-xl bg-primary text-primary-contrast text-[13px] font-semibold whitespace-nowrap shrink-0 cursor-pointer"
                 >
                   Verify OTP
                 </button>
               </div>
             )}
-            {riderOtpMsg && <p className="text-xs text-muted">{riderOtpMsg}</p>}
+            {riderOtpMsg && <p className="text-[13px] text-muted">{riderOtpMsg}</p>}
           </div>
         )}
 
         {/* Step Tracker Timeline (Icon + Label + Timestamp + Active Step Highlight) */}
         {isCancelledOrRejected ? (
-          <div className="rounded-sm border border-red-500/30 bg-red-500/10 p-4 text-xs text-red-600 space-y-1">
-            <p className="font-bold">Karan: {order.cancelReason || 'Order cancelled'}</p>
+          <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-[13px] text-red-600 space-y-1">
+            <p className="font-bold">Reason: {order.cancelReason || 'Order cancelled'}</p>
             {order.paymentStatus === 'REFUNDED' && (
               <p>
-                ₹{order.grandTotal} ka poora refund aapke source account me bhej diya gaya hai.
+                A full refund of ₹{order.grandTotal} has been initiated to your original payment method.
               </p>
             )}
           </div>
@@ -450,7 +450,7 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
               return (
                 <div
                   key={step.key}
-                  className={`rounded-sm p-3 border flex items-center justify-between gap-3 transition-colors ${
+                  className={`rounded-xl p-3 border flex items-center justify-between gap-3 transition-colors ${
                     isCurrent
                       ? 'border-primary bg-primary/10'
                       : isCompleted
@@ -460,7 +460,7 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
                 >
                   <div className="flex items-center gap-3 min-w-0 flex-1">
                     <div
-                      className={`w-9 h-9 rounded-sm flex items-center justify-center shrink-0 ${
+                      className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${
                         isCurrent
                           ? 'bg-primary text-primary-contrast'
                           : isCompleted
@@ -472,23 +472,23 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
                     </div>
                     <div className="min-w-0 flex-1">
                       <p
-                        className={`text-xs sm:text-sm font-semibold truncate ${
+                        className={`text-sm font-semibold truncate ${
                           isCurrent ? 'text-primary font-bold' : 'text-text'
                         }`}
                       >
                         {step.label}
                       </p>
-                      <p className="text-[11px] text-muted truncate">{step.desc}</p>
+                      <p className="text-[13px] text-muted truncate">{step.desc}</p>
                     </div>
                   </div>
 
                   <div className="text-right shrink-0">
                     {stepTime ? (
-                      <span className="text-xs font-semibold tabular-nums text-text">
+                      <span className="text-[13px] font-semibold tabular-nums text-text">
                         {stepTime}
                       </span>
                     ) : isCurrent ? (
-                      <span className="text-xs font-semibold text-primary">Abhi</span>
+                      <span className="text-[13px] font-semibold text-primary">Now</span>
                     ) : (
                       <Clock className="w-3.5 h-3.5 text-muted inline-block" />
                     )}
@@ -502,23 +502,23 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
 
       {/* Printable Invoice & Feedback */}
       <div id="printable-area" className="grid grid-cols-1 lg:grid-cols-3 gap-5">
-        <div className="lg:col-span-2 rounded-theme border border-border bg-surface p-4 sm:p-6 space-y-4">
+        <div className="lg:col-span-2 rounded-2xl border border-border bg-surface p-4 sm:p-6 space-y-4">
           <div className="flex items-start justify-between gap-2 pb-4 border-b border-border">
             <div className="min-w-0 flex-1">
               <h2 className="font-display text-base font-bold text-text truncate">
                 {shopInfo?.shopName || 'Aangan Artisanal Kitchen'}
               </h2>
-              <p className="text-xs text-muted truncate">
+              <p className="text-[13px] text-muted truncate">
                 FSSAI Lic No. {shopInfo?.fssaiNumber}
               </p>
             </div>
-            <div className="text-right tabular-nums text-xs text-muted shrink-0">
+            <div className="text-right tabular-nums text-[13px] text-muted shrink-0">
               <p className="font-bold text-text">#{order.orderNumber}</p>
               <p>{new Date(order.placedAt).toLocaleDateString()}</p>
             </div>
           </div>
 
-          <div className="space-y-2.5 divide-y divide-border text-xs">
+          <div className="space-y-2.5 divide-y divide-border text-sm">
             {order.items.map((item, idx) => (
               <div key={idx} className="pt-2.5 first:pt-0 flex items-start justify-between gap-3">
                 <div className="min-w-0 flex-1">
@@ -526,10 +526,10 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
                     {item.quantity}x {item.itemName}
                   </p>
                   {item.variantName && (
-                    <p className="text-muted truncate">{item.variantName}</p>
+                    <p className="text-[13px] text-muted truncate">{item.variantName}</p>
                   )}
                   {item.itemNote && (
-                    <p className="text-[11px] text-primary italic mt-0.5">Note: {item.itemNote}</p>
+                    <p className="text-[13px] text-primary italic mt-0.5">Note: {item.itemNote}</p>
                   )}
                 </div>
                 <span className="tabular-nums font-semibold text-text shrink-0">
@@ -539,26 +539,26 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
             ))}
           </div>
 
-          <div className="pt-3 border-t border-border space-y-1.5 text-xs">
+          <div className="pt-3 border-t border-border space-y-1.5 text-[13px]">
             <div className="flex justify-between text-muted">
               <span>Items total</span>
               <span className="tabular-nums">₹{order.itemTotal}</span>
             </div>
             {order.discountAmount > 0 && (
-              <div className="flex justify-between text-emerald-600">
-                <span>Coupon bachat ({order.couponCode})</span>
+              <div className="flex justify-between text-[#1BA672] font-semibold">
+                <span>Coupon discount ({order.couponCode})</span>
                 <span className="tabular-nums">-₹{order.discountAmount}</span>
               </div>
             )}
             <div className="flex justify-between text-muted">
-              <span>Delivery charge ({order.distanceKm} km)</span>
+              <span>Delivery fee ({order.distanceKm} km)</span>
               <span className="tabular-nums">₹{order.deliveryFee}</span>
             </div>
             <div className="flex justify-between text-muted">
               <span>GST</span>
               <span className="tabular-nums">₹{order.gstAmount}</span>
             </div>
-            <div className="flex justify-between pt-2 border-t border-border text-sm font-bold text-text">
+            <div className="flex justify-between pt-2 border-t border-border text-base font-bold text-text">
               <span>Grand Total ({order.paymentMethod})</span>
               <span className="tabular-nums">₹{order.grandTotal}</span>
             </div>
@@ -566,28 +566,29 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
         </div>
 
         {/* Rating & Complaint Support Form */}
-        <div className="rounded-theme border border-border bg-surface p-4 sm:p-6 space-y-4">
+        <div className="rounded-2xl border border-border bg-surface p-4 sm:p-6 space-y-4">
           <div className="flex items-center justify-between gap-2">
-            <h3 className="font-display text-sm font-bold text-text">
-              Khana kaisa laga?
+            <h3 className="font-display text-base font-bold text-text">
+              How was your meal?
             </h3>
             {shopInfo?.supportPhone && (
               <a
                 href={`tel:${shopInfo.supportPhone}`}
-                className="text-xs font-semibold text-primary underline"
+                className="text-[13px] font-semibold text-primary underline"
               >
-                Kitchen ko call karein
+                Call kitchen
               </a>
             )}
           </div>
-          <form onSubmit={handleSubmitReview} className="space-y-3 text-xs">
+          <form onSubmit={handleSubmitReview} className="space-y-3 text-sm">
             <div className="flex items-center gap-1">
               {[1, 2, 3, 4, 5].map((star) => (
                 <button
                   key={star}
                   type="button"
+                  aria-label={`Rate ${star} stars`}
                   onClick={() => setRating(star)}
-                  className="p-2 rounded-sm hover:bg-bg cursor-pointer"
+                  className="p-2 rounded-lg hover:bg-bg cursor-pointer"
                 >
                   <Star
                     className={`w-5 h-5 ${
@@ -601,24 +602,24 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
               rows={2}
               value={comment}
               onChange={(e) => setComment(e.target.value)}
-              placeholder="Khane ka swaad aur packing kaisi thi..."
-              className="w-full rounded-sm border border-border bg-bg text-text p-2.5"
+              placeholder="How was the taste, packaging, and portion size?"
+              className="w-full rounded-xl border border-border bg-bg text-text p-2.5 text-[14px]"
             />
             <textarea
               ref={complaintTextareaRef}
               rows={2}
               value={complaintText}
               onChange={(e) => setComplaintText(e.target.value)}
-              placeholder="Koi dikkat ho to yahan likhein (missing item, late delivery)..."
-              className="w-full rounded-sm border border-border bg-bg text-text p-2.5 focus:border-primary"
+              placeholder="Report an issue (e.g. missing item, late delivery)..."
+              className="w-full rounded-xl border border-border bg-bg text-text p-2.5 text-[14px] focus:border-primary"
             />
-            {reviewFeedback && <p className="text-emerald-600 font-medium">{reviewFeedback}</p>}
+            {reviewFeedback && <p className="text-[#1BA672] font-semibold text-[13px]">{reviewFeedback}</p>}
             <button
               type="submit"
               disabled={submittingReview}
-              className="w-full min-h-[46px] rounded-sm bg-primary text-primary-contrast text-sm font-semibold whitespace-nowrap cursor-pointer"
+              className="w-full min-h-[46px] rounded-xl bg-primary text-primary-contrast text-sm font-semibold whitespace-nowrap cursor-pointer"
             >
-              {submittingReview ? 'Save ho raha hai...' : 'Feedback bhejein'}
+              {submittingReview ? 'Saving...' : 'Submit feedback'}
             </button>
           </form>
         </div>

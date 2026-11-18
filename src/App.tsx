@@ -54,6 +54,7 @@ export default function App() {
     shopName: 'Aangan Artisanal Kitchen',
     isOpen: true,
     busyMode: false,
+    opensAtText: '11:00 AM',
     logoUrl: '',
   });
 
@@ -65,10 +66,11 @@ export default function App() {
     return '';
   });
 
-  // Sync URL path if user navigates directly to /track/<token>, /rider/<token>, or /admin
+  // Sync URL path & hash if user navigates to /track/<token>, /rider/<token>, /admin, #/cart, or #/checkout
   useEffect(() => {
     const syncFromUrl = () => {
       const path = window.location.pathname;
+      const hash = window.location.hash;
       if (path.startsWith('/track/')) {
         const tok = path.replace('/track/', '').trim();
         setTrackingToken(tok);
@@ -81,12 +83,21 @@ export default function App() {
         setActiveView('admin');
       } else {
         setActiveView('customer');
+        if (hash === '#/cart' || hash === '#/checkout') {
+          setCartDrawerOpen(true);
+        } else {
+          setCartDrawerOpen(false);
+        }
       }
     };
 
     syncFromUrl();
     window.addEventListener('popstate', syncFromUrl);
-    return () => window.removeEventListener('popstate', syncFromUrl);
+    window.addEventListener('hashchange', syncFromUrl);
+    return () => {
+      window.removeEventListener('popstate', syncFromUrl);
+      window.removeEventListener('hashchange', syncFromUrl);
+    };
   }, []);
 
   // Apply storefront theme whenever activeView is customer or tracking
@@ -130,6 +141,7 @@ export default function App() {
   };
 
   const handleOpenTracking = (token: string) => {
+    setCartDrawerOpen(false);
     setTrackingToken(token);
     navigateView('tracking', `/track/${token}`);
   };
@@ -145,6 +157,18 @@ export default function App() {
     const nextLang = lang === 'en' ? 'hi' : 'en';
     setLang(nextLang);
     guestAuthLayer.saveGuestLanguage(nextLang);
+  };
+
+  const openCartPage = () => {
+    setActiveView('customer');
+    setCartDrawerOpen(true);
+    try {
+      if (window.location.hash !== '#/cart' && window.location.hash !== '#/checkout') {
+        window.history.pushState({ step: 'cart' }, '', '/#/cart');
+      }
+    } catch {
+      // Ignore history push errors
+    }
   };
 
   const handleReorder = (order: OrderRecord, currentMenu?: MenuItem[]) => {
@@ -186,8 +210,7 @@ export default function App() {
 
     if (restored.length > 0) {
       setCart(restored);
-      navigateView('customer', '/');
-      setCartDrawerOpen(true);
+      openCartPage();
     }
   };
 
@@ -196,7 +219,7 @@ export default function App() {
   // ===========================================================================
   if (activeView === 'rider') {
     return (
-      <div className="min-h-[100dvh] w-full max-w-full overflow-x-hidden flex flex-col bg-bg text-text">
+      <div className="min-h-dvh w-full max-w-full overflow-x-hidden flex flex-col bg-bg text-text">
         <DeliveryPartnerView initialToken={riderToken} />
         <OfflineIndicator />
       </div>
@@ -208,7 +231,7 @@ export default function App() {
   // ===========================================================================
   if (activeView === 'admin') {
     return (
-      <div className="min-h-[100dvh] w-full max-w-full overflow-x-hidden flex flex-col bg-bg text-text">
+      <div className="min-h-dvh w-full max-w-full overflow-x-hidden flex flex-col bg-bg text-text">
         <AdminPortal
           onRefreshStorefront={() => setStorefrontRefreshKey((k) => k + 1)}
           onOpenRiderPortal={(tok) => {
@@ -216,6 +239,7 @@ export default function App() {
             navigateView('rider', `/rider/${tok}`);
           }}
           onBackToStorefront={() => {
+            setCartDrawerOpen(false);
             setCustomerSubTab('home');
             navigateView('customer', '/');
           }}
@@ -229,12 +253,12 @@ export default function App() {
   // CUSTOMER STOREFRONT & ORDER TRACKING LAYOUT (Light, Airy, Zero Overflow)
   // ===========================================================================
   return (
-    <div className="min-h-[100dvh] w-full max-w-full overflow-x-hidden flex flex-col bg-bg text-text pb-16 md:pb-6 transition-colors duration-150">
+    <div className="min-h-dvh w-full max-w-full overflow-x-clip flex flex-col bg-bg text-text pb-16 md:pb-6 transition-colors duration-150">
       {/* Reorder skipped-items toast */}
       {reorderNotice && (
         <div
           role="status"
-          className="fixed top-14 left-1/2 -translate-x-1/2 z-50 max-w-[92vw] px-3.5 py-2 rounded-full bg-surface border border-border shadow-md text-xs font-semibold text-text flex items-center gap-2"
+          className="fixed top-16 left-1/2 -translate-x-1/2 z-50 max-w-[92vw] px-4 py-2.5 rounded-full bg-surface border border-border shadow-md text-[13px] font-semibold text-text flex items-center gap-2"
         >
           <span className="break-words">{reorderNotice}</span>
           <button
@@ -247,74 +271,78 @@ export default function App() {
         </div>
       )}
 
-      {/* AIRY, SLIM STICKY CUSTOMER HEADER */}
-      <header className="sticky top-0 left-0 right-0 z-30 w-full max-w-full bg-surface/90 backdrop-blur-md border-b border-border/70">
-        <div className="w-full max-w-[1140px] mx-auto px-3 sm:px-4 min-h-[48px] py-1 flex items-center justify-between gap-2">
-          {/* Left: Soft Brand Icon + Shop Name + Live Status & Address */}
-          <div className="flex items-center gap-2 min-w-0 flex-1">
+      {/* STICKY CUSTOMER HEADER (Part 2 & Part 3: Overflow-Free 2-Row Text Block + Full English) */}
+      <header className="sticky top-0 left-0 right-0 z-30 w-full max-w-full bg-surface/95 backdrop-blur-md border-b border-border/80">
+        <div className="w-full max-w-[1200px] mx-auto px-4 min-h-[56px] py-1.5 flex items-center justify-between gap-2 overflow-hidden">
+          {/* Left: Brand Icon (shrink-0) + Text Block (min-w-0 flex-1) */}
+          <div className="flex items-center gap-2.5 min-w-0 flex-1 overflow-hidden">
             <a
               href="/"
               onClick={(e) => {
                 e.preventDefault();
+                setCartDrawerOpen(false);
                 setCustomerSubTab('home');
                 navigateView('customer', '/');
               }}
-              className="w-7 h-7 rounded-lg bg-primary/12 text-primary flex items-center justify-center shrink-0 overflow-hidden"
+              className="w-8 h-8 rounded-lg bg-primary/12 text-primary flex items-center justify-center shrink-0 overflow-hidden"
               aria-label={headerMeta.shopName}
             >
               {headerMeta.logoUrl ? (
                 <img
                   src={optimizeAssetUrl(headerMeta.logoUrl)}
                   alt={headerMeta.shopName}
-                  width={28}
-                  height={28}
+                  width={32}
+                  height={32}
                   decoding="async"
-                  className="w-7 h-7 object-cover object-center shrink-0"
+                  className="w-8 h-8 object-cover object-center shrink-0"
                 />
               ) : (
-                <Flame className="w-3.5 h-3.5" />
+                <Flame className="w-4 h-4 shrink-0" />
               )}
             </a>
 
-            <div className="min-w-0 flex-1">
+            <div className="min-w-0 flex-1 overflow-hidden">
+              {/* Row 1: Shop name with single-line ellipsis truncation */}
               <a
                 href="/"
                 onClick={(e) => {
                   e.preventDefault();
+                  setCartDrawerOpen(false);
                   setCustomerSubTab('home');
                   navigateView('customer', '/');
                 }}
-                className="block font-display text-[13px] sm:text-[15px] leading-tight font-bold text-text line-clamp-2 break-words"
+                className="block font-display text-[14px] sm:text-[16px] leading-tight font-extrabold text-text truncate"
               >
                 {headerMeta.shopName}
               </a>
 
-              <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] leading-tight text-muted mt-0.5">
-                <span className="inline-flex items-center gap-1 whitespace-nowrap">
+              {/* Row 2: "Open · 25m · Address" on its own second row with truncation */}
+              <div className="flex items-center gap-1.5 text-[13px] leading-tight text-muted mt-0.5 min-w-0 overflow-hidden">
+                <span className="inline-flex items-center gap-1 whitespace-nowrap shrink-0">
                   <span
-                    className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                    className={`w-2 h-2 rounded-full shrink-0 ${
                       headerMeta.isOpen && !headerMeta.busyMode
-                        ? 'bg-emerald-500'
-                        : 'bg-red-500'
+                        ? 'bg-[#1BA672]'
+                        : headerMeta.isOpen && headerMeta.busyMode
+                        ? 'bg-amber-500'
+                        : 'bg-[#E23744]'
                     }`}
                   />
-                  <strong className="font-medium text-text">
+                  <strong className="font-semibold text-text">
                     {headerMeta.isOpen
                       ? headerMeta.busyMode
-                        ? lang === 'hi'
-                          ? 'Busy'
-                          : 'Busy'
-                        : lang === 'hi'
-                        ? 'Khula'
+                        ? 'Busy'
                         : 'Open'
-                      : lang === 'hi'
-                      ? 'Band'
                       : 'Closed'}
                   </strong>
-                  <span className="tabular-nums text-muted">· 25m</span>
+                  <span className="tabular-nums text-muted">
+                    {headerMeta.isOpen
+                      ? '· 25m'
+                      : `· Opens at ${headerMeta.opensAtText || '11:00 AM'}`}
+                  </span>
                 </span>
 
-                <span aria-hidden="true" className="text-border">
+                <span aria-hidden="true" className="text-border shrink-0">
                   ·
                 </span>
 
@@ -326,18 +354,14 @@ export default function App() {
                     }
                     setAddressModalTrigger((n) => n + 1);
                   }}
-                  title="Delivery address chunein"
-                  className="inline-flex items-center gap-0.5 text-[11px] font-medium text-primary hover:opacity-80 cursor-pointer min-w-0"
+                  title="Select delivery address"
+                  className="inline-flex items-center gap-0.5 text-[13px] font-semibold text-primary hover:opacity-80 cursor-pointer min-w-0 overflow-hidden"
                 >
-                  <MapPin className="w-2.5 h-2.5 shrink-0" />
-                  <span className="line-clamp-1 break-all max-w-[115px] sm:max-w-[200px]">
-                    {headerAddressLabel
-                      ? headerAddressLabel
-                      : lang === 'hi'
-                      ? 'Pata chunein'
-                      : 'Set address'}
+                  <MapPin className="w-3 h-3 shrink-0" />
+                  <span className="truncate min-w-0">
+                    {headerAddressLabel ? headerAddressLabel : 'Set address'}
                   </span>
-                  <ChevronDown className="w-2.5 h-2.5 shrink-0" />
+                  <ChevronDown className="w-3 h-3 shrink-0" />
                 </button>
               </div>
             </div>
@@ -346,17 +370,18 @@ export default function App() {
           {/* Desktop Navigation Links */}
           <nav
             aria-label="Storefront navigation"
-            className="hidden lg:flex items-center gap-5 text-[13px] font-medium text-muted shrink-0"
+            className="hidden lg:flex items-center gap-5 text-[14px] font-semibold text-muted shrink-0"
           >
             <button
               type="button"
               onClick={() => {
+                setCartDrawerOpen(false);
                 setCustomerSubTab('home');
                 navigateView('customer', '/');
               }}
               className={`hover:text-text whitespace-nowrap cursor-pointer ${
-                activeView === 'customer' && customerSubTab === 'home'
-                  ? 'text-primary font-semibold'
+                activeView === 'customer' && !cartDrawerOpen && customerSubTab === 'home'
+                  ? 'text-primary font-bold'
                   : ''
               }`}
             >
@@ -365,12 +390,13 @@ export default function App() {
             <button
               type="button"
               onClick={() => {
+                setCartDrawerOpen(false);
                 setCustomerSubTab('menu');
                 navigateView('customer', '/');
               }}
               className={`hover:text-text whitespace-nowrap cursor-pointer ${
-                activeView === 'customer' && customerSubTab === 'menu'
-                  ? 'text-primary font-semibold'
+                activeView === 'customer' && !cartDrawerOpen && customerSubTab === 'menu'
+                  ? 'text-primary font-bold'
                   : ''
               }`}
             >
@@ -379,12 +405,13 @@ export default function App() {
             <button
               type="button"
               onClick={() => {
+                setCartDrawerOpen(false);
                 setCustomerSubTab('orders');
                 navigateView('customer', '/');
               }}
               className={`hover:text-text whitespace-nowrap cursor-pointer ${
-                activeView === 'customer' && customerSubTab === 'orders'
-                  ? 'text-primary font-semibold'
+                activeView === 'customer' && !cartDrawerOpen && customerSubTab === 'orders'
+                  ? 'text-primary font-bold'
                   : ''
               }`}
             >
@@ -392,47 +419,44 @@ export default function App() {
             </button>
           </nav>
 
-          {/* Right: Lightweight Icon-only Controls + Sleek Pill Cart Badge */}
-          <div className="flex items-center gap-1 shrink-0">
+          {/* Right: Icon Controls + Fully Visible Cart Button (all shrink-0) */}
+          <div className="flex items-center gap-1.5 shrink-0">
             <button
               type="button"
               onClick={toggleLanguage}
-              aria-label="Toggle Hindi or English language"
-              title={lang === 'en' ? 'हिंदी में बदलें' : 'Switch to English'}
-              className="w-7 h-7 rounded-full hover:bg-border/50 text-muted hover:text-text flex items-center justify-center cursor-pointer shrink-0 transition-colors"
+              aria-label="Switch language"
+              title="Switch language"
+              className="w-8 h-8 rounded-full hover:bg-border/50 text-muted hover:text-text flex items-center justify-center cursor-pointer shrink-0 transition-colors"
             >
-              <Languages className="w-3.5 h-3.5" />
+              <Languages className="w-4 h-4 shrink-0" />
             </button>
 
             <button
               type="button"
               onClick={toggleGuestDarkLight}
               aria-label="Toggle light or dark mode"
-              title="Toggle Light / Dark theme"
-              className="w-7 h-7 rounded-full hover:bg-border/50 text-muted hover:text-text flex items-center justify-center cursor-pointer shrink-0 transition-colors"
+              title="Toggle light or dark mode"
+              className="w-8 h-8 rounded-full hover:bg-border/50 text-muted hover:text-text flex items-center justify-center cursor-pointer shrink-0 transition-colors"
             >
               {guestThemeMode === 'dark' ? (
-                <Sun className="w-3.5 h-3.5 text-accent" />
+                <Sun className="w-4 h-4 text-accent shrink-0" />
               ) : (
-                <Moon className="w-3.5 h-3.5" />
+                <Moon className="w-4 h-4 shrink-0" />
               )}
             </button>
 
             <button
               type="button"
-              onClick={() => {
-                navigateView('customer', '/');
-                setCartDrawerOpen(true);
-              }}
-              aria-label="Open shopping bag"
-              className={`relative h-7 px-2.5 rounded-full flex items-center justify-center gap-1 shrink-0 transition-all cursor-pointer whitespace-nowrap ${
+              onClick={openCartPage}
+              aria-label="Open cart"
+              className={`relative h-8 px-3 rounded-full flex items-center justify-center gap-1.5 shrink-0 transition-all cursor-pointer whitespace-nowrap ${
                 totalCartItems > 0
                   ? 'bg-primary text-primary-contrast shadow-2xs'
                   : 'bg-primary/10 text-primary'
               }`}
             >
-              <ShoppingBag className="w-3 h-3 shrink-0" />
-              <span className="text-[11px] font-bold tabular-nums">
+              <ShoppingBag className="w-3.5 h-3.5 shrink-0" />
+              <span className="text-[13px] font-extrabold tabular-nums">
                 {totalCartItems}
               </span>
             </button>
@@ -441,12 +465,15 @@ export default function App() {
       </header>
 
       {/* Main Content Area */}
-      <main className="flex-1 w-full max-w-full overflow-x-hidden min-w-0">
+      <main className="flex-1 w-full max-w-full overflow-x-clip min-w-0">
         {activeView === 'customer' && (
           <CustomerStore
             key={storefrontRefreshKey}
             activeSubTab={customerSubTab}
-            setActiveSubTab={setCustomerSubTab}
+            setActiveSubTab={(tab) => {
+              setCartDrawerOpen(false);
+              setCustomerSubTab(tab);
+            }}
             cart={cart}
             setCart={setCart}
             onOpenTracking={handleOpenTracking}
@@ -461,6 +488,7 @@ export default function App() {
                 shopName: meta.shopName,
                 isOpen: meta.isOpen,
                 busyMode: meta.busyMode,
+                opensAtText: meta.opensAtText || '11:00 AM',
                 logoUrl: meta.theme?.logoUrl || '',
               });
               if (meta.theme) {
@@ -477,6 +505,7 @@ export default function App() {
           <OrderTrackingView
             trackingToken={trackingToken}
             onBackToStore={() => {
+              setCartDrawerOpen(false);
               setCustomerSubTab('home');
               navigateView('customer', '/');
             }}
@@ -485,80 +514,82 @@ export default function App() {
         )}
       </main>
 
-      {/* Slim Mobile Bottom Navigation Bar */}
-      <nav
-        aria-label="Mobile bottom navigation"
-        className="md:hidden fixed bottom-0 left-0 right-0 w-full max-w-full z-40 bg-surface/95 backdrop-blur-md border-t border-border/70"
-      >
-        <div className="w-full max-w-[1140px] mx-auto grid grid-cols-4 items-center h-[50px] pb-safe">
-          <button
-            type="button"
-            onClick={() => {
-              setCustomerSubTab('home');
-              navigateView('customer', '/');
-            }}
-            className={`flex flex-col items-center justify-center h-full text-[10px] font-medium whitespace-nowrap cursor-pointer min-w-0 ${
-              activeView === 'customer' && customerSubTab === 'home'
-                ? 'text-primary font-semibold'
-                : 'text-muted'
-            }`}
-          >
-            <Home className="w-4 h-4 shrink-0" />
-            <span className="mt-0.5">Home</span>
-          </button>
+      {/* Slim Mobile Bottom Navigation Bar (hidden on full-screen Cart & Checkout pages) */}
+      {!cartDrawerOpen && (
+        <nav
+          aria-label="Mobile bottom navigation"
+          className="md:hidden fixed bottom-0 left-0 right-0 w-full max-w-full z-40 bg-surface/95 backdrop-blur-md border-t border-border/70"
+        >
+          <div className="w-full max-w-[1200px] mx-auto grid grid-cols-4 items-center h-[54px] pb-safe">
+            <button
+              type="button"
+              onClick={() => {
+                setCartDrawerOpen(false);
+                setCustomerSubTab('home');
+                navigateView('customer', '/');
+              }}
+              className={`flex flex-col items-center justify-center h-full text-[13px] font-medium whitespace-nowrap cursor-pointer min-w-0 ${
+                activeView === 'customer' && customerSubTab === 'home'
+                  ? 'text-primary font-bold'
+                  : 'text-muted'
+              }`}
+            >
+              <Home className="w-4 h-4 shrink-0" />
+              <span className="mt-0.5 leading-none">Home</span>
+            </button>
 
-          <button
-            type="button"
-            onClick={() => {
-              setCustomerSubTab('menu');
-              navigateView('customer', '/');
-            }}
-            className={`flex flex-col items-center justify-center h-full text-[10px] font-medium whitespace-nowrap cursor-pointer min-w-0 ${
-              activeView === 'customer' && customerSubTab === 'menu'
-                ? 'text-primary font-semibold'
-                : 'text-muted'
-            }`}
-          >
-            <UtensilsCrossed className="w-4 h-4 shrink-0" />
-            <span className="mt-0.5">Menu</span>
-          </button>
+            <button
+              type="button"
+              onClick={() => {
+                setCartDrawerOpen(false);
+                setCustomerSubTab('menu');
+                navigateView('customer', '/');
+              }}
+              className={`flex flex-col items-center justify-center h-full text-[13px] font-medium whitespace-nowrap cursor-pointer min-w-0 ${
+                activeView === 'customer' && customerSubTab === 'menu'
+                  ? 'text-primary font-bold'
+                  : 'text-muted'
+              }`}
+            >
+              <UtensilsCrossed className="w-4 h-4 shrink-0" />
+              <span className="mt-0.5 leading-none">Menu</span>
+            </button>
 
-          <button
-            type="button"
-            onClick={() => {
-              setCustomerSubTab('orders');
-              navigateView('customer', '/');
-            }}
-            className={`flex flex-col items-center justify-center h-full text-[10px] font-medium whitespace-nowrap cursor-pointer min-w-0 ${
-              activeView === 'customer' && customerSubTab === 'orders'
-                ? 'text-primary font-semibold'
-                : 'text-muted'
-            }`}
-          >
-            <Clock className="w-4 h-4 shrink-0" />
-            <span className="mt-0.5">Orders</span>
-          </button>
+            <button
+              type="button"
+              onClick={() => {
+                setCartDrawerOpen(false);
+                setCustomerSubTab('orders');
+                navigateView('customer', '/');
+              }}
+              className={`flex flex-col items-center justify-center h-full text-[13px] font-medium whitespace-nowrap cursor-pointer min-w-0 ${
+                activeView === 'customer' && customerSubTab === 'orders'
+                  ? 'text-primary font-bold'
+                  : 'text-muted'
+              }`}
+            >
+              <Clock className="w-4 h-4 shrink-0" />
+              <span className="mt-0.5 leading-none">Orders</span>
+            </button>
 
-          <button
-            type="button"
-            onClick={() => {
-              navigateView('customer', '/');
-              setCartDrawerOpen(true);
-            }}
-            className="flex flex-col items-center justify-center h-full text-[10px] font-medium whitespace-nowrap cursor-pointer text-muted min-w-0"
-          >
-            <div className="relative">
-              <ShoppingBag className="w-4 h-4 shrink-0" />
-              {totalCartItems > 0 && (
-                <span className="absolute -top-1 -right-2 px-1 rounded-full bg-primary text-primary-contrast text-[9px] font-bold tabular-nums leading-tight">
-                  {totalCartItems}
-                </span>
-              )}
-            </div>
-            <span className="mt-0.5">Cart</span>
-          </button>
-        </div>
-      </nav>
+            <button
+              type="button"
+              onClick={openCartPage}
+              className="flex flex-col items-center justify-center h-full text-[13px] font-medium whitespace-nowrap cursor-pointer text-muted min-w-0"
+            >
+              <div className="relative">
+                <ShoppingBag className="w-4 h-4 shrink-0" />
+                {totalCartItems > 0 && (
+                  <span className="absolute -top-1.5 -right-2.5 px-1 rounded-full bg-primary text-primary-contrast text-[11px] font-bold tabular-nums leading-tight">
+                    {totalCartItems}
+                  </span>
+                )}
+              </div>
+              <span className="mt-0.5 leading-none">Cart</span>
+            </button>
+          </div>
+        </nav>
+      )}
 
       <OfflineIndicator />
     </div>

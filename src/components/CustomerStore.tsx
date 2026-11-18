@@ -1,19 +1,24 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
+  ArrowLeft,
   ArrowUpDown,
   CalendarClock,
   Check,
   ChevronRight,
   Compass,
   Heart,
+  MapPin,
+  MessageCircle,
   Minus,
   Plus,
   RotateCcw,
   Search,
   ShoppingBag,
+  Sparkles,
   Star,
   Tag,
+  Truck,
   X,
 } from 'lucide-react';
 import {
@@ -68,6 +73,7 @@ interface CustomerStoreProps {
     shopName: string;
     isOpen: boolean;
     busyMode: boolean;
+    opensAtText?: string;
     theme?: StorefrontThemeConfig;
     allMenuItems?: MenuItem[];
   }) => void;
@@ -133,6 +139,21 @@ function generateShopHourSlots(): { label: string; iso: string }[] {
   return slots.slice(0, 8);
 }
 
+/**
+ * Computes combo savings when a dish or combo item includes paired sides/breads/desserts
+ * or has multi-portion variants whose combined standalone value is higher than basePrice.
+ */
+function getComboSavingsAmount(item: MenuItem): number {
+  const addonSum = item.addons.reduce((sum, a) => sum + a.price, 0);
+  if (addonSum > 0) {
+    return Math.min(120, Math.max(45, Math.round(addonSum * 0.35)));
+  }
+  if (item.name.includes('&')) {
+    return 65;
+  }
+  return 50;
+}
+
 export const CustomerStore: React.FC<CustomerStoreProps> = ({
   activeSubTab,
   setActiveSubTab,
@@ -143,7 +164,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
   setCartDrawerOpen,
   addressModalTrigger = 0,
   onAddressChanged,
-  lang = 'en',
+  lang: _lang = 'en',
   onReorder,
   onHeaderMetaUpdate,
 }) => {
@@ -152,6 +173,25 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [activeBannerIdx, setActiveBannerIdx] = useState(0);
   const [copiedCoupon, setCopiedCoupon] = useState<string | null>(null);
+
+  // Part 1: Full-screen multi-page checkout flow ('store' | 'cart' | 'checkout') synced with browser history
+  const [checkoutStep, setCheckoutStep] = useState<'store' | 'cart' | 'checkout'>(() => {
+    if (typeof window !== 'undefined') {
+      if (window.location.hash === '#/checkout') return 'checkout';
+      if (window.location.hash === '#/cart') return 'cart';
+    }
+    return cartDrawerOpen ? 'cart' : 'store';
+  });
+
+  // On-screen keyboard & mobile input focus state
+  const [isKeyboardOpen, setIsKeyboardOpen] = useState(false);
+  const [isInputFocusedOnMobile, setIsInputFocusedOnMobile] = useState(false);
+
+  // Field-level validation touched states
+  const [checkoutTouched, setCheckoutTouched] = useState(false);
+  const [nameTouched, setNameTouched] = useState(false);
+  const [phoneTouched, setPhoneTouched] = useState(false);
+  const [addressTouched, setAddressTouched] = useState(false);
 
   // Menu filters & sort
   const [selectedCategory, setSelectedCategory] = useState<string>('ALL');
@@ -163,7 +203,13 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
   const [sortBy, setSortBy] = useState<'POPULAR' | 'PRICE_ASC' | 'PRICE_DESC'>('POPULAR');
   const [sortSheetOpen, setSortSheetOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [favourites, setFavourites] = useState<string[]>(() => guestAuthLayer.getFavourites());
+  const [favourites, setFavourites] = useState<string[]>(() => {
+    try {
+      return guestAuthLayer.getFavourites();
+    } catch {
+      return [];
+    }
+  });
 
   // Address Bottom Sheet
   const [addressSheetOpen, setAddressSheetOpen] = useState(false);
@@ -235,6 +281,116 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
   const menuSectionRef = useRef<HTMLElement | null>(null);
   const timeSlots = useMemo(() => generateShopHourSlots(), []);
 
+  // Navigate between 'store', 'cart', and 'checkout' and sync with browser history
+  const navigateFlowStep = (nextStep: 'store' | 'cart' | 'checkout', pushHistory = true) => {
+    setCheckoutStep(nextStep);
+    setCartDrawerOpen(nextStep !== 'store');
+    if (pushHistory && typeof window !== 'undefined') {
+      try {
+        if (nextStep === 'cart' && window.location.hash !== '#/cart') {
+          window.history.pushState({ step: 'cart' }, '', '/#/cart');
+        } else if (nextStep === 'checkout' && window.location.hash !== '#/checkout') {
+          window.history.pushState({ step: 'checkout' }, '', '/#/checkout');
+        } else if (nextStep === 'store' && window.location.hash !== '') {
+          window.history.pushState({ step: 'store' }, '', '/');
+        }
+      } catch {
+        // Ignore history push errors in restricted iframes
+      }
+    }
+    if (typeof window !== 'undefined') {
+      window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
+    }
+  };
+
+  // Sync checkoutStep when browser Back/Forward button is pressed
+  useEffect(() => {
+    const syncStepFromLocation = () => {
+      const hash = window.location.hash;
+      if (hash === '#/checkout') {
+        setCheckoutStep('checkout');
+        setCartDrawerOpen(true);
+      } else if (hash === '#/cart') {
+        setCheckoutStep('cart');
+        setCartDrawerOpen(true);
+      } else {
+        setCheckoutStep('store');
+        setCartDrawerOpen(false);
+      }
+      window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
+    };
+    window.addEventListener('popstate', syncStepFromLocation);
+    window.addEventListener('hashchange', syncStepFromLocation);
+    return () => {
+      window.removeEventListener('popstate', syncStepFromLocation);
+      window.removeEventListener('hashchange', syncStepFromLocation);
+    };
+  }, []);
+
+  // Sync when cartDrawerOpen prop is toggled from App header or bottom nav
+  useEffect(() => {
+    if (cartDrawerOpen && checkoutStep === 'store') {
+      const target = window.location.hash === '#/checkout' ? 'checkout' : 'cart';
+      navigateFlowStep(target, true);
+    } else if (!cartDrawerOpen && checkoutStep !== 'store') {
+      setCheckoutStep('store');
+      if (window.location.hash === '#/cart' || window.location.hash === '#/checkout') {
+        try {
+          window.history.pushState({ step: 'store' }, '', '/');
+        } catch {
+          // Ignore
+        }
+      }
+    }
+  }, [cartDrawerOpen]);
+
+  // Detect on-screen keyboard open via window.visualViewport resize
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const handleResize = () => {
+      const keyboardLikelyOpen = vv.height < window.innerHeight * 0.78;
+      setIsKeyboardOpen(keyboardLikelyOpen);
+    };
+    vv.addEventListener('resize', handleResize);
+    return () => vv.removeEventListener('resize', handleResize);
+  }, []);
+
+  const handleCheckoutInputFocus = (
+    e: React.FocusEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>
+  ) => {
+    const el = e.currentTarget;
+    if (window.innerWidth < 768) {
+      setIsInputFocusedOnMobile(true);
+    }
+    setTimeout(() => {
+      try {
+        el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      } catch {
+        // Ignore
+      }
+    }, 120);
+  };
+
+  const handleCheckoutInputBlur = () => {
+    setTimeout(() => {
+      setIsInputFocusedOnMobile(false);
+    }, 100);
+  };
+
+  // Safe localStorage favorite toggle
+  const handleToggleFavorite = (itemId: string) => {
+    try {
+      const updated = guestAuthLayer.toggleFavourite(itemId);
+      setFavourites(updated);
+      if (updated.length === 0 && selectedCategory === 'FAVORITES') {
+        setSelectedCategory('ALL');
+      }
+    } catch {
+      // Ignore storage errors
+    }
+  };
+
   // Open address sheet when triggered from compact top header chip
   useEffect(() => {
     if (addressModalTrigger > 0) {
@@ -261,6 +417,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
             shopName: data.settings.shopName,
             isOpen: data.settings.isOpen,
             busyMode: data.settings.busyMode,
+            opensAtText: data.settings.opensAtText,
             theme: data.settings.theme,
             allMenuItems: data.allMenuItems,
           });
@@ -336,7 +493,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
     return () => clearTimeout(timer);
   }, [cart, guestLat, guestLng, locationPinned, appliedCouponCode, guestPhone]);
 
-  // Load "My Recent Orders" from localStorage tokens
+  // Load "Recent Orders" from localStorage tokens (also used for the Home "Order again" card)
   const loadRecentOrders = async () => {
     const tokens = guestAuthLayer.getRecentOrderTokens();
     const mergedTokens =
@@ -366,7 +523,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
   };
 
   useEffect(() => {
-    if (activeSubTab === 'orders') {
+    if (homeData) {
       loadRecentOrders();
     }
   }, [activeSubTab, homeData?.demoMode]);
@@ -421,6 +578,40 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
     setSelectedAddonIds([]);
     setCustomQty(1);
     setCustomItemNote('');
+  };
+
+  // Direct one-tap add for upsells or base items
+  const addItemDirectlyToCart = (item: MenuItem) => {
+    const defaultVar = item.variants[0];
+    const unitPrice = defaultVar ? defaultVar.price : item.basePrice;
+    const cartLineId = `${item.id}__${defaultVar?.id || 'base'}__`;
+
+    setCart((prev) => {
+      const existingIdx = prev.findIndex((i) => i.cartLineId === cartLineId);
+      if (existingIdx >= 0) {
+        const copy = [...prev];
+        copy[existingIdx] = {
+          ...copy[existingIdx],
+          quantity: copy[existingIdx].quantity + 1,
+        };
+        return copy;
+      }
+      return [
+        ...prev,
+        {
+          cartLineId,
+          menuItemId: item.id,
+          name: item.name,
+          imageUrl: optimizeAssetUrl(item.imageUrl),
+          isVeg: item.isVeg,
+          variantId: defaultVar?.id,
+          variantName: defaultVar?.name,
+          selectedAddons: [],
+          unitPrice,
+          quantity: 1,
+        },
+      ];
+    });
   };
 
   const confirmAddToCart = () => {
@@ -532,7 +723,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
     setLookupError(null);
     const cleanPhone = lookupPhone.replace(/\D/g, '');
     if (!lookupOrderNo.trim() || cleanPhone.length !== 10) {
-      setLookupError('Apna Order ID (e.g. AAN-1042) aur 10-digit mobile number dalein.');
+      setLookupError('Please enter your Order ID (e.g. AAN-1042) and 10-digit mobile number.');
       return;
     }
     setLookupBusy(true);
@@ -547,7 +738,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
       });
       const data = await res.json();
       if (!res.ok || !data.order) {
-        setLookupError(data.error || 'Order nahi mila. Order ID aur phone number check karein.');
+        setLookupError(data.error || 'Order not found. Please check your Order ID and phone number.');
         return;
       }
       guestAuthLayer.addRecentOrderToken(data.order.trackingToken);
@@ -606,8 +797,10 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
   const triggerOrderSuccessScreen = (order: OrderRecord) => {
     setCart([]);
     setPendingRazorpayModal(null);
+    setConfirmedSuccessOrder(null);
+    setCheckoutStep('store');
     setCartDrawerOpen(false);
-    setConfirmedSuccessOrder(order);
+    onOpenTracking(order.trackingToken);
   };
 
   const launchLiveRazorpayCheckout = (checkoutData: {
@@ -691,6 +884,10 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
 
   const handlePlaceOrder = async (e: React.FormEvent) => {
     e.preventDefault();
+    setCheckoutTouched(true);
+    setNameTouched(true);
+    setPhoneTouched(true);
+    setAddressTouched(true);
     setCheckoutError(null);
     setPaymentFailureMessage(null);
 
@@ -701,9 +898,36 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
 
     if (!locationPinned || (guestLat === 0 && guestLng === 0)) {
       setCheckoutError(
-        'Please select your delivery location using GPS or Map Pin before placing your order.'
+        'Please select your delivery location using GPS or a nearby area pin in Section 1.'
       );
-      setAddressSheetOpen(true);
+      return;
+    }
+
+    if (
+      (liveAddressDistance.pinned && !liveAddressDistance.within) ||
+      (billPreview !== null && !billPreview.withinZone)
+    ) {
+      setCheckoutError(
+        "Sorry, we don't deliver to this location yet. Try a different address or pin."
+      );
+      return;
+    }
+
+    if (guestAddress.trim().length < 8) {
+      setCheckoutError(
+        'Please enter your complete flat, building, and street address (at least 8 characters).'
+      );
+      return;
+    }
+
+    if (guestName.trim().length < 2) {
+      setCheckoutError('Please enter your full name (at least 2 characters).');
+      return;
+    }
+
+    const cleanPhone = guestPhone.replace(/\D/g, '').slice(-10);
+    if (!/^[6-9]\d{9}$/.test(cleanPhone)) {
+      setCheckoutError('Please enter a valid 10-digit Indian mobile number.');
       return;
     }
 
@@ -713,9 +937,14 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
         return;
       }
       if (!isScheduled || !scheduledFor) {
-        setCheckoutError('Kitchen is currently closed. Please select a pre-order time slot below.');
+        setCheckoutError('Kitchen is currently closed. Please select a scheduled delivery time slot.');
         return;
       }
+    }
+
+    if (isScheduled && !scheduledFor) {
+      setCheckoutError('Please select a delivery time slot for your scheduled order.');
+      return;
     }
 
     if (homeData?.turnstileSiteKey && !turnstileToken) {
@@ -874,7 +1103,11 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
   const filteredMenuItems = useMemo(() => {
     if (!homeData) return [];
     const filtered = homeData.allMenuItems.filter((item) => {
-      if (selectedCategory !== 'ALL' && item.categoryId !== selectedCategory) return false;
+      if (selectedCategory === 'FAVORITES') {
+        if (!favourites.includes(item.id)) return false;
+      } else if (selectedCategory !== 'ALL' && item.categoryId !== selectedCategory) {
+        return false;
+      }
       if (dietFilter === 'VEG' && !item.isVeg) return false;
       if (dietFilter === 'NON_VEG' && item.isVeg) return false;
       if (filterUnder350 && item.basePrice > 350) return false;
@@ -908,29 +1141,66 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
     sortBy,
   ]);
 
+  // Part C.2: Upsell in the cart — suggest in-stock items from categories NOT already in the cart
+  // (preferring desserts/drinks, breads/curries, and sides/kebabs)
+  const cartUpsellSuggestions = useMemo(() => {
+    if (!homeData || cart.length === 0) return [];
+    const inCartItemIds = new Set(cart.map((c) => c.menuItemId));
+    const inCartCategoryIds = new Set(
+      cart
+        .map((c) => homeData.allMenuItems.find((m) => m.id === c.menuItemId)?.categoryId)
+        .filter(Boolean) as string[]
+    );
+
+    const priorityOrder: Record<string, number> = {
+      cat_desserts: 1,
+      cat_kebabs: 2,
+      cat_curries: 3,
+      cat_biryani: 4,
+    };
+
+    const candidatesFromNewCategories = homeData.allMenuItems.filter(
+      (m) => m.inStock && !inCartItemIds.has(m.id) && !inCartCategoryIds.has(m.categoryId)
+    );
+
+    const pool =
+      candidatesFromNewCategories.length > 0
+        ? candidatesFromNewCategories
+        : homeData.allMenuItems.filter((m) => m.inStock && !inCartItemIds.has(m.id));
+
+    return [...pool]
+      .sort(
+        (a, b) =>
+          (priorityOrder[a.categoryId] ?? 99) - (priorityOrder[b.categoryId] ?? 99) ||
+          a.basePrice - b.basePrice
+      )
+      .slice(0, 4);
+  }, [homeData, cart]);
+
   // 1. SHIMMER SKELETON LOADING
   if (loading) {
     return (
       <div
         aria-busy="true"
         aria-label="Loading menu"
-        className="w-full max-w-[1140px] mx-auto px-3 sm:px-4 py-3 space-y-3.5 overflow-x-hidden min-w-0"
+        className="w-full max-w-[1200px] mx-auto px-4 py-4 space-y-5 overflow-x-hidden min-w-0"
       >
-        <div className="w-full h-[165px] sm:h-[200px] rounded-2xl skeleton-shimmer" />
-        <div className="flex gap-2 overflow-hidden">
+        <div className="w-full h-[340px] rounded-3xl skeleton-shimmer" />
+        <div className="flex gap-3 overflow-hidden">
           {[1, 2, 3, 4].map((n) => (
-            <div key={n} className="h-8 w-24 shrink-0 rounded-full skeleton-shimmer" />
+            <div key={n} className="h-11 w-36 shrink-0 rounded-full skeleton-shimmer" />
           ))}
         </div>
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2.5 sm:gap-3.5">
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-5">
           {[1, 2, 3, 4, 5, 6, 7, 8].map((n) => (
             <div
               key={n}
-              className="rounded-xl border border-border/60 bg-surface p-2 space-y-2"
+              className="rounded-2xl border border-border bg-surface p-3.5 space-y-3"
             >
-              <div className="w-full h-[108px] rounded-lg skeleton-shimmer" />
-              <div className="h-3.5 w-4/5 rounded-sm skeleton-shimmer" />
-              <div className="h-3.5 w-1/2 rounded-sm skeleton-shimmer" />
+              <div className="w-full aspect-[4/3] rounded-xl skeleton-shimmer" />
+              <div className="h-5 w-4/5 rounded-md skeleton-shimmer" />
+              <div className="h-4 w-full rounded-md skeleton-shimmer" />
+              <div className="h-11 w-full rounded-xl skeleton-shimmer" />
             </div>
           ))}
         </div>
@@ -940,17 +1210,17 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
 
   if (loadError || !homeData) {
     return (
-      <div className="w-full max-w-[480px] mx-auto px-4 py-12 text-center space-y-4">
-        <AlertTriangle className="w-10 h-10 text-red-600 mx-auto" />
-        <h2 className="text-base font-bold text-text">Menu load nahi ho paya</h2>
-        <p className="text-xs text-muted">{loadError || 'Please check your internet connection.'}</p>
+      <div className="w-full max-w-[480px] mx-auto px-4 py-14 text-center space-y-4">
+        <AlertTriangle className="w-12 h-12 text-[#E23744] mx-auto" />
+        <h2 className="text-[20px] font-bold text-text">Could not load the menu</h2>
+        <p className="text-[14px] text-muted">{loadError || 'Please check your internet connection.'}</p>
         <button
           type="button"
           onClick={fetchHomeData}
-          className="min-h-[40px] px-4 rounded-full bg-primary text-primary-contrast text-xs font-semibold inline-flex items-center gap-2 cursor-pointer"
+          className="min-h-[46px] px-6 rounded-2xl bg-[#E23744] text-white text-[15px] font-bold inline-flex items-center gap-2 cursor-pointer active:scale-[0.98] transition-transform"
         >
           <RotateCcw className="w-4 h-4" />
-          <span>Dobara try karein</span>
+          <span>Try again</span>
         </button>
       </div>
     );
@@ -960,32 +1230,32 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
   const totalCartItems = cart.reduce((sum, item) => sum + item.quantity, 0);
   const totalCartAmount = cart.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
 
-  // Authentic FSSAI Veg (green dot in square) & Non-Veg (red dot in square) mark
+  // Authentic FSSAI Veg (green #1BA672 dot in square) & Non-Veg (red #E23744 dot in square) mark
   const renderDietMark = (isVeg: boolean) => (
     <span
-      className={`inline-flex items-center justify-center w-3.5 h-3.5 rounded-[3px] border-[1.5px] shrink-0 ${
+      className={`inline-flex items-center justify-center w-4 h-4 rounded-[4px] border-2 shrink-0 ${
         isVeg
-          ? 'border-[#15803D] bg-white dark:bg-stone-900'
-          : 'border-[#B91C1C] bg-white dark:bg-stone-900'
+          ? 'border-[#1BA672] bg-white dark:bg-[#1C1C1C]'
+          : 'border-[#E23744] bg-white dark:bg-[#1C1C1C]'
       }`}
       aria-label={isVeg ? 'Vegetarian (FSSAI)' : 'Non-Vegetarian (FSSAI)'}
       title={isVeg ? 'Pure Veg' : 'Non-Veg'}
     >
       <span
-        className={`w-1.5 h-1.5 rounded-full ${isVeg ? 'bg-[#15803D]' : 'bg-[#B91C1C]'}`}
+        className={`w-2 h-2 rounded-full ${isVeg ? 'bg-[#1BA672]' : 'bg-[#E23744]'}`}
       />
     </span>
   );
 
-  // Lightweight Outlined "ADD +" button that turns into a solid primary (− 1 +) stepper when added
+  // Bold Zomato/Swiggy-style ADD button (red outline + soft red fill #FFF5F3) that turns into a solid red (− 1 +) stepper
   const renderCardAddOrStepper = (item: MenuItem) => {
     const matchingLines = cart.filter((c) => c.menuItemId === item.id);
     const inCartQty = matchingLines.reduce((sum, c) => sum + c.quantity, 0);
 
     if (!item.inStock) {
       return (
-        <span className="h-7 px-2 rounded-md bg-bg text-muted text-[11px] font-medium inline-flex items-center justify-center whitespace-nowrap shrink-0">
-          {lang === 'hi' ? 'Khatam' : 'Sold out'}
+        <span className="min-h-[44px] px-4 rounded-xl border border-border bg-bg text-muted text-[14px] font-bold inline-flex items-center justify-center whitespace-nowrap shrink-0">
+          Sold out
         </span>
       );
     }
@@ -993,16 +1263,16 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
     if (inCartQty > 0) {
       const targetLine = matchingLines[matchingLines.length - 1];
       return (
-        <div className="h-7 min-w-[66px] sm:min-w-[74px] rounded-md bg-primary text-primary-contrast flex items-center justify-between px-0.5 shrink-0 shadow-2xs">
+        <div className="min-h-[44px] min-w-[112px] rounded-xl bg-[#E23744] text-white flex items-center justify-between px-1 shrink-0 shadow-sm">
           <button
             type="button"
             aria-label={`Decrease quantity of ${item.name}`}
             onClick={() => updateCartQty(targetLine.cartLineId, -1)}
-            className="w-5 h-6 sm:w-6 sm:h-6 flex items-center justify-center rounded-xs hover:bg-black/15 cursor-pointer"
+            className="w-9 h-9 flex items-center justify-center rounded-lg hover:bg-black/15 active:scale-[0.95] transition-transform cursor-pointer"
           >
-            <Minus className="w-3 h-3" />
+            <Minus className="w-4 h-4 stroke-[2.5]" />
           </button>
-          <span className="text-[12px] font-bold tabular-nums px-0.5">{inCartQty}</span>
+          <span className="text-[15px] font-extrabold tabular-nums px-1.5">{inCartQty}</span>
           <button
             type="button"
             aria-label={`Increase quantity of ${item.name}`}
@@ -1013,9 +1283,9 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                 updateCartQty(targetLine.cartLineId, 1);
               }
             }}
-            className="w-5 h-6 sm:w-6 sm:h-6 flex items-center justify-center rounded-xs hover:bg-black/15 cursor-pointer"
+            className="w-9 h-9 flex items-center justify-center rounded-lg hover:bg-black/15 active:scale-[0.95] transition-transform cursor-pointer"
           >
-            <Plus className="w-3 h-3" />
+            <Plus className="w-4 h-4 stroke-[2.5]" />
           </button>
         </div>
       );
@@ -1026,109 +1296,138 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
         type="button"
         onClick={() => {
           if (item.variants.length === 0 && item.addons.length === 0) {
-            const cartLineId = `${item.id}__base__`;
-            setCart((prev) => [
-              ...prev,
-              {
-                cartLineId,
-                menuItemId: item.id,
-                name: item.name,
-                imageUrl: optimizeAssetUrl(item.imageUrl),
-                isVeg: item.isVeg,
-                selectedAddons: [],
-                unitPrice: item.basePrice,
-                quantity: 1,
-              },
-            ]);
+            addItemDirectlyToCart(item);
           } else {
             openCustomizeModal(item);
           }
         }}
-        className="h-7 px-2.5 rounded-md border border-primary/40 bg-primary/8 text-primary hover:bg-primary hover:text-primary-contrast text-[11px] sm:text-[12px] font-bold whitespace-nowrap inline-flex items-center justify-center gap-0.5 transition-colors cursor-pointer shrink-0"
+        className="min-h-[44px] min-w-[104px] px-5 rounded-xl border-2 border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/15 text-[#E23744] hover:bg-[#E23744] hover:text-white text-[15px] font-extrabold whitespace-nowrap inline-flex items-center justify-center gap-1 transition-all active:scale-[0.98] cursor-pointer shrink-0 shadow-2xs"
       >
         <span>ADD</span>
-        <Plus className="w-3 h-3" />
+        <Plus className="w-4 h-4 stroke-[2.5]" />
       </button>
     );
   };
 
-  // Airy, Modern Dish Card (Framed 110–120px photo, floating FSSAI & rating badges, 2-line name, 15px price + light ADD button)
-  const renderMenuListRow = (item: MenuItem, isCompactRail = false) => {
+  // Photo-first Zomato/Swiggy Dish Card (rounded-2xl, 4:3 image, top-left veg/non-veg square dot, bottom-left badge, 18px name, 14px 2-line description, 18px bold price + ADD/stepper)
+  const renderMenuListRow = (item: MenuItem, isCompactRail = false, isComboSection = false) => {
     const isFav = favourites.includes(item.id);
-    const dishRating = item.isBestseller ? '4.9' : '4.7';
+    const comboSavings = isComboSection ? getComboSavingsAmount(item) : 0;
+
+    const badgeLabel = isComboSection && comboSavings > 0
+      ? `Save ₹${comboSavings}`
+      : item.isBestseller
+      ? 'Bestseller'
+      : item.isNewArrival
+      ? 'New'
+      : "Chef's Pick";
+
+    const badgeBgClass = isComboSection && comboSavings > 0
+      ? 'bg-[#1BA672] text-white'
+      : item.isBestseller
+      ? 'bg-[#E23744] text-white'
+      : item.isNewArrival
+      ? 'bg-[#1BA672] text-white'
+      : 'bg-[#1C1C1C]/85 text-white backdrop-blur-xs';
 
     return (
       <article
         key={item.id}
         className={`${
-          isCompactRail ? 'w-[162px] sm:w-[190px] shrink-0 snap-start' : 'w-full h-full'
-        } rounded-xl border border-border/70 bg-surface p-2 shadow-[0_1px_4px_rgba(0,0,0,0.03)] flex flex-col justify-between min-w-0 transition-shadow hover:shadow-xs ${
-          !item.inStock ? 'opacity-60' : ''
+          isCompactRail ? 'w-[264px] sm:w-[285px] shrink-0 snap-start' : 'w-full h-full'
+        } rounded-2xl border ${
+          isComboSection
+            ? 'border-[#1BA672]/40 bg-[#FFF5F3]/40 dark:bg-[#1C1C1C]'
+            : 'border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface'
+        } p-3.5 sm:p-4 shadow-[0_2px_10px_rgba(0,0,0,0.04)] flex flex-col justify-between min-w-0 transition-all duration-150 hover:shadow-md active:scale-[0.98] ${
+          !item.inStock ? 'grayscale opacity-75' : ''
         }`}
       >
         <div className="min-w-0 flex flex-col">
-          {/* Framed Rounded Photo (110px–120px height, center-positioned, zero zoom) */}
+          {/* 4:3 Food Photo with Top-Left FSSAI Dot & Bottom-Left Badge */}
           <div
             onClick={() => openCustomizeModal(item)}
-            className="relative w-full h-[110px] sm:h-[122px] rounded-lg bg-bg overflow-hidden shrink-0 cursor-pointer"
+            className="relative w-full aspect-[4/3] rounded-xl bg-[#FFF5F3] dark:bg-[#2A1618] overflow-hidden shrink-0 cursor-pointer"
           >
             <img
               src={optimizeAssetUrl(item.imageUrl)}
               alt={item.name}
-              width={320}
-              height={240}
+              width={400}
+              height={300}
               loading="lazy"
               decoding="async"
               referrerPolicy="no-referrer"
-              className="w-full h-full object-cover object-center"
+              className="w-full h-full object-cover object-center transition-transform duration-300 hover:scale-[1.03]"
               onError={(e) => {
                 (e.currentTarget as HTMLImageElement).style.display = 'none';
               }}
             />
 
-            {/* Top-left floating FSSAI Veg/Non-veg badge */}
-            <div className="absolute top-1.5 left-1.5 bg-white/95 dark:bg-stone-900/90 p-0.5 rounded-[4px] shadow-2xs flex items-center justify-center">
+            {/* Top-left floating FSSAI Veg/Non-veg square dot */}
+            <div className="absolute top-2.5 left-2.5 bg-white/95 dark:bg-[#1C1C1C]/95 p-1 rounded-md shadow-xs flex items-center justify-center">
               {renderDietMark(item.isVeg)}
             </div>
 
-            {/* Bottom-left floating compact rating chip */}
-            <div className="absolute bottom-1.5 left-1.5 px-1.5 py-0.5 rounded-[4px] bg-black/65 backdrop-blur-xs text-white text-[10px] font-semibold inline-flex items-center gap-0.5 tabular-nums leading-none">
-              <Star className="w-2.5 h-2.5 fill-amber-400 text-amber-400 shrink-0" />
-              <span>{dishRating}</span>
+            {/* Bottom-left badge (Bestseller / New / Chef's Pick / Save ₹X) */}
+            <div
+              className={`absolute bottom-2.5 left-2.5 px-2.5 py-1 rounded-lg text-[13px] font-bold tracking-tight leading-none shadow-xs ${badgeBgClass}`}
+            >
+              {badgeLabel}
             </div>
 
-            {/* Top-right heart button */}
+            {/* Top-right heart button (44px accessible tap area) */}
             <button
               type="button"
               onClick={(e) => {
                 e.stopPropagation();
-                setFavourites(guestAuthLayer.toggleFavourite(item.id));
+                handleToggleFavorite(item.id);
               }}
-              aria-label={`Save ${item.name}`}
-              className="absolute top-1.5 right-1.5 w-6 h-6 rounded-full bg-white/85 dark:bg-stone-900/85 backdrop-blur-xs flex items-center justify-center text-text cursor-pointer"
+              aria-label={isFav ? `Remove ${item.name} from favorites` : `Save ${item.name} to favorites`}
+              className="absolute top-1.5 right-1.5 w-11 h-11 rounded-full flex items-center justify-center cursor-pointer"
             >
-              <Heart
-                className={`w-3 h-3 ${
-                  isFav ? 'fill-red-600 text-red-600' : 'text-muted'
-                }`}
-              />
+              <span className="w-8 h-8 rounded-full bg-white/90 dark:bg-[#1C1C1C]/90 backdrop-blur-xs shadow-xs flex items-center justify-center">
+                <Heart
+                  className={`w-4 h-4 ${
+                    isFav ? 'fill-[#E23744] text-[#E23744]' : 'text-muted'
+                  }`}
+                />
+              </span>
             </button>
           </div>
 
-          {/* 2-Line Dish Name (No truncate, clean 14px typography) */}
+          {/* 18px Dish Name */}
           <h3
             onClick={() => openCustomizeModal(item)}
-            className="mt-2 px-0.5 text-[13px] sm:text-[14px] font-semibold text-text leading-snug line-clamp-2 break-words min-h-[2.6em] cursor-pointer hover:text-primary"
+            className="mt-3.5 text-[18px] font-bold text-text leading-snug line-clamp-2 break-words cursor-pointer hover:text-[#E23744] transition-colors"
           >
             {item.name}
           </h3>
+
+          {/* 14px 2-Line Description */}
+          <p className="mt-1.5 text-[14px] text-muted leading-relaxed line-clamp-2 break-words">
+            {item.description}
+          </p>
         </div>
 
-        {/* Single-line Footer: Price (15px) + Light ADD / Solid (− 1 +) Stepper */}
-        <div className="mt-1.5 pt-1 px-0.5 flex items-center justify-between gap-1 min-w-0">
-          <span className="text-[14px] sm:text-[15px] font-bold text-text tabular-nums leading-none shrink-0">
-            ₹{item.basePrice}
-          </span>
+        {/* Footer: 18px Bold Price + ADD / (− 1 +) Stepper */}
+        <div className="mt-4 pt-3 border-t border-[#E8E8E8]/70 dark:border-[#2E2E2E] flex items-center justify-between gap-2 min-w-0">
+          <div className="min-w-0">
+            <div className="flex items-baseline gap-1.5">
+              <span className="text-[18px] font-bold text-text tabular-nums leading-none">
+                ₹{item.basePrice}
+              </span>
+              {isComboSection && comboSavings > 0 && (
+                <span className="text-[13px] text-muted line-through tabular-nums">
+                  ₹{item.basePrice + comboSavings}
+                </span>
+              )}
+            </div>
+            {(item.variants.length > 0 || item.addons.length > 0) && (
+              <span className="text-[13px] text-muted font-medium mt-1 block">
+                Customisable
+              </span>
+            )}
+          </div>
 
           {renderCardAddOrStepper(item)}
         </div>
@@ -1138,28 +1437,96 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
 
   const currentBanner = banners[activeBannerIdx % Math.max(1, banners.length)];
   const sortLabelMap: Record<typeof sortBy, string> = {
-    POPULAR: lang === 'hi' ? 'Popular' : 'Popular',
-    PRICE_ASC: lang === 'hi' ? 'Kam daam' : 'Low to High',
-    PRICE_DESC: lang === 'hi' ? 'Zyada daam' : 'High to Low',
+    POPULAR: 'Popular',
+    PRICE_ASC: 'Low to High',
+    PRICE_DESC: 'High to Low',
   };
 
+  const primaryCoupon = coupons[0];
+  const whatsappDigits = (settings.supportPhone || '+919820144500').replace(/\D/g, '');
+  const whatsappBaseText =
+    cart.length > 0
+      ? `Hi, I'd like to place an order from ${settings.shopName}: ${cart
+          .map((c) => `${c.quantity}x ${c.name}`)
+          .join(', ')} (Total: ₹${totalCartAmount})`
+      : `Hi, I'd like to place an order from ${settings.shopName}`;
+  const whatsappHref = `https://wa.me/${whatsappDigits}?text=${encodeURIComponent(
+    whatsappBaseText
+  )}`;
+
+  // Customization Sheet dynamic total
+  const customModalTotal = customizingItem
+    ? ((customizingItem.variants.find((v) => v.id === selectedVariantId)?.price ||
+        customizingItem.basePrice) +
+        customizingItem.addons
+          .filter((a) => selectedAddonIds.includes(a.id))
+          .reduce((s, a) => s + a.price, 0)) *
+      customQty
+    : 0;
+
+  // Checkout validation & zone status
+  const isOutsideDeliveryZone =
+    (liveAddressDistance.pinned && !liveAddressDistance.within) ||
+    (billPreview !== null && !billPreview.withinZone);
+
+  const cleanPhoneDigits = guestPhone.replace(/\D/g, '').slice(-10);
+  const nameFieldError =
+    guestName.trim().length < 2
+      ? 'Please enter your full name (at least 2 characters).'
+      : null;
+  const phoneFieldError = !/^[6-9]\d{9}$/.test(cleanPhoneDigits)
+    ? 'Please enter a valid 10-digit mobile number.'
+    : null;
+  const addressFieldError =
+    !locationPinned || (guestLat === 0 && guestLng === 0)
+      ? 'Please pin your delivery location using GPS or choose a nearby area.'
+      : guestAddress.trim().length < 8
+      ? 'Please enter your flat, building, and street address (at least 8 characters).'
+      : null;
+  const scheduleFieldError =
+    isScheduled && !scheduledFor ? 'Please choose a delivery time slot.' : null;
+
+  const estimatedGst =
+    billPreview?.gstAmount ?? Math.round(totalCartAmount * (settings.gstPercent / 100));
+  const estimatedGrandTotal =
+    billPreview?.grandTotal ?? totalCartAmount + estimatedGst;
+
+  const isPlaceOrderDisabled =
+    placingOrder ||
+    verifyingPayment ||
+    !locationPinned ||
+    isOutsideDeliveryZone ||
+    (billPreview !== null && !billPreview.minOrderMet);
+
+  const placeOrderDisabledReason = !locationPinned
+    ? 'Pin your delivery location in Section 1 to enable ordering.'
+    : isOutsideDeliveryZone
+    ? `Outside our ${deliveryZone.radiusKm} km delivery area (${
+        liveAddressDistance.km || billPreview?.distanceKm
+      } km away). Try a different address or pin.`
+    : billPreview && !billPreview.minOrderMet
+    ? `Minimum order amount for delivery is ₹${billPreview.minOrderAmount}.`
+    : null;
+
+  const hideStickyBarForKeyboard = isKeyboardOpen || isInputFocusedOnMobile;
+
   return (
-    <div className="w-full max-w-full overflow-x-hidden min-w-0 pb-14">
+    <div className="w-full max-w-full overflow-x-clip min-w-0 pb-24">
       {/* 1. SHOP CLOSED / HOLIDAY / PRE-ORDER TIMINGS BANNER */}
       {(!settings.isOpen || settings.holidaysNote) && (
-        <div className="w-full max-w-full bg-primary/10 border-b border-primary/20 px-3 sm:px-4 py-1.5">
-          <div className="w-full max-w-[1140px] mx-auto flex flex-wrap items-center justify-between gap-2 text-xs">
-            <div className="flex items-center gap-1.5 min-w-0 flex-1">
-              <CalendarClock className="w-3.5 h-3.5 text-primary shrink-0" />
-              <span className="font-medium text-text break-words">
+        <div className="w-full max-w-full bg-[#FFF5F3] dark:bg-[#2A1618] border-b border-[#E23744]/25 px-4 py-2.5">
+          <div className="w-full max-w-[1200px] mx-auto flex flex-wrap items-center justify-between gap-2 text-[14px]">
+            <div className="flex items-center gap-2 min-w-0 flex-1">
+              <CalendarClock className="w-4 h-4 text-[#E23744] shrink-0" />
+              <span className="font-semibold text-text break-words">
                 {!settings.isOpen
-                  ? `Kitchen band hai · Khulega ${settings.opensAtText || '11:00 AM'}`
+                  ? `Kitchen is currently closed · Opens at ${settings.opensAtText || '11:00 AM'}`
                   : settings.holidaysNote}
               </span>
             </div>
             {!settings.isOpen && settings.allowPreOrdersWhenClosed && (
-              <span className="text-[11px] font-semibold text-primary shrink-0">
-                Pre-order khula hai
+              <span className="text-[13px] font-bold text-[#E23744] shrink-0">
+                Pre-orders open
               </span>
             )}
           </div>
@@ -1167,18 +1534,1012 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
       )}
 
       {/* =====================================================================
-          HOME & MENU VIEW (Light, Airy, Overflow-Free)
+          PART 1 — STEP 1: FULL-SCREEN CART PAGE (#/cart)
          ===================================================================== */}
-      {(activeSubTab === 'home' || activeSubTab === 'menu') && (
+      {checkoutStep === 'cart' && (
+        <div className="min-h-dvh w-full max-w-full overflow-x-clip bg-bg text-text pb-36">
+          {/* Sticky Cart Top Bar */}
+          <div className="sticky top-[56px] z-20 w-full max-w-full bg-surface/95 backdrop-blur-md border-b border-border">
+            <div className="w-full max-w-[720px] mx-auto px-4 min-h-[54px] flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                <button
+                  type="button"
+                  onClick={() => navigateFlowStep('store')}
+                  aria-label="Back to menu"
+                  className="w-11 h-11 -ml-2 rounded-full flex items-center justify-center text-text hover:bg-border/40 shrink-0 cursor-pointer"
+                >
+                  <ArrowLeft className="w-5 h-5" />
+                </button>
+                <div className="min-w-0 flex-1">
+                  <h1 className="font-display text-[18px] sm:text-[20px] font-extrabold text-text truncate">
+                    Your Cart
+                  </h1>
+                </div>
+              </div>
+              <span className="px-3 py-1 rounded-full bg-[#FFF5F3] dark:bg-[#2A1618] border border-[#E23744]/25 text-[#E23744] text-[13px] font-extrabold tabular-nums shrink-0">
+                {totalCartItems} {totalCartItems === 1 ? 'item' : 'items'}
+              </span>
+            </div>
+          </div>
+
+          <div className="w-full max-w-[720px] mx-auto px-4 pt-4 space-y-5 min-w-0">
+            {cart.length === 0 ? (
+              <div className="rounded-2xl border border-border bg-surface p-10 text-center space-y-4 mt-4">
+                <ShoppingBag className="w-12 h-12 text-muted mx-auto" />
+                <div className="space-y-1">
+                  <h2 className="font-display text-[20px] font-extrabold text-text">
+                    Your cart is empty
+                  </h2>
+                  <p className="text-[14px] text-muted max-w-xs mx-auto">
+                    Add slow-cooked biryanis, kebabs, or curries from the menu to get started.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => navigateFlowStep('store')}
+                  className="min-h-[48px] px-6 rounded-2xl bg-[#E23744] text-white text-[15px] font-extrabold cursor-pointer active:scale-[0.98]"
+                >
+                  Browse menu
+                </button>
+              </div>
+            ) : (
+              <>
+                {/* 1. Stacked Cart Item List (dot + full name, variant/addons, stepper + line total, dish note) */}
+                <section aria-label="Cart Items" className="space-y-3 min-w-0 max-w-full">
+                  {cart.map((item) => (
+                    <div
+                      key={item.cartLineId}
+                      className="p-4 rounded-2xl border border-border bg-surface space-y-3 min-w-0 max-w-full overflow-hidden shadow-2xs"
+                    >
+                      {/* Row 1: Veg/Non-veg dot + Full dish name */}
+                      <div className="flex items-start gap-2.5 min-w-0 w-full">
+                        <span className="mt-1 shrink-0">{renderDietMark(item.isVeg)}</span>
+                        <h3 className="flex-1 min-w-0 line-clamp-2 text-base font-semibold text-text break-words">
+                          {item.name}
+                        </h3>
+                      </div>
+
+                      {/* Row 2: Variant/addon text */}
+                      {(item.variantName || item.selectedAddons.length > 0) && (
+                        <p className="text-sm text-muted break-words pl-6">
+                          {item.variantName}
+                          {item.selectedAddons.length > 0 &&
+                            ` · +${item.selectedAddons.map((a) => a.name).join(', ')}`}
+                        </p>
+                      )}
+
+                      {/* Row 3: Compact quantity stepper on left (36px height, "− 1 +"), line total on right */}
+                      <div className="flex items-center justify-between gap-3 pt-0.5 min-w-0 w-full">
+                        <div className="h-9 min-w-[108px] px-1 rounded-xl border border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/15 flex items-center justify-between shrink-0">
+                          <button
+                            type="button"
+                            aria-label={`Decrease ${item.name}`}
+                            onClick={() => updateCartQty(item.cartLineId, -1)}
+                            className="w-8 h-8 flex items-center justify-center text-[#E23744] cursor-pointer"
+                          >
+                            <Minus className="w-3.5 h-3.5 stroke-[2.5]" />
+                          </button>
+                          <span className="px-2 text-[14px] font-extrabold tabular-nums text-[#E23744]">
+                            {item.quantity}
+                          </span>
+                          <button
+                            type="button"
+                            aria-label={`Increase ${item.name}`}
+                            onClick={() => updateCartQty(item.cartLineId, 1)}
+                            className="w-8 h-8 flex items-center justify-center text-[#E23744] cursor-pointer"
+                          >
+                            <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
+                          </button>
+                        </div>
+
+                        <span className="text-base font-bold whitespace-nowrap shrink-0 tabular-nums text-text">
+                          ₹{item.unitPrice * item.quantity}
+                        </span>
+                      </div>
+
+                      {/* Row 4: Full-width dish note input (16px font, 48px min height) */}
+                      <input
+                        type="text"
+                        inputMode="text"
+                        maxLength={120}
+                        value={item.itemNote || ''}
+                        onFocus={handleCheckoutInputFocus}
+                        onBlur={handleCheckoutInputBlur}
+                        onChange={(e) => updateCartItemNote(item.cartLineId, e.target.value)}
+                        placeholder="Add a note (e.g. less spicy, Jain preparation)"
+                        className="w-full max-w-full min-h-[48px] px-3.5 py-2.5 rounded-xl border border-border bg-bg text-[16px] text-text box-border focus:outline-none focus:border-[#E23744]"
+                      />
+                    </div>
+                  ))}
+
+                  {/* Small WhatsApp link & Add more items link below the item list (not a big footer button) */}
+                  <div className="flex flex-wrap items-center justify-between gap-2 px-1 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => navigateFlowStep('store')}
+                      className="text-[14px] font-bold text-[#E23744] hover:underline inline-flex items-center gap-1 cursor-pointer"
+                    >
+                      <Plus className="w-4 h-4" />
+                      <span>Add more dishes</span>
+                    </button>
+
+                    <a
+                      href={whatsappHref}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-[14px] font-semibold text-[#1BA672] hover:underline inline-flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <MessageCircle className="w-4 h-4 shrink-0" />
+                      <span>Order via WhatsApp instead →</span>
+                    </a>
+                  </div>
+                </section>
+
+                {/* 2. Upsell row "Add something extra" */}
+                {cartUpsellSuggestions.length > 0 && (
+                  <section
+                    aria-label="Add something extra"
+                    className="rounded-2xl border border-border bg-surface p-4 space-y-3 min-w-0 max-w-full overflow-hidden"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <h2 className="text-[15px] font-extrabold text-text">
+                        Add something extra
+                      </h2>
+                      <span className="text-[13px] text-muted">Complete your meal</span>
+                    </div>
+                    <div className="w-full max-w-full overflow-x-auto no-scrollbar">
+                      <div className="flex items-stretch gap-3 min-w-0">
+                        {cartUpsellSuggestions.map((sug) => (
+                          <div
+                            key={sug.id}
+                            className="w-[190px] shrink-0 rounded-xl border border-border bg-bg p-3 flex flex-col justify-between gap-2.5"
+                          >
+                            <div className="flex items-start gap-2.5 min-w-0">
+                              <img
+                                src={optimizeAssetUrl(sug.imageUrl)}
+                                alt={sug.name}
+                                width={48}
+                                height={48}
+                                loading="lazy"
+                                decoding="async"
+                                className="w-12 h-12 rounded-lg object-cover shrink-0"
+                              />
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-1">
+                                  {renderDietMark(sug.isVeg)}
+                                  <span className="text-[13px] font-bold tabular-nums text-text">
+                                    ₹{sug.basePrice}
+                                  </span>
+                                </div>
+                                <p className="text-[13px] font-semibold text-text line-clamp-2 break-words mt-0.5 leading-snug">
+                                  {sug.name}
+                                </p>
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => addItemDirectlyToCart(sug)}
+                              className="w-full min-h-[40px] px-3 rounded-lg border border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/15 text-[#E23744] hover:bg-[#E23744] hover:text-white text-[13px] font-extrabold inline-flex items-center justify-center gap-1 cursor-pointer transition-colors"
+                            >
+                              <span>ADD</span>
+                              <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </section>
+                )}
+
+                {/* 3. Coupon Entry */}
+                <section
+                  aria-label="Coupon Code"
+                  className="rounded-2xl border border-border bg-surface p-4 space-y-3 min-w-0 max-w-full"
+                >
+                  <div className="flex items-center gap-2">
+                    <Tag className="w-4 h-4 text-[#E23744] shrink-0" />
+                    <h2 className="text-[15px] font-extrabold text-text">
+                      Offers & promo codes
+                    </h2>
+                  </div>
+                  <div className="flex gap-2.5 min-w-0">
+                    <input
+                      type="text"
+                      inputMode="text"
+                      value={couponInput}
+                      onFocus={handleCheckoutInputFocus}
+                      onBlur={handleCheckoutInputBlur}
+                      onChange={(e) => setCouponInput(e.target.value.toUpperCase())}
+                      placeholder="Enter promo code (e.g. FEAST150)"
+                      className="min-w-0 flex-1 min-h-[48px] px-3.5 py-2.5 rounded-xl border border-border bg-bg text-[16px] uppercase text-text focus:outline-none focus:border-[#E23744]"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setAppliedCouponCode(couponInput.trim().toUpperCase())}
+                      className="min-h-[48px] px-5 rounded-xl bg-[#E23744] text-white text-[15px] font-extrabold whitespace-nowrap shrink-0 cursor-pointer active:scale-[0.98]"
+                    >
+                      Apply
+                    </button>
+                  </div>
+                  {coupons.length > 0 && (
+                    <div className="w-full max-w-full overflow-x-auto no-scrollbar pt-0.5">
+                      <div className="flex items-center gap-2 min-w-0">
+                        {coupons.map((c) => (
+                          <button
+                            key={c.code}
+                            type="button"
+                            onClick={() => handleCopyAndApplyCoupon(c.code)}
+                            className={`min-h-[40px] px-3.5 py-1.5 rounded-full border text-[13px] tabular-nums shrink-0 cursor-pointer whitespace-nowrap ${
+                              appliedCouponCode === c.code
+                                ? 'border-[#1BA672] bg-[#1BA672]/15 text-[#1BA672] font-extrabold'
+                                : 'border-border bg-bg text-muted hover:text-text font-semibold'
+                            }`}
+                          >
+                            {appliedCouponCode === c.code ? `✓ ${c.code}` : c.code}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {billPreview?.couponMessage && (
+                    <p
+                      className={`text-[14px] font-semibold break-words ${
+                        billPreview.appliedCoupon ? 'text-[#1BA672]' : 'text-[#E23744]'
+                      }`}
+                    >
+                      {billPreview.couponMessage}
+                    </p>
+                  )}
+                </section>
+
+                {/* 4. Bill Summary Preview */}
+                <section
+                  aria-label="Bill Summary"
+                  className="rounded-2xl border border-border bg-surface p-4 space-y-2.5 text-[14px] min-w-0 max-w-full"
+                >
+                  <h2 className="text-[15px] font-extrabold text-text pb-1">
+                    Bill summary
+                  </h2>
+                  <div className="flex justify-between text-muted">
+                    <span>Item total</span>
+                    <span className="tabular-nums font-semibold text-text">
+                      ₹{billPreview?.itemTotal ?? totalCartAmount}
+                    </span>
+                  </div>
+                  {billPreview && billPreview.discountAmount > 0 && (
+                    <div className="flex justify-between text-[#1BA672] font-bold">
+                      <span>Coupon discount ({billPreview.appliedCoupon})</span>
+                      <span className="tabular-nums">-₹{billPreview.discountAmount}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between text-muted">
+                    <span>
+                      Delivery fee
+                      {billPreview ? ` (${billPreview.distanceKm} km)` : ''}
+                    </span>
+                    <span className="tabular-nums font-semibold text-text">
+                      {billPreview ? `₹${billPreview.deliveryFee}` : 'Calculated at checkout'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between text-muted">
+                    <span>Taxes (GST {billPreview?.gstPercent ?? settings.gstPercent}%)</span>
+                    <span className="tabular-nums font-semibold text-text">
+                      ₹{estimatedGst}
+                    </span>
+                  </div>
+                  <div className="flex justify-between pt-2.5 border-t border-border text-[16px] font-extrabold text-text">
+                    <span>Total payable</span>
+                    <span className="tabular-nums">₹{estimatedGrandTotal}</span>
+                  </div>
+                </section>
+              </>
+            )}
+          </div>
+
+          {/* Sticky Bottom Bar on Step 1 Cart Page: ONE primary button "Proceed to checkout · ₹X" */}
+          {cart.length > 0 && !hideStickyBarForKeyboard && (
+            <div className="fixed bottom-0 left-0 right-0 z-30 w-full max-w-full bg-surface/95 backdrop-blur-md border-t border-border px-4 pt-3 pb-[max(12px,env(safe-area-inset-bottom))]">
+              <div className="w-full max-w-[720px] mx-auto">
+                <button
+                  type="button"
+                  onClick={() => navigateFlowStep('checkout')}
+                  className="w-full min-h-[52px] px-5 rounded-2xl bg-[#E23744] hover:bg-[#c82d39] text-white text-[16px] font-extrabold whitespace-nowrap flex items-center justify-center gap-2 shadow-md cursor-pointer active:scale-[0.98] transition-all"
+                >
+                  <span>Proceed to checkout · ₹{estimatedGrandTotal}</span>
+                  <ChevronRight className="w-5 h-5 stroke-[2.5]" />
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* =====================================================================
+          PART 1 — STEP 2: FULL-SCREEN CHECKOUT PAGE (#/checkout)
+         ===================================================================== */}
+      {checkoutStep === 'checkout' && (
+        <div className="min-h-dvh w-full max-w-full overflow-x-clip bg-bg text-text pb-40">
+          {/* Sticky Checkout Top Bar */}
+          <div className="sticky top-[56px] z-20 w-full max-w-full bg-surface/95 backdrop-blur-md border-b border-border">
+            <div className="w-full max-w-[720px] mx-auto px-4 min-h-[54px] flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                <button
+                  type="button"
+                  onClick={() => navigateFlowStep('cart')}
+                  aria-label="Back to cart"
+                  className="w-11 h-11 -ml-2 rounded-full flex items-center justify-center text-text hover:bg-border/40 shrink-0 cursor-pointer"
+                >
+                  <ArrowLeft className="w-5 h-5" />
+                </button>
+                <div className="min-w-0 flex-1">
+                  <h1 className="font-display text-[18px] sm:text-[20px] font-extrabold text-text truncate">
+                    Checkout
+                  </h1>
+                  <p className="text-[13px] text-muted truncate">
+                    {totalCartItems} {totalCartItems === 1 ? 'item' : 'items'} · Total ₹{estimatedGrandTotal}
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {cart.length === 0 ? (
+            <div className="w-full max-w-[720px] mx-auto px-4 pt-8">
+              <div className="rounded-2xl border border-border bg-surface p-10 text-center space-y-4">
+                <ShoppingBag className="w-12 h-12 text-muted mx-auto" />
+                <h2 className="font-display text-[20px] font-extrabold text-text">
+                  Your cart is empty
+                </h2>
+                <button
+                  type="button"
+                  onClick={() => navigateFlowStep('store')}
+                  className="min-h-[48px] px-6 rounded-2xl bg-[#E23744] text-white text-[15px] font-extrabold cursor-pointer"
+                >
+                  Browse menu
+                </button>
+              </div>
+            </div>
+          ) : (
+            <form
+              onSubmit={handlePlaceOrder}
+              noValidate
+              className="w-full max-w-[720px] mx-auto px-4 pt-4 space-y-5 min-w-0"
+            >
+              {/* TOP INLINE WARNING CARD WHEN OUTSIDE DELIVERY ZONE */}
+              {isOutsideDeliveryZone && (
+                <div
+                  role="alert"
+                  className="rounded-2xl border-2 border-[#E23744] bg-[#FFF5F3] dark:bg-[#2A1618] p-4 flex items-start gap-3 shadow-xs"
+                >
+                  <AlertTriangle className="w-6 h-6 text-[#E23744] shrink-0 mt-0.5" />
+                  <div className="min-w-0 flex-1 space-y-1">
+                    <p className="text-[15px] font-extrabold text-[#E23744] break-words">
+                      Sorry, we don&apos;t deliver to this location yet. Try a different address or pin.
+                    </p>
+                    <p className="text-[13px] font-medium text-text break-words">
+                      Pinned location is {liveAddressDistance.km || billPreview?.distanceKm} km from our Bandra West kitchen (maximum delivery radius is {deliveryZone.radiusKm} km).
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* SECTION 1: DELIVERY ADDRESS CARD */}
+              <section
+                aria-label="Delivery address"
+                className={`rounded-2xl border p-4 sm:p-5 space-y-4 min-w-0 max-w-full transition-colors ${
+                  isOutsideDeliveryZone || ((checkoutTouched || addressTouched) && addressFieldError)
+                    ? 'border-2 border-[#E23744] bg-[#FFF5F3]/50 dark:bg-[#2A1618]/40'
+                    : 'border-border bg-surface'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <MapPin className="w-5 h-5 text-[#E23744] shrink-0" />
+                    <h2 className="text-[16px] font-extrabold text-text truncate">
+                      1. Delivery address
+                    </h2>
+                  </div>
+                  {liveAddressDistance.pinned && (
+                    <span
+                      className={`px-2.5 py-1 rounded-full text-[13px] font-bold shrink-0 ${
+                        liveAddressDistance.within
+                          ? 'bg-[#1BA672]/15 text-[#1BA672]'
+                          : 'bg-[#E23744]/15 text-[#E23744]'
+                      }`}
+                    >
+                      {liveAddressDistance.within
+                        ? `✓ ${liveAddressDistance.km} km`
+                        : `✕ ${liveAddressDistance.km} km (Outside zone)`}
+                    </span>
+                  )}
+                </div>
+
+                {/* GPS Location Button */}
+                <button
+                  type="button"
+                  onClick={handleUseCurrentGps}
+                  className="w-full min-h-[48px] px-4 rounded-xl border border-[#E23744]/40 bg-[#FFF5F3] dark:bg-[#E23744]/15 text-[#E23744] font-bold text-[15px] flex items-center justify-center gap-2 cursor-pointer active:scale-[0.98]"
+                >
+                  <Compass className="w-5 h-5 text-[#E23744] shrink-0" />
+                  <span>Use my current GPS location</span>
+                </button>
+
+                {/* Area Presets (Quick pin selector) */}
+                <div className="space-y-2">
+                  <p className="text-[13px] font-bold text-muted">
+                    Or pin your neighborhood area:
+                  </p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {LOCATION_PRESETS.map((p, idx) => {
+                      const isSelected =
+                        locationPinned && guestLat === p.lat && guestLng === p.lng;
+                      return (
+                        <button
+                          key={idx}
+                          type="button"
+                          onClick={() => {
+                            setGuestAddress(p.address);
+                            setGuestLat(p.lat);
+                            setGuestLng(p.lng);
+                            setLocationPinned(true);
+                            setCheckoutError(null);
+                          }}
+                          className={`min-h-[48px] p-3 rounded-xl border text-left transition-colors cursor-pointer ${
+                            isSelected
+                              ? 'border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/15 font-bold'
+                              : 'border-border bg-bg hover:border-[#E23744]/50'
+                          }`}
+                        >
+                          <p className="text-[14px] font-bold text-text break-words">
+                            {p.label}
+                          </p>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Saved Last Address indicator if available */}
+                {initialProfile.address && guestAddress !== initialProfile.address && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setGuestAddress(initialProfile.address);
+                      if (initialProfile.lat && initialProfile.lng) {
+                        setGuestLat(initialProfile.lat);
+                        setGuestLng(initialProfile.lng);
+                        setLocationPinned(true);
+                      }
+                    }}
+                    className="w-full min-h-[44px] px-3.5 py-2 rounded-xl border border-border bg-bg text-left text-[13px] text-muted hover:text-text cursor-pointer"
+                  >
+                    <strong className="text-text">Use saved address:</strong> {initialProfile.address}
+                  </button>
+                )}
+
+                {/* Complete Flat / Building / Street Address Input */}
+                <div className="space-y-1.5">
+                  <label
+                    htmlFor="checkout-address-input"
+                    className="block text-[14px] font-bold text-text"
+                  >
+                    Flat, building, and street address *
+                  </label>
+                  <textarea
+                    id="checkout-address-input"
+                    rows={2}
+                    required
+                    autoComplete="street-address"
+                    value={guestAddress}
+                    onFocus={handleCheckoutInputFocus}
+                    onBlur={() => {
+                      setAddressTouched(true);
+                      handleCheckoutInputBlur();
+                    }}
+                    onChange={(e) => setGuestAddress(e.target.value)}
+                    placeholder="Enter flat no., building name, street & landmark"
+                    className="w-full max-w-full min-h-[64px] px-3.5 py-3 rounded-xl border border-border bg-bg text-[16px] text-text box-border focus:outline-none focus:border-[#E23744]"
+                  />
+                  {(checkoutTouched || addressTouched) && addressFieldError && (
+                    <p className="text-[13px] font-semibold text-[#E23744] break-words">
+                      {addressFieldError}
+                    </p>
+                  )}
+                </div>
+              </section>
+
+              {/* SECTION 2: CONTACT DETAILS CARD */}
+              <section
+                aria-label="Contact details"
+                className="rounded-2xl border border-border bg-surface p-4 sm:p-5 space-y-4 min-w-0 max-w-full"
+              >
+                <h2 className="text-[16px] font-extrabold text-text">
+                  2. Contact details
+                </h2>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  {/* Full Name */}
+                  <div className="space-y-1.5">
+                    <label
+                      htmlFor="checkout-name-input"
+                      className="block text-[14px] font-bold text-text"
+                    >
+                      Full name *
+                    </label>
+                    <input
+                      id="checkout-name-input"
+                      type="text"
+                      inputMode="text"
+                      autoComplete="name"
+                      required
+                      value={guestName}
+                      onFocus={handleCheckoutInputFocus}
+                      onBlur={() => {
+                        setNameTouched(true);
+                        handleCheckoutInputBlur();
+                      }}
+                      onChange={(e) => setGuestName(e.target.value)}
+                      placeholder="Enter your full name"
+                      className={`w-full max-w-full min-h-[48px] px-3.5 py-2.5 rounded-xl border bg-bg text-[16px] text-text box-border focus:outline-none focus:border-[#E23744] ${
+                        (checkoutTouched || nameTouched) && nameFieldError
+                          ? 'border-[#E23744]'
+                          : 'border-border'
+                      }`}
+                    />
+                    {(checkoutTouched || nameTouched) && nameFieldError && (
+                      <p className="text-[13px] font-semibold text-[#E23744] break-words">
+                        {nameFieldError}
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Mobile Number */}
+                  <div className="space-y-1.5">
+                    <label
+                      htmlFor="checkout-phone-input"
+                      className="block text-[14px] font-bold text-text"
+                    >
+                      10-digit mobile number *
+                    </label>
+                    <input
+                      id="checkout-phone-input"
+                      type="tel"
+                      inputMode="numeric"
+                      autoComplete="tel"
+                      required
+                      maxLength={10}
+                      value={guestPhone}
+                      onFocus={handleCheckoutInputFocus}
+                      onBlur={() => {
+                        setPhoneTouched(true);
+                        handleCheckoutInputBlur();
+                      }}
+                      onChange={(e) => setGuestPhone(e.target.value.replace(/\D/g, ''))}
+                      placeholder="e.g. 9820144500"
+                      className={`w-full max-w-full min-h-[48px] px-3.5 py-2.5 rounded-xl border bg-bg text-[16px] tabular-nums text-text box-border focus:outline-none focus:border-[#E23744] ${
+                        (checkoutTouched || phoneTouched) && phoneFieldError
+                          ? 'border-[#E23744]'
+                          : 'border-border'
+                      }`}
+                    />
+                    {(checkoutTouched || phoneTouched) && phoneFieldError && (
+                      <p className="text-[13px] font-semibold text-[#E23744] break-words">
+                        {phoneFieldError}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </section>
+
+              {/* SECTION 3: DELIVERY TIME CARD */}
+              <section
+                aria-label="Delivery time"
+                className="rounded-2xl border border-border bg-surface p-4 sm:p-5 space-y-4 min-w-0 max-w-full"
+              >
+                <h2 className="text-[16px] font-extrabold text-text">
+                  3. Delivery time
+                </h2>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setIsScheduled(false)}
+                    className={`min-h-[48px] p-3.5 rounded-xl border text-left flex items-center justify-between gap-2 cursor-pointer ${
+                      !isScheduled
+                        ? 'border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/15 font-bold'
+                        : 'border-border bg-bg'
+                    }`}
+                  >
+                    <div>
+                      <p className="text-[15px] font-bold text-text">Deliver now</p>
+                      <p className="text-[13px] text-muted">Freshly cooked in ~30 mins</p>
+                    </div>
+                    <span
+                      className={`w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 ${
+                        !isScheduled ? 'border-[#E23744]' : 'border-muted'
+                      }`}
+                    >
+                      {!isScheduled && <span className="w-2.5 h-2.5 rounded-full bg-[#E23744]" />}
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsScheduled(true);
+                      if (!scheduledFor && timeSlots[0]) {
+                        setScheduledFor(timeSlots[0].iso);
+                      }
+                    }}
+                    className={`min-h-[48px] p-3.5 rounded-xl border text-left flex items-center justify-between gap-2 cursor-pointer ${
+                      isScheduled
+                        ? 'border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/15 font-bold'
+                        : 'border-border bg-bg'
+                    }`}
+                  >
+                    <div>
+                      <p className="text-[15px] font-bold text-text">Schedule for later</p>
+                      <p className="text-[13px] text-muted">{settings.weeklyTimings}</p>
+                    </div>
+                    <span
+                      className={`w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 ${
+                        isScheduled ? 'border-[#E23744]' : 'border-muted'
+                      }`}
+                    >
+                      {isScheduled && <span className="w-2.5 h-2.5 rounded-full bg-[#E23744]" />}
+                    </span>
+                  </button>
+                </div>
+
+                {isScheduled && (
+                  <div className="space-y-1.5">
+                    <label
+                      htmlFor="checkout-schedule-slot"
+                      className="block text-[14px] font-bold text-text"
+                    >
+                      Choose delivery time slot *
+                    </label>
+                    <select
+                      id="checkout-schedule-slot"
+                      value={scheduledFor}
+                      onFocus={handleCheckoutInputFocus}
+                      onBlur={handleCheckoutInputBlur}
+                      onChange={(e) => setScheduledFor(e.target.value)}
+                      className="w-full max-w-full min-h-[48px] px-3.5 py-2.5 rounded-xl border border-border bg-bg text-[16px] font-bold text-text box-border"
+                    >
+                      <option value="">Select a delivery time slot...</option>
+                      {timeSlots.map((slot) => (
+                        <option key={slot.iso} value={slot.iso}>
+                          {slot.label}
+                        </option>
+                      ))}
+                    </select>
+                    {checkoutTouched && scheduleFieldError && (
+                      <p className="text-[13px] font-semibold text-[#E23744]">
+                        {scheduleFieldError}
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                <div className="space-y-1.5">
+                  <label
+                    htmlFor="checkout-order-notes"
+                    className="block text-[14px] font-bold text-text"
+                  >
+                    Delivery instructions (Optional)
+                  </label>
+                  <input
+                    id="checkout-order-notes"
+                    type="text"
+                    inputMode="text"
+                    value={orderNotes}
+                    onFocus={handleCheckoutInputFocus}
+                    onBlur={handleCheckoutInputBlur}
+                    onChange={(e) => setOrderNotes(e.target.value)}
+                    placeholder="e.g. Leave with security guard, do not ring bell"
+                    className="w-full max-w-full min-h-[48px] px-3.5 py-2.5 rounded-xl border border-border bg-bg text-[16px] text-text box-border focus:outline-none focus:border-[#E23744]"
+                  />
+                </div>
+              </section>
+
+              {/* SECTION 4: PAYMENT METHOD CARD */}
+              <section
+                aria-label="Payment method"
+                className="rounded-2xl border border-border bg-surface p-4 sm:p-5 space-y-4 min-w-0 max-w-full"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <h2 className="text-[16px] font-extrabold text-text">
+                    4. Payment method
+                  </h2>
+                  {billPreview && !billPreview.codAllowed && (
+                    <span className="text-[13px] text-amber-600 font-semibold">
+                      {billPreview.codDisallowedReason}
+                    </span>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <label
+                    className={`min-h-[56px] p-3.5 rounded-xl border cursor-pointer flex items-start gap-3 ${
+                      paymentMethod === 'RAZORPAY'
+                        ? 'border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/15'
+                        : 'border-border bg-bg'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="pay-method"
+                      checked={paymentMethod === 'RAZORPAY'}
+                      onChange={() => setPaymentMethod('RAZORPAY')}
+                      className="mt-1 accent-[#E23744] w-4 h-4 shrink-0"
+                    />
+                    <div className="min-w-0 text-[14px]">
+                      <p className="font-bold text-text break-words">
+                        UPI / Card (Razorpay)
+                      </p>
+                      <p className="text-[13px] text-muted">
+                        {homeData.razorpayMode === 'live'
+                          ? 'Instant online payment'
+                          : 'Fast verified online payment'}
+                      </p>
+                    </div>
+                  </label>
+
+                  <label
+                    className={`min-h-[56px] p-3.5 rounded-xl border flex items-start gap-3 ${
+                      billPreview && !billPreview.codAllowed
+                        ? 'border-border bg-bg opacity-60 cursor-not-allowed'
+                        : paymentMethod === 'COD'
+                        ? 'border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/15 cursor-pointer'
+                        : 'border-border bg-bg cursor-pointer'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="pay-method"
+                      disabled={billPreview !== null && !billPreview.codAllowed}
+                      checked={paymentMethod === 'COD'}
+                      onChange={() => setPaymentMethod('COD')}
+                      className="mt-1 accent-[#E23744] w-4 h-4 shrink-0"
+                    />
+                    <div className="min-w-0 text-[14px]">
+                      <p className="font-bold text-text break-words">
+                        Cash on Delivery (COD)
+                      </p>
+                      <p className="text-[13px] text-muted break-words">
+                        {billPreview && !billPreview.codAllowed
+                          ? billPreview.codDisallowedReason
+                          : `Pay cash or UPI at doorstep (Max ₹${settings.codMaxAmount})`}
+                      </p>
+                    </div>
+                  </label>
+                </div>
+
+                {/* Inline COD Phone OTP Verification if required */}
+                {paymentMethod === 'COD' && billPreview?.requirePhoneOtpForCod && (
+                  <div className="rounded-xl border border-[#E23744]/30 bg-[#FFF5F3] dark:bg-[#E23744]/15 p-3.5 space-y-2.5 text-[14px]">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-bold text-text">
+                        Verify mobile OTP for Cash on Delivery
+                      </span>
+                      {codOtpVerified && (
+                        <span className="text-[#1BA672] font-bold text-[13px]">
+                          ✓ Verified
+                        </span>
+                      )}
+                    </div>
+                    {!codOtpVerified && (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          disabled={codOtpBusy}
+                          onClick={handleRequestCodOtp}
+                          className="min-h-[48px] px-4 rounded-xl bg-[#E23744] text-white font-bold text-[14px] cursor-pointer disabled:opacity-50"
+                        >
+                          {codOtpRequested ? 'Resend OTP' : 'Send OTP'}
+                        </button>
+                        {codOtpRequested && (
+                          <>
+                            <input
+                              type="text"
+                              inputMode="numeric"
+                              maxLength={4}
+                              value={codOtpCode}
+                              onFocus={handleCheckoutInputFocus}
+                              onBlur={handleCheckoutInputBlur}
+                              onChange={(e) =>
+                                setCodOtpCode(e.target.value.replace(/\D/g, '').slice(0, 4))
+                              }
+                              placeholder="4-digit OTP"
+                              className="w-36 min-h-[48px] px-3.5 py-2 rounded-xl border border-border bg-surface text-[16px] tabular-nums text-text"
+                            />
+                            <button
+                              type="button"
+                              disabled={codOtpBusy}
+                              onClick={handleVerifyCodOtp}
+                              className="min-h-[48px] px-4 rounded-xl bg-[#1BA672] text-white font-bold text-[14px] cursor-pointer disabled:opacity-50"
+                            >
+                              Verify OTP
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    )}
+                    {codOtpDemoHint && !codOtpVerified && (
+                      <p className="text-[13px] tabular-nums text-[#E23744]">
+                        Demo OTP: <strong>{codOtpDemoHint}</strong>
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {homeData.turnstileSiteKey && (
+                  <div className="p-3 rounded-xl border border-border bg-bg">
+                    <div
+                      className="cf-turnstile"
+                      data-sitekey={homeData.turnstileSiteKey}
+                      data-callback="onAanganTurnstileSuccess"
+                    />
+                  </div>
+                )}
+              </section>
+
+              {/* SECTION 5: ORDER SUMMARY & FULL BILL CARD */}
+              <section
+                aria-label="Order summary"
+                className="rounded-2xl border border-border bg-surface p-4 sm:p-5 space-y-4 min-w-0 max-w-full"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <h2 className="text-[16px] font-extrabold text-text">
+                    5. Order summary
+                  </h2>
+                  <button
+                    type="button"
+                    onClick={() => navigateFlowStep('cart')}
+                    className="text-[13px] font-bold text-[#E23744] hover:underline cursor-pointer"
+                  >
+                    Edit cart
+                  </button>
+                </div>
+
+                <div className="divide-y divide-border/70 space-y-2.5 text-[14px]">
+                  {cart.map((item) => (
+                    <div
+                      key={item.cartLineId}
+                      className="pt-2.5 first:pt-0 flex items-start justify-between gap-3"
+                    >
+                      <div className="flex items-start gap-2 min-w-0 flex-1">
+                        <span className="mt-1 shrink-0">{renderDietMark(item.isVeg)}</span>
+                        <div className="min-w-0 flex-1">
+                          <p className="font-semibold text-text break-words">
+                            {item.quantity} × {item.name}
+                          </p>
+                          {(item.variantName || item.selectedAddons.length > 0) && (
+                            <p className="text-[13px] text-muted break-words">
+                              {item.variantName}
+                              {item.selectedAddons.length > 0 &&
+                                ` · +${item.selectedAddons.map((a) => a.name).join(', ')}`}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                      <span className="font-bold tabular-nums text-text shrink-0 whitespace-nowrap">
+                        ₹{item.unitPrice * item.quantity}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="pt-3 border-t border-border space-y-2 text-[14px]">
+                  <div className="flex justify-between text-muted">
+                    <span>Item total</span>
+                    <span className="tabular-nums font-semibold text-text">
+                      ₹{billPreview?.itemTotal ?? totalCartAmount}
+                    </span>
+                  </div>
+                  {billPreview && billPreview.discountAmount > 0 && (
+                    <div className="flex justify-between text-[#1BA672] font-bold">
+                      <span>Coupon discount ({billPreview.appliedCoupon})</span>
+                      <span className="tabular-nums">-₹{billPreview.discountAmount}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between text-muted">
+                    <span>
+                      Delivery fee
+                      {billPreview ? ` (${billPreview.distanceKm} km)` : ''}
+                    </span>
+                    <span className="tabular-nums font-semibold text-text">
+                      ₹{billPreview?.deliveryFee ?? 0}
+                    </span>
+                  </div>
+                  <div className="flex justify-between text-muted">
+                    <span>GST ({billPreview?.gstPercent ?? settings.gstPercent}%)</span>
+                    <span className="tabular-nums font-semibold text-text">
+                      ₹{estimatedGst}
+                    </span>
+                  </div>
+                  <div className="flex justify-between pt-2.5 border-t border-border text-[16px] font-extrabold text-text">
+                    <span>Grand total</span>
+                    <span className="tabular-nums">₹{estimatedGrandTotal}</span>
+                  </div>
+                </div>
+              </section>
+
+              {verifyingPayment && (
+                <div className="rounded-2xl border border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/15 p-4 text-[14px] font-bold text-text">
+                  Payment verification in progress, do not pay twice.
+                </div>
+              )}
+
+              {(checkoutError || paymentFailureMessage) && (
+                <div
+                  role="alert"
+                  className="rounded-2xl border border-[#E23744]/40 bg-[#E23744]/10 p-4 text-[14px] text-[#E23744] font-semibold break-words"
+                >
+                  {checkoutError || paymentFailureMessage}
+                </div>
+              )}
+
+              {/* Inline Submit Fallback visible when keyboard is open on mobile */}
+              {hideStickyBarForKeyboard && (
+                <div className="pt-2 space-y-2">
+                  <button
+                    type="submit"
+                    disabled={isPlaceOrderDisabled}
+                    className="w-full min-h-[52px] px-5 rounded-2xl bg-[#E23744] text-white text-[16px] font-extrabold whitespace-nowrap flex items-center justify-center shadow-md cursor-pointer disabled:opacity-50"
+                  >
+                    {placingOrder
+                      ? 'Placing order...'
+                      : `Place order · ₹${estimatedGrandTotal}`}
+                  </button>
+                  {placeOrderDisabledReason && (
+                    <p className="text-[13px] font-semibold text-[#E23744] text-center break-words">
+                      {placeOrderDisabledReason}
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {/* Sticky Bottom Bar on Step 2 Checkout Page: ONE button "Place order · ₹X" + reason if disabled */}
+              {!hideStickyBarForKeyboard && (
+                <div className="fixed bottom-0 left-0 right-0 z-30 w-full max-w-full bg-surface/95 backdrop-blur-md border-t border-border px-4 pt-3 pb-[max(12px,env(safe-area-inset-bottom))]">
+                  <div className="w-full max-w-[720px] mx-auto space-y-1.5">
+                    <button
+                      type="submit"
+                      disabled={isPlaceOrderDisabled}
+                      className="w-full min-h-[52px] px-5 rounded-2xl bg-[#E23744] hover:bg-[#c82d39] text-white text-[16px] font-extrabold whitespace-nowrap flex items-center justify-center shadow-md cursor-pointer disabled:opacity-50 active:scale-[0.98] transition-all"
+                    >
+                      {placingOrder
+                        ? 'Placing order...'
+                        : `Place order · ₹${estimatedGrandTotal}`}
+                    </button>
+                    {placeOrderDisabledReason && (
+                      <p className="text-[13px] font-semibold text-[#E23744] text-center break-words">
+                        {placeOrderDisabledReason}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
+            </form>
+          )}
+        </div>
+      )}
+
+      {/* =====================================================================
+          STOREFRONT VIEW (HOME, MENU & ORDERS TABS — Shown when checkoutStep === 'store')
+         ===================================================================== */}
+      {checkoutStep === 'store' && (activeSubTab === 'home' || activeSubTab === 'menu') && (
         <div className="w-full max-w-full overflow-x-hidden min-w-0">
-          <div className="w-full max-w-[1140px] mx-auto px-3 sm:px-4 pt-2.5 space-y-2.5 min-w-0">
-            {/* SLEEK COMPACT HERO BANNER (175px–205px height, crisp white pill CTA) */}
+          <div className="w-full max-w-[1200px] mx-auto px-4 pt-4 space-y-5 min-w-0 max-w-full">
+            {/* 3. BOLD ~340px HERO BANNER (rounded-3xl, bottom dark gradient, red tag pill, clamp(28px,7vw,48px) 800 heading, subline "30-min delivery · Free above ₹499" with text-balance, red CTA "Order now") */}
             {activeSubTab === 'home' && !searchQuery && (
               <section
                 aria-label="Featured Kitchen Hero"
-                className="w-full max-w-full min-w-0"
+                className="w-full max-w-full min-w-0 space-y-3.5"
               >
-                <div className="relative w-full max-w-full h-[175px] sm:h-[205px] md:h-[230px] rounded-2xl overflow-hidden bg-surface border border-border/60 shadow-2xs">
+                <div className="relative w-full max-w-full h-[330px] sm:h-[345px] md:h-[360px] rounded-3xl overflow-hidden bg-[#121212] border border-[#E8E8E8] dark:border-[#2E2E2E] shadow-md">
                   <img
                     src={optimizeAssetUrl(
                       currentBanner?.imageUrl ||
@@ -1186,7 +2547,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                     )}
                     alt={
                       currentBanner?.title ||
-                      'Dum par paki asli Awadhi biryani aur tandoori kebabs'
+                      'Slow-Cooked Awadhi Handis, Delivered Seal-Intact'
                     }
                     width={1200}
                     height={675}
@@ -1195,20 +2556,22 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                     referrerPolicy="no-referrer"
                     className="w-full h-full object-cover object-center"
                   />
-                  <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/30 to-transparent p-3.5 sm:p-5 flex flex-col justify-end">
-                    <div className="max-w-md min-w-0 space-y-1.5">
-                      <span className="inline-block px-2 py-0.5 rounded-full bg-white/20 backdrop-blur-xs text-[10px] font-semibold text-white tracking-wide">
-                        {lang === 'hi'
-                          ? 'Mitti ki handi · Taza dum'
-                          : 'Clay handi · Freshly cooked'}
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/95 via-black/55 to-black/15 p-5 sm:p-7 md:p-8 flex flex-col justify-end">
+                    <div className="max-w-3xl min-w-0 space-y-2.5">
+                      <span className="inline-flex items-center px-3.5 py-1 rounded-full bg-[#E23744] text-[13px] font-extrabold text-white tracking-wide shadow-sm">
+                        Clay pot · Freshly cooked
                       </span>
-                      <h1 className="font-display text-[clamp(18px,5.2vw,26px)] font-bold text-white leading-tight line-clamp-2 break-words">
+
+                      <h1 className="font-display text-[clamp(28px,7vw,48px)] font-extrabold text-white leading-[1.08] line-clamp-3 break-words">
                         {currentBanner?.title ||
-                          (lang === 'hi'
-                            ? 'Garam Awadhi dum biryani aur tandoori kebab'
-                            : 'Garam Awadhi dum biryani & charcoal kebabs')}
+                          'Slow-Cooked Awadhi Dum Biryani & Charcoal Kebabs'}
                       </h1>
-                      <div className="pt-0.5 flex items-center justify-between gap-2">
+
+                      <p className="text-[15px] sm:text-[16px] font-semibold text-white/95 text-balance break-words">
+                        30-min delivery · Free above ₹499
+                      </p>
+
+                      <div className="pt-1.5 flex flex-wrap items-center justify-between gap-3">
                         <button
                           type="button"
                           onClick={() => {
@@ -1222,28 +2585,30 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                               block: 'start',
                             });
                           }}
-                          className="h-7 sm:h-8 px-3.5 rounded-full bg-white text-stone-900 text-[11px] sm:text-[12px] font-bold whitespace-nowrap inline-flex items-center justify-center gap-1 shadow-xs hover:bg-stone-100 cursor-pointer"
+                          className="min-h-[48px] px-6 rounded-2xl bg-[#E23744] hover:bg-[#c82d39] text-white text-[16px] font-extrabold whitespace-nowrap inline-flex items-center justify-center gap-2 shadow-lg cursor-pointer transition-all active:scale-[0.98]"
                         >
-                          <span>
-                            {lang === 'hi' ? 'Abhi order karein' : 'Order karo'}
-                          </span>
-                          <ChevronRight className="w-3.5 h-3.5" />
+                          <span>Order now</span>
+                          <ChevronRight className="w-5 h-5 stroke-[2.5]" />
                         </button>
 
                         {banners.length > 1 && (
-                          <div className="flex items-center gap-1">
+                          <div className="flex items-center gap-1.5">
                             {banners.map((b, idx) => (
                               <button
                                 key={b.id}
                                 type="button"
                                 aria-label={`Slide ${idx + 1}`}
                                 onClick={() => setActiveBannerIdx(idx)}
-                                className={`h-1.5 rounded-full transition-all cursor-pointer ${
-                                  idx === activeBannerIdx % banners.length
-                                    ? 'w-4 bg-white'
-                                    : 'w-1.5 bg-white/50'
-                                }`}
-                              />
+                                className="min-w-[32px] min-h-[44px] flex items-center justify-center cursor-pointer"
+                              >
+                                <span
+                                  className={`h-2 rounded-full transition-all ${
+                                    idx === activeBannerIdx % banners.length
+                                      ? 'w-7 bg-[#E23744]'
+                                      : 'w-2 bg-white/60'
+                                  }`}
+                                />
+                              </button>
                             ))}
                           </div>
                         )}
@@ -1251,122 +2616,265 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                     </div>
                   </div>
                 </div>
+
+                {/* 4. PERK CHIPS UNDER THE HERO (horizontal scroll inside overflow-x-auto container) */}
+                <div
+                  aria-label="Storefront Perks and Offers"
+                  className="w-full max-w-full overflow-x-auto no-scrollbar"
+                >
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    {/* Chip 1: Rating */}
+                    <div className="min-h-[44px] px-4 rounded-2xl border border-[#E8E8E8] dark:border-[#2E2E2E] bg-[#FFF5F3] dark:bg-[#1C1C1C] flex items-center gap-2 shrink-0 whitespace-nowrap">
+                      <span className="w-6 h-6 rounded-lg bg-[#1BA672] text-white flex items-center justify-center">
+                        <Star className="w-3.5 h-3.5 fill-white text-white" />
+                      </span>
+                      <span className="text-[14px] font-extrabold text-text tabular-nums">
+                        4.8 ★
+                      </span>
+                      <span className="text-[13px] font-medium text-muted">
+                        (1.2k+ ratings)
+                      </span>
+                    </div>
+
+                    {/* Chip 2: Free Delivery Threshold */}
+                    <div className="min-h-[44px] px-4 rounded-2xl border border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface flex items-center gap-2 shrink-0 whitespace-nowrap">
+                      <Truck className="w-4 h-4 text-[#E23744] shrink-0" />
+                      <span className="text-[14px] font-bold text-text">
+                        Free delivery above ₹499
+                      </span>
+                    </div>
+
+                    {/* Chip 3: Coupon Code(s) */}
+                    {primaryCoupon ? (
+                      <button
+                        type="button"
+                        onClick={() => handleCopyAndApplyCoupon(primaryCoupon.code)}
+                        className={`min-h-[44px] px-4 rounded-2xl border flex items-center gap-2 shrink-0 whitespace-nowrap cursor-pointer transition-all active:scale-[0.98] ${
+                          copiedCoupon === primaryCoupon.code ||
+                          appliedCouponCode === primaryCoupon.code
+                            ? 'border-[#1BA672] bg-[#1BA672]/10 text-text'
+                            : 'border-[#E23744]/30 bg-[#FFF5F3] dark:bg-[#2A1618] text-text hover:border-[#E23744]'
+                        }`}
+                      >
+                        <Tag className="w-4 h-4 text-[#E23744] shrink-0" />
+                        <span className="text-[14px] font-semibold text-text">
+                          {primaryCoupon.description}
+                        </span>
+                        <span className="text-[13px] font-extrabold text-[#E23744] tabular-nums">
+                          {copiedCoupon === primaryCoupon.code ||
+                          appliedCouponCode === primaryCoupon.code
+                            ? `✓ ${primaryCoupon.code}`
+                            : `· ${primaryCoupon.code}`}
+                        </span>
+                      </button>
+                    ) : null}
+
+                    {/* Additional Coupons */}
+                    {coupons.slice(1).map((c) => {
+                      const isApplied =
+                        copiedCoupon === c.code || appliedCouponCode === c.code;
+                      return (
+                        <button
+                          key={c.code}
+                          type="button"
+                          onClick={() => handleCopyAndApplyCoupon(c.code)}
+                          className={`min-h-[44px] px-4 rounded-2xl border flex items-center gap-2 shrink-0 whitespace-nowrap cursor-pointer transition-all active:scale-[0.98] ${
+                            isApplied
+                              ? 'border-[#1BA672] bg-[#1BA672]/10 text-text'
+                              : 'border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface text-text hover:border-[#E23744]'
+                          }`}
+                        >
+                          <Tag className="w-4 h-4 text-[#E23744] shrink-0" />
+                          <span className="text-[14px] font-semibold text-text">
+                            {c.description}
+                          </span>
+                          <span className="text-[13px] font-extrabold text-[#E23744] tabular-nums">
+                            {isApplied ? `✓ ${c.code}` : `· ${c.code}`}
+                          </span>
+                        </button>
+                      );
+                    })}
+
+                    {/* Chip 4: Schedule Order */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsScheduled((prev) => {
+                          const next = !prev;
+                          if (next && !scheduledFor && timeSlots[0]) {
+                            setScheduledFor(timeSlots[0].iso);
+                          }
+                          return next;
+                        });
+                        navigateFlowStep('cart');
+                      }}
+                      className={`min-h-[44px] px-4 rounded-2xl border flex items-center gap-2 shrink-0 whitespace-nowrap cursor-pointer transition-all active:scale-[0.98] ${
+                        isScheduled
+                          ? 'border-[#1BA672] bg-[#1BA672]/10 text-text'
+                          : 'border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface text-text hover:border-[#E23744]'
+                      }`}
+                    >
+                      <CalendarClock className="w-4 h-4 text-[#1BA672] shrink-0" />
+                      <span className="text-[14px] font-bold text-text">
+                        Schedule order
+                      </span>
+                      <span className="text-[13px] text-muted">
+                        · {settings.weeklyTimings}
+                      </span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* PART C.4 & PART 3: PROMINENT "ORDER AGAIN" CARD (items wrap up to 2 lines with line-clamp-2) */}
+                {recentOrders.length > 0 && (
+                  <div
+                    aria-label="Order again"
+                    className="w-full max-w-full rounded-2xl border border-[#E8E8E8] dark:border-[#2E2E2E] bg-[#FFF5F3] dark:bg-[#1C1C1C] p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3.5"
+                  >
+                    <div className="flex items-start gap-3 min-w-0 flex-1">
+                      <div className="w-11 h-11 rounded-xl bg-[#E23744]/12 text-[#E23744] flex items-center justify-center shrink-0">
+                        <RotateCcw className="w-5 h-5" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <h2 className="text-[16px] font-extrabold text-text">
+                            Order again
+                          </h2>
+                          <span className="text-[13px] font-semibold text-muted tabular-nums">
+                            #{recentOrders[0].orderNumber} · ₹{recentOrders[0].grandTotal}
+                          </span>
+                        </div>
+                        <p className="text-[14px] text-muted line-clamp-2 break-words mt-0.5">
+                          {recentOrders[0].items
+                            .map((i) => `${i.quantity}x ${i.itemName}`)
+                            .join(', ')}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => onOpenTracking(recentOrders[0].trackingToken)}
+                        className="min-h-[44px] px-3.5 rounded-xl border border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface text-[13px] font-bold text-text whitespace-nowrap cursor-pointer active:scale-[0.98]"
+                      >
+                        Track order
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (onReorder) {
+                            onReorder(recentOrders[0], homeData.allMenuItems);
+                          }
+                        }}
+                        className="min-h-[44px] px-4 rounded-xl bg-[#E23744] hover:bg-[#c82d39] text-white text-[14px] font-extrabold whitespace-nowrap inline-flex items-center gap-1.5 cursor-pointer active:scale-[0.98] shadow-xs"
+                      >
+                        <RotateCcw className="w-4 h-4" />
+                        <span>Order again</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
               </section>
             )}
 
-            {/* SLIM PILL SEARCH BAR */}
-            <div className="relative w-full min-w-0">
-              <Search className="w-3.5 h-3.5 text-muted absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-              <input
-                type="search"
-                aria-label="Search menu dishes"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder={
-                  lang === 'hi'
-                    ? 'Biryani, paneer tikka, butter chicken khojein...'
-                    : 'Search biryani, paneer tikka, kebabs...'
-                }
-                className="w-full h-9 pl-9 pr-8 rounded-full border border-border/80 bg-surface text-[13px] text-text placeholder:text-muted focus:outline-none focus:border-primary shadow-2xs"
-              />
-              {searchQuery && (
-                <button
-                  type="button"
-                  aria-label="Clear search query"
-                  onClick={() => setSearchQuery('')}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-muted hover:text-text cursor-pointer"
-                >
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              )}
-            </div>
-
-            {/* SINGLE-LINE COMPACT OFFER STRIP */}
-            {coupons.length > 0 && !searchQuery && (
-              <div className="w-full max-w-full overflow-x-auto no-scrollbar pr-4">
-                <div className="flex items-center gap-2 w-max">
-                  {coupons.map((c) => {
-                    const isApplied = copiedCoupon === c.code || appliedCouponCode === c.code;
-                    return (
-                      <button
-                        key={c.code}
-                        type="button"
-                        onClick={() => handleCopyAndApplyCoupon(c.code)}
-                        className={`h-7 px-2.5 rounded-full border text-left shrink-0 flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap ${
-                          isApplied
-                            ? 'border-emerald-600/50 bg-emerald-500/10 text-text'
-                            : 'border-primary/25 bg-primary/5 hover:border-primary/50 text-text'
-                        }`}
-                      >
-                        <Tag className="w-3 h-3 text-primary shrink-0" />
-                        <span className="text-[11px] font-medium text-text">
-                          {c.description}
-                        </span>
-                        <span className="text-[11px] font-bold text-primary tabular-nums">
-                          {isApplied ? `✓ ${c.code}` : `· Tap to apply (${c.code})`}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
+            {/* 5. LARGE SEARCH BAR (rounded-2xl, padding 14px) + GREEN VEG TOGGLE SWITCH */}
+            <div className="flex items-stretch gap-3 w-full max-w-full min-w-0">
+              <div className="relative flex-1 min-w-0">
+                <Search className="w-5 h-5 text-[#E23744] absolute left-4 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <input
+                  type="search"
+                  aria-label="Search menu dishes"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Search dishes..."
+                  className="w-full min-h-[54px] py-[14px] pl-12 pr-10 rounded-2xl border border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface text-[16px] font-medium text-text placeholder:text-muted focus:outline-none focus:border-[#E23744] shadow-2xs"
+                />
+                {searchQuery && (
+                  <button
+                    type="button"
+                    aria-label="Clear search query"
+                    onClick={() => setSearchQuery('')}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 w-10 h-10 flex items-center justify-center text-muted hover:text-text cursor-pointer"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                )}
               </div>
-            )}
 
-            {/* SINGLE-LINE FILTER PILLS (Scrolls naturally, does not crowd sticky bar) */}
-            <div className="w-full max-w-full overflow-x-auto no-scrollbar pr-4">
-              <div className="flex items-center gap-1.5 w-max">
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={dietFilter === 'VEG'}
-                  onClick={() =>
-                    setDietFilter((d) => (d === 'VEG' ? 'ALL' : 'VEG'))
-                  }
-                  className={`h-7 px-2.5 rounded-full border text-[11px] font-semibold flex items-center gap-1 shrink-0 whitespace-nowrap cursor-pointer transition-colors ${
+              {/* Proper Green Veg Toggle Switch */}
+              <button
+                type="button"
+                role="switch"
+                aria-checked={dietFilter === 'VEG'}
+                aria-label="Pure Veg toggle"
+                onClick={() =>
+                  setDietFilter((d) => (d === 'VEG' ? 'ALL' : 'VEG'))
+                }
+                className={`min-h-[54px] px-3.5 sm:px-4 rounded-2xl border flex items-center gap-2.5 shrink-0 cursor-pointer transition-all active:scale-[0.98] ${
+                  dietFilter === 'VEG'
+                    ? 'border-[#1BA672] bg-[#1BA672]/10 text-text shadow-2xs'
+                    : 'border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface text-text'
+                }`}
+              >
+                <div className="flex flex-col items-start leading-none">
+                  <span className="text-[14px] font-extrabold text-text">VEG</span>
+                  <span className="text-[13px] font-medium text-muted mt-0.5 hidden sm:inline">
+                    Only
+                  </span>
+                </div>
+                <span
+                  className={`w-11 h-6 rounded-full p-0.5 flex items-center transition-colors ${
                     dietFilter === 'VEG'
-                      ? 'border-[#15803D] bg-[#15803D]/12 text-text'
-                      : 'border-border/80 bg-surface text-text'
+                      ? 'bg-[#1BA672] justify-end'
+                      : 'bg-zinc-300 dark:bg-zinc-700 justify-start'
                   }`}
                 >
-                  {renderDietMark(true)}
-                  <span>{lang === 'hi' ? 'Sirf Veg' : 'Veg only'}</span>
-                </button>
+                  <span className="w-5 h-5 rounded-full bg-white shadow-xs flex items-center justify-center">
+                    <span className="w-2 h-2 rounded-full bg-[#1BA672]" />
+                  </span>
+                </span>
+              </button>
+            </div>
 
+            {/* SECONDARY FILTER CHIPS (44px tap targets, >=13px text, overflow-x-auto) */}
+            <div className="w-full max-w-full overflow-x-auto no-scrollbar">
+              <div className="flex items-center gap-2 min-w-0">
                 <button
                   type="button"
                   onClick={() =>
                     setDietFilter((d) => (d === 'NON_VEG' ? 'ALL' : 'NON_VEG'))
                   }
-                  className={`h-7 px-2.5 rounded-full border text-[11px] font-semibold flex items-center gap-1 shrink-0 whitespace-nowrap cursor-pointer transition-colors ${
+                  className={`min-h-[44px] px-4 rounded-full border text-[14px] font-bold flex items-center gap-2 shrink-0 whitespace-nowrap cursor-pointer transition-all active:scale-[0.98] ${
                     dietFilter === 'NON_VEG'
-                      ? 'border-[#B91C1C] bg-[#B91C1C]/12 text-text'
-                      : 'border-border/80 bg-surface text-text'
+                      ? 'border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/20 text-[#E23744]'
+                      : 'border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface text-text'
                   }`}
                 >
                   {renderDietMark(false)}
-                  <span>Non-veg</span>
+                  <span>Non-Veg</span>
                 </button>
 
                 <button
                   type="button"
                   onClick={() => setSortSheetOpen(true)}
-                  className={`h-7 px-2.5 rounded-full border text-[11px] font-semibold flex items-center gap-1 shrink-0 whitespace-nowrap cursor-pointer transition-colors ${
+                  className={`min-h-[44px] px-4 rounded-full border text-[14px] font-bold flex items-center gap-1.5 shrink-0 whitespace-nowrap cursor-pointer transition-all active:scale-[0.98] ${
                     sortBy !== 'POPULAR'
-                      ? 'border-primary bg-primary/10 text-primary'
-                      : 'border-border/80 bg-surface text-text'
+                      ? 'border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/20 text-[#E23744]'
+                      : 'border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface text-text'
                   }`}
                 >
-                  <ArrowUpDown className="w-3 h-3 text-primary shrink-0" />
+                  <ArrowUpDown className="w-4 h-4 text-[#E23744] shrink-0" />
                   <span>Sort: {sortLabelMap[sortBy]}</span>
                 </button>
 
                 <button
                   type="button"
                   onClick={() => setFilterBestseller((v) => !v)}
-                  className={`h-7 px-2.5 rounded-full text-[11px] font-semibold whitespace-nowrap shrink-0 border transition-colors cursor-pointer ${
+                  className={`min-h-[44px] px-4 rounded-full text-[14px] font-bold whitespace-nowrap shrink-0 border transition-all active:scale-[0.98] cursor-pointer ${
                     filterBestseller
-                      ? 'border-primary bg-primary/12 text-primary'
-                      : 'border-border/80 bg-surface text-text'
+                      ? 'border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/20 text-[#E23744]'
+                      : 'border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface text-text'
                   }`}
                 >
                   Bestseller
@@ -1375,10 +2883,10 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                 <button
                   type="button"
                   onClick={() => setFilterUnder350((v) => !v)}
-                  className={`h-7 px-2.5 rounded-full text-[11px] font-semibold whitespace-nowrap shrink-0 border transition-colors cursor-pointer ${
+                  className={`min-h-[44px] px-4 rounded-full text-[14px] font-bold whitespace-nowrap shrink-0 border transition-all active:scale-[0.98] cursor-pointer ${
                     filterUnder350
-                      ? 'border-primary bg-primary/12 text-primary'
-                      : 'border-border/80 bg-surface text-text'
+                      ? 'border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/20 text-[#E23744]'
+                      : 'border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface text-text'
                   }`}
                 >
                   Under ₹350
@@ -1387,10 +2895,10 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                 <button
                   type="button"
                   onClick={() => setFilterRating4Plus((v) => !v)}
-                  className={`h-7 px-2.5 rounded-full text-[11px] font-semibold whitespace-nowrap shrink-0 border transition-colors cursor-pointer ${
+                  className={`min-h-[44px] px-4 rounded-full text-[14px] font-bold whitespace-nowrap shrink-0 border transition-all active:scale-[0.98] cursor-pointer ${
                     filterRating4Plus
-                      ? 'border-primary bg-primary/12 text-primary'
-                      : 'border-border/80 bg-surface text-text'
+                      ? 'border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/20 text-[#E23744]'
+                      : 'border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface text-text'
                   }`}
                 >
                   Rating 4.0+
@@ -1399,10 +2907,10 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                 <button
                   type="button"
                   onClick={() => setFilterSavedOnly((v) => !v)}
-                  className={`h-7 px-2.5 rounded-full text-[11px] font-semibold whitespace-nowrap shrink-0 border transition-colors cursor-pointer ${
+                  className={`min-h-[44px] px-4 rounded-full text-[14px] font-bold whitespace-nowrap shrink-0 border transition-all active:scale-[0.98] cursor-pointer ${
                     filterSavedOnly
-                      ? 'border-primary bg-primary/12 text-primary'
-                      : 'border-border/80 bg-surface text-text'
+                      ? 'border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/20 text-[#E23744]'
+                      : 'border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface text-text'
                   }`}
                 >
                   Saved ({favourites.length})
@@ -1411,39 +2919,61 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
             </div>
           </div>
 
-          {/* ONLY 1 SLIM STICKY BAR: COMPACT PHOTO CATEGORY PILLS */}
-          <div className="sticky top-[48px] left-0 right-0 z-20 w-full max-w-full bg-bg/95 backdrop-blur-md border-b border-border/60 mt-2">
-            <div className="w-full max-w-[1140px] mx-auto px-3 sm:px-4 py-1.5 min-w-0">
+          {/* LARGE ROUNDED-FULL CATEGORY CHIPS (selected chip dark/filled + Favorites chip when >=1 favorite exists) */}
+          <div className="sticky top-[56px] left-0 right-0 z-20 w-full max-w-full bg-bg/95 backdrop-blur-md border-b border-[#E8E8E8] dark:border-[#2E2E2E] mt-4">
+            <div className="w-full max-w-[1200px] mx-auto px-4 py-2.5 min-w-0 max-w-full">
               <div
                 role="tablist"
                 aria-label="Menu Categories"
-                className="w-full max-w-full overflow-x-auto no-scrollbar pr-4"
+                className="w-full max-w-full overflow-x-auto no-scrollbar"
               >
-                <div className="flex items-center gap-1.5 w-max">
+                <div className="flex items-center gap-2.5 min-w-0">
                   <button
                     type="button"
                     role="tab"
                     aria-selected={selectedCategory === 'ALL'}
                     onClick={() => setSelectedCategory('ALL')}
-                    className={`h-8 pl-1 pr-2.5 rounded-full border flex items-center gap-1.5 shrink-0 transition-colors cursor-pointer whitespace-nowrap ${
+                    className={`min-h-[46px] pl-2 pr-4 rounded-full border flex items-center gap-2.5 shrink-0 transition-all active:scale-[0.98] cursor-pointer whitespace-nowrap ${
                       selectedCategory === 'ALL'
-                        ? 'border-primary bg-primary text-primary-contrast font-semibold shadow-2xs'
-                        : 'border-border/80 bg-surface text-text hover:border-primary/40 font-medium'
+                        ? 'border-[#1C1C1C] bg-[#1C1C1C] text-white dark:border-white dark:bg-white dark:text-[#121212] font-extrabold shadow-sm'
+                        : 'border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface text-text hover:border-[#E23744] font-bold'
                     }`}
                   >
                     <img
                       src="/src/assets/images/hero_artisanal_feast_1793975537331.webp"
                       alt="All dishes"
-                      width={22}
-                      height={22}
+                      width={30}
+                      height={30}
                       loading="lazy"
                       decoding="async"
-                      className="w-5.5 h-5.5 rounded-full object-cover object-center shrink-0"
+                      className="w-7.5 h-7.5 rounded-full object-cover object-center shrink-0"
                     />
-                    <span className="text-[12px]">
-                      {lang === 'hi' ? 'Poora menu' : 'All dishes'}
-                    </span>
+                    <span className="text-[14px]">All Dishes</span>
                   </button>
+
+                  {/* PART C.5: Favorites Category Chip when at least one favorite exists */}
+                  {favourites.length > 0 && (
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={selectedCategory === 'FAVORITES'}
+                      onClick={() =>
+                        setSelectedCategory((prev) =>
+                          prev === 'FAVORITES' ? 'ALL' : 'FAVORITES'
+                        )
+                      }
+                      className={`min-h-[46px] px-4 rounded-full border flex items-center gap-2 shrink-0 transition-all active:scale-[0.98] cursor-pointer whitespace-nowrap ${
+                        selectedCategory === 'FAVORITES'
+                          ? 'border-[#1C1C1C] bg-[#1C1C1C] text-white dark:border-white dark:bg-white dark:text-[#121212] font-extrabold shadow-sm'
+                          : 'border-[#E23744]/40 bg-[#FFF5F3] dark:bg-[#2A1618] text-[#E23744] hover:border-[#E23744] font-bold'
+                      }`}
+                    >
+                      <Heart
+                        className="w-4 h-4 shrink-0 fill-[#E23744] text-[#E23744]"
+                      />
+                      <span className="text-[14px]">Favorites ({favourites.length})</span>
+                    </button>
+                  )}
 
                   {categories.map((cat) => {
                     const isActive = selectedCategory === cat.id;
@@ -1457,22 +2987,22 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                         role="tab"
                         aria-selected={isActive}
                         onClick={() => setSelectedCategory(cat.id)}
-                        className={`h-8 pl-1 pr-2.5 rounded-full border flex items-center gap-1.5 shrink-0 transition-colors cursor-pointer whitespace-nowrap ${
+                        className={`min-h-[46px] pl-2 pr-4 rounded-full border flex items-center gap-2.5 shrink-0 transition-all active:scale-[0.98] cursor-pointer whitespace-nowrap ${
                           isActive
-                            ? 'border-primary bg-primary text-primary-contrast font-semibold shadow-2xs'
-                            : 'border-border/80 bg-surface text-text hover:border-primary/40 font-medium'
+                            ? 'border-[#1C1C1C] bg-[#1C1C1C] text-white dark:border-white dark:bg-white dark:text-[#121212] font-extrabold shadow-sm'
+                            : 'border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface text-text hover:border-[#E23744] font-bold'
                         }`}
                       >
                         <img
                           src={optimizeAssetUrl(thumb)}
                           alt={cat.name}
-                          width={22}
-                          height={22}
+                          width={30}
+                          height={30}
                           loading="lazy"
                           decoding="async"
-                          className="w-5.5 h-5.5 rounded-full object-cover object-center shrink-0"
+                          className="w-7.5 h-7.5 rounded-full object-cover object-center shrink-0"
                         />
-                        <span className="text-[12px]">{cat.name}</span>
+                        <span className="text-[14px]">{cat.name}</span>
                       </button>
                     );
                   })}
@@ -1485,46 +3015,68 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
             ref={(el) => {
               menuSectionRef.current = el;
             }}
-            className="w-full max-w-[1140px] mx-auto px-3 sm:px-4 pt-3.5 space-y-5 min-w-0 overflow-x-hidden"
+            className="w-full max-w-[1200px] mx-auto px-4 pt-6 space-y-8 min-w-0 max-w-full overflow-x-hidden"
           >
-            {/* ADMIN-DEFINED CURATED SECTIONS */}
+            {/* ADMIN-DEFINED CURATED SECTIONS (Including Styled COMBO_OFFERS Section in Part C.3) */}
             {activeSubTab === 'home' &&
               !searchQuery &&
               selectedCategory === 'ALL' &&
               dietFilter === 'ALL' &&
-              sections.map((section) =>
-                section.items.length > 0 ? (
+              sections.map((section) => {
+                if (section.items.length === 0) return null;
+                const isComboSection = section.sectionType === 'COMBO_OFFERS';
+
+                return (
                   <section
                     key={section.id}
-                    className="w-full max-w-full min-w-0 space-y-2 overflow-hidden"
+                    aria-label={section.title}
+                    className={`w-full max-w-full min-w-0 space-y-3.5 overflow-hidden ${
+                      isComboSection
+                        ? 'rounded-3xl border border-[#1BA672]/35 bg-[#FFF5F3]/60 dark:bg-[#1C1C1C] p-4 sm:p-5'
+                        : ''
+                    }`}
                   >
-                    <div className="min-w-0">
-                      <h2 className="font-display text-[clamp(15px,2.2vw,18px)] font-bold text-text leading-snug break-words">
-                        {section.title}
-                      </h2>
-                      {section.subtitle && (
-                        <p className="text-[11px] text-muted break-words">{section.subtitle}</p>
-                      )}
+                    <div className="min-w-0 flex flex-wrap items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <h2 className="font-display text-[clamp(20px,3vw,24px)] font-extrabold text-text leading-snug break-words">
+                            {section.title}
+                          </h2>
+                          {isComboSection && (
+                            <span className="px-2.5 py-0.5 rounded-full bg-[#1BA672] text-white text-[13px] font-bold inline-flex items-center gap-1">
+                              <Sparkles className="w-3.5 h-3.5" />
+                              <span>Combo Savings</span>
+                            </span>
+                          )}
+                        </div>
+                        {section.subtitle && (
+                          <p className="text-[14px] text-muted mt-0.5 break-words">
+                            {section.subtitle}
+                          </p>
+                        )}
+                      </div>
                     </div>
 
-                    <div className="w-full max-w-full overflow-x-auto no-scrollbar snap-x pr-4 pb-1">
-                      <div className="flex gap-2.5 w-max items-stretch">
-                        {section.items.map((item) => renderMenuListRow(item, true))}
+                    <div className="w-full max-w-full overflow-x-auto no-scrollbar snap-x pb-2">
+                      <div className="flex gap-4 sm:gap-5 min-w-0 items-stretch">
+                        {section.items.map((item) =>
+                          renderMenuListRow(item, true, isComboSection)
+                        )}
                       </div>
                     </div>
                   </section>
-                ) : null
-              )}
+                );
+              })}
 
-            {/* FULL MENU GRID GROUPED BY CATEGORY (2 cols mobile, 3 cols tablet, 4 cols laptop) */}
+            {/* 6. FULL MENU GRID GROUPED BY CATEGORY (1-2 cols mobile, 3-4 cols desktop, gap 16-20px) */}
             <section
               aria-label="Full Menu by Category"
-              className="w-full max-w-full min-w-0 space-y-5"
+              className="w-full max-w-full min-w-0 space-y-8"
             >
               {filteredMenuItems.length === 0 ? (
-                <div className="rounded-xl border border-border/70 bg-surface p-6 text-center space-y-3">
-                  <p className="text-sm font-semibold text-text">
-                    Is filter me koi dish nahi mili
+                <div className="rounded-2xl border border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface p-8 text-center space-y-4">
+                  <p className="text-[16px] font-bold text-text">
+                    No dishes match the selected filters
                   </p>
                   <button
                     type="button"
@@ -1537,10 +3089,22 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                       setFilterSavedOnly(false);
                       setSearchQuery('');
                     }}
-                    className="h-8 px-4 rounded-full bg-primary text-primary-contrast text-xs font-semibold whitespace-nowrap cursor-pointer"
+                    className="min-h-[44px] px-5 rounded-full bg-[#E23744] text-white text-[14px] font-bold whitespace-nowrap cursor-pointer active:scale-[0.98] transition-transform"
                   >
-                    Sabhi filters hatayein
+                    Clear all filters
                   </button>
+                </div>
+              ) : selectedCategory === 'FAVORITES' ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-5 items-stretch min-w-0">
+                  <div className="col-span-full flex items-center justify-between gap-2 pt-2 pb-1">
+                    <h2 className="font-display text-[clamp(20px,3vw,24px)] font-extrabold text-text leading-snug break-words">
+                      Your Favorites{' '}
+                      <span className="font-body text-[15px] font-semibold text-muted tabular-nums">
+                        ({filteredMenuItems.length})
+                      </span>
+                    </h2>
+                  </div>
+                  {filteredMenuItems.map((item) => renderMenuListRow(item, false))}
                 </div>
               ) : (
                 categories.map((cat) => {
@@ -1549,12 +3113,12 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   return (
                     <div
                       key={cat.id}
-                      className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2.5 sm:gap-3.5 items-stretch min-w-0"
+                      className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-5 items-stretch min-w-0"
                     >
-                      <div className="col-span-full flex items-center justify-between gap-2 pt-1 pb-0.5">
-                        <h2 className="font-display text-[clamp(15px,2.2vw,19px)] font-bold text-text leading-snug break-words">
+                      <div className="col-span-full flex items-center justify-between gap-2 pt-2 pb-1">
+                        <h2 className="font-display text-[clamp(20px,3vw,24px)] font-extrabold text-text leading-snug break-words">
                           {cat.name}{' '}
-                          <span className="font-body text-xs font-medium text-muted tabular-nums">
+                          <span className="font-body text-[15px] font-semibold text-muted tabular-nums">
                             ({catItems.length})
                           </span>
                         </h2>
@@ -1572,62 +3136,63 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
       {/* =====================================================================
           MY RECENT ORDERS TAB + "FIND MY ORDER" GUEST LOOKUP
          ===================================================================== */}
-      {activeSubTab === 'orders' && (
-        <div className="w-full max-w-[1140px] mx-auto px-3 sm:px-4 py-4 space-y-4 min-w-0 overflow-x-hidden">
-          <div className="rounded-xl border border-border/70 bg-surface p-4 space-y-3">
+      {checkoutStep === 'store' && activeSubTab === 'orders' && (
+        <div className="w-full max-w-[1200px] mx-auto px-4 py-5 space-y-5 min-w-0 max-w-full overflow-x-hidden">
+          <div className="rounded-2xl border border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface p-5 space-y-4">
             <div>
-              <h2 className="font-display text-[clamp(16px,2.5vw,20px)] font-bold text-text break-words">
-                {lang === 'hi' ? 'Apna order khojein' : 'Find my order'}
+              <h2 className="font-display text-[20px] font-extrabold text-text break-words">
+                Find my order
               </h2>
-              <p className="text-xs text-muted break-words">
-                Order ID (jaise AAN-1042) aur 10-digit mobile number dalkar live track karein.
+              <p className="text-[14px] text-muted mt-1 break-words">
+                Enter your Order ID (e.g. AAN-1042) and 10-digit mobile number to track live.
               </p>
             </div>
             <form
               onSubmit={handleFindOrderLookup}
-              className="grid grid-cols-1 sm:grid-cols-3 gap-2.5"
+              className="grid grid-cols-1 sm:grid-cols-3 gap-3"
             >
               <input
                 type="text"
                 value={lookupOrderNo}
                 onChange={(e) => setLookupOrderNo(e.target.value.toUpperCase())}
                 placeholder="Order ID (e.g. AAN-1042)"
-                className="px-3 py-2 rounded-lg border border-border bg-bg text-xs font-mono uppercase text-text"
+                className="min-h-[48px] px-4 py-2.5 rounded-xl border border-border bg-bg text-[16px] font-mono uppercase text-text"
               />
               <input
                 type="tel"
+                inputMode="numeric"
                 maxLength={10}
                 value={lookupPhone}
                 onChange={(e) => setLookupPhone(e.target.value.replace(/\D/g, ''))}
                 placeholder="10-digit mobile number"
-                className="px-3 py-2 rounded-lg border border-border bg-bg text-xs font-mono text-text"
+                className="min-h-[48px] px-4 py-2.5 rounded-xl border border-border bg-bg text-[16px] font-mono text-text"
               />
               <button
                 type="submit"
                 disabled={lookupBusy}
-                className="min-h-[38px] px-4 rounded-lg bg-primary text-primary-contrast text-xs font-semibold cursor-pointer disabled:opacity-50"
+                className="min-h-[48px] px-5 rounded-xl bg-[#E23744] text-white text-[15px] font-bold cursor-pointer disabled:opacity-50 active:scale-[0.98] transition-transform"
               >
-                {lookupBusy ? 'Khoj rahe hain...' : 'Order khojein'}
+                {lookupBusy ? 'Searching...' : 'Find order'}
               </button>
             </form>
             {lookupError && (
-              <p className="text-xs text-red-600 font-medium break-words">{lookupError}</p>
+              <p className="text-[14px] text-[#E23744] font-semibold break-words">{lookupError}</p>
             )}
           </div>
 
-          <div className="flex items-center justify-between gap-2 min-w-0">
+          <div className="flex items-center justify-between gap-3 min-w-0">
             <div className="min-w-0 flex-1">
-              <h1 className="font-display text-[clamp(17px,2.8vw,21px)] font-bold text-text break-words">
-                Pichhle orders
+              <h1 className="font-display text-[22px] font-extrabold text-text break-words">
+                Recent orders
               </h1>
-              <p className="text-xs text-muted break-words">
-                Is phone par save kiye gaye orders · Live track ya dobara order karein
+              <p className="text-[14px] text-muted break-words">
+                Orders saved on this device · Track live or reorder in one tap
               </p>
             </div>
             <button
               type="button"
               onClick={loadRecentOrders}
-              className="h-8 px-3 rounded-full border border-border bg-surface text-xs font-semibold text-text whitespace-nowrap shrink-0 cursor-pointer"
+              className="min-h-[44px] px-4 rounded-full border border-border bg-surface text-[14px] font-bold text-text whitespace-nowrap shrink-0 cursor-pointer active:scale-[0.98] transition-transform"
             >
               Refresh
             </button>
@@ -1638,46 +3203,46 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
               {[1, 2].map((n) => (
                 <div
                   key={n}
-                  className="h-24 rounded-xl skeleton-shimmer border border-border"
+                  className="h-28 rounded-2xl skeleton-shimmer border border-border"
                 />
               ))}
             </div>
           ) : recentOrders.length === 0 ? (
-            <div className="rounded-xl border border-border/70 bg-surface p-6 text-center space-y-3">
-              <p className="text-sm font-semibold text-text">Abhi tak koi order nahi hai</p>
+            <div className="rounded-2xl border border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface p-8 text-center space-y-4">
+              <p className="text-[16px] font-bold text-text">No orders placed yet</p>
               <button
                 type="button"
                 onClick={() => setActiveSubTab('home')}
-                className="h-9 px-4 rounded-full bg-primary text-primary-contrast text-xs font-semibold whitespace-nowrap cursor-pointer"
+                className="min-h-[44px] px-5 rounded-full bg-[#E23744] text-white text-[14px] font-bold whitespace-nowrap cursor-pointer active:scale-[0.98]"
               >
-                Menu dekhein
+                Browse menu
               </button>
             </div>
           ) : (
-            <div className="space-y-3 min-w-0">
+            <div className="space-y-4 min-w-0">
               {recentOrders.map((ord) => (
                 <div
                   key={ord.id}
-                  className="rounded-xl border border-border/70 bg-surface p-3.5 space-y-3 min-w-0 overflow-hidden"
+                  className="rounded-2xl border border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface p-4 sm:p-5 space-y-3.5 min-w-0 overflow-hidden"
                 >
-                  <div className="flex items-start justify-between gap-2 min-w-0">
+                  <div className="flex items-start justify-between gap-3 min-w-0">
                     <div className="min-w-0 flex-1">
-                      <p className="text-xs text-muted tabular-nums break-words">
-                        {ord.orderNumber} · <strong className="text-primary">{ord.status}</strong> · OTP: {ord.deliveryOtp}
+                      <p className="text-[14px] text-muted tabular-nums break-words">
+                        {ord.orderNumber} · <strong className="text-[#E23744]">{ord.status}</strong> · OTP: {ord.deliveryOtp}
                       </p>
-                      <p className="mt-1 text-sm font-semibold text-text line-clamp-2 break-words">
+                      <p className="mt-1 text-[16px] font-bold text-text line-clamp-2 break-words">
                         {ord.items.map((i) => `${i.quantity}x ${i.itemName}`).join(', ')}
                       </p>
-                      <p className="mt-0.5 text-xs text-muted break-words line-clamp-2">
+                      <p className="mt-1 text-[14px] text-muted break-words line-clamp-2">
                         {ord.deliveryAddress}
                       </p>
                     </div>
-                    <span className="text-[15px] font-bold tabular-nums text-text shrink-0">
+                    <span className="text-[18px] font-extrabold tabular-nums text-text shrink-0">
                       ₹{ord.grandTotal}
                     </span>
                   </div>
 
-                  <div className="flex items-center gap-2 pt-2 border-t border-border/60">
+                  <div className="flex items-center gap-3 pt-3 border-t border-border">
                     <button
                       type="button"
                       onClick={() => {
@@ -1685,16 +3250,16 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                           onReorder(ord, homeData.allMenuItems);
                         }
                       }}
-                      className="flex-1 h-9 px-3 rounded-lg border border-border bg-bg text-xs font-semibold text-text whitespace-nowrap cursor-pointer"
+                      className="flex-1 min-h-[44px] px-4 rounded-xl border border-border bg-bg text-[14px] font-bold text-text whitespace-nowrap cursor-pointer active:scale-[0.98]"
                     >
-                      Dobara mangayein
+                      Order again
                     </button>
                     <button
                       type="button"
                       onClick={() => onOpenTracking(ord.trackingToken)}
-                      className="flex-1 h-9 px-3 rounded-lg bg-primary text-primary-contrast text-xs font-semibold whitespace-nowrap cursor-pointer"
+                      className="flex-1 min-h-[44px] px-4 rounded-xl bg-[#E23744] text-white text-[14px] font-bold whitespace-nowrap cursor-pointer active:scale-[0.98]"
                     >
-                      Live track karein
+                      Track live
                     </button>
                   </div>
                 </div>
@@ -1704,71 +3269,107 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
         </div>
       )}
 
-      {/* FOOTER */}
-      <footer className="w-full max-w-[1140px] mx-auto mt-8 px-3 sm:px-4 pt-5 border-t border-border/60 text-xs text-muted space-y-2 min-w-0 overflow-x-hidden">
-        <div className="min-w-0 space-y-0.5">
-          <p className="font-display font-semibold text-text break-words">
-            {settings.shopName}
-          </p>
-          <p className="break-words">{deliveryZone.shopAddress}</p>
-          <p className="tabular-nums text-muted break-words">
-            FSSAI Lic No. {settings.fssaiNumber} · GST {settings.gstPercent}% · Timings: {settings.weeklyTimings}
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-4 pt-1">
-          <button
-            type="button"
-            onClick={() => setActivePolicyModal('privacy')}
-            className="underline hover:text-text cursor-pointer whitespace-nowrap"
-          >
-            Privacy Policy
-          </button>
-          <button
-            type="button"
-            onClick={() => setActivePolicyModal('terms')}
-            className="underline hover:text-text cursor-pointer whitespace-nowrap"
-          >
-            Terms of Service
-          </button>
-          <button
-            type="button"
-            onClick={() => setActivePolicyModal('refund')}
-            className="underline hover:text-text cursor-pointer whitespace-nowrap"
-          >
-            Refund Policy
-          </button>
-        </div>
-      </footer>
-
       {/* =====================================================================
-          SLIM, STYLISH FLOATING CART PILL BAR (40px tall capsule, single line)
+          8. SIMPLE FOOTER: Privacy, Terms, Help, FSSAI number + Green "Order on WhatsApp" button
          ===================================================================== */}
-      {totalCartItems > 0 && !cartDrawerOpen && (
-        <div className="fixed bottom-[56px] md:bottom-5 left-0 right-0 w-full max-w-full z-30 px-3 pointer-events-none animate-cart-bar">
-          <div className="w-full max-w-[350px] sm:max-w-[390px] mx-auto pointer-events-auto">
+      {checkoutStep === 'store' && (
+        <footer className="w-full max-w-[1200px] mx-auto mt-12 px-4 pt-8 pb-6 border-t border-[#E8E8E8] dark:border-[#2E2E2E] text-[14px] text-muted space-y-5 min-w-0 max-w-full overflow-x-hidden">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="min-w-0 space-y-1">
+              <p className="font-display text-[18px] font-extrabold text-text break-words">
+                {settings.shopName}
+              </p>
+              <p className="text-[14px] text-muted break-words">{deliveryZone.shopAddress}</p>
+              <p className="text-[13px] font-semibold tabular-nums text-muted break-words">
+                FSSAI Lic No. {settings.fssaiNumber} · GST {settings.gstPercent}%
+              </p>
+            </div>
+
+            {/* Green WhatsApp Order Button */}
+            <a
+              href={whatsappHref}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="min-h-[48px] px-5 rounded-2xl bg-[#1BA672] hover:bg-[#158f61] text-white text-[15px] font-extrabold inline-flex items-center justify-center gap-2.5 shadow-sm whitespace-nowrap shrink-0 transition-all active:scale-[0.98]"
+            >
+              <MessageCircle className="w-5 h-5 fill-white/20 shrink-0" />
+              <span>Order on WhatsApp</span>
+            </a>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-[#E8E8E8]/60 dark:border-[#2E2E2E]">
             <button
               type="button"
-              onClick={() => setCartDrawerOpen(true)}
-              className="w-full h-10 pl-1.5 pr-3.5 rounded-full bg-stone-900 dark:bg-primary text-white shadow-[0_8px_22px_-4px_rgba(0,0,0,0.32)] ring-1 ring-white/15 flex items-center justify-between gap-2 cursor-pointer transition-transform active:scale-98"
+              onClick={() => setActivePolicyModal('privacy')}
+              className="min-h-[44px] px-3 rounded-xl hover:bg-[#FFF5F3] dark:hover:bg-white/5 text-[14px] font-semibold text-text cursor-pointer whitespace-nowrap"
+            >
+              Privacy
+            </button>
+            <span aria-hidden="true" className="text-muted">
+              ·
+            </span>
+            <button
+              type="button"
+              onClick={() => setActivePolicyModal('terms')}
+              className="min-h-[44px] px-3 rounded-xl hover:bg-[#FFF5F3] dark:hover:bg-white/5 text-[14px] font-semibold text-text cursor-pointer whitespace-nowrap"
+            >
+              Terms
+            </button>
+            <span aria-hidden="true" className="text-muted">
+              ·
+            </span>
+            <button
+              type="button"
+              onClick={() => setActivePolicyModal('refund')}
+              className="min-h-[44px] px-3 rounded-xl hover:bg-[#FFF5F3] dark:hover:bg-white/5 text-[14px] font-semibold text-text cursor-pointer whitespace-nowrap"
+            >
+              Help
+            </button>
+            <span aria-hidden="true" className="text-muted">
+              ·
+            </span>
+            <span className="text-[13px] font-medium text-muted tabular-nums px-2">
+              FSSAI: {settings.fssaiNumber}
+            </span>
+          </div>
+        </footer>
+      )}
+
+      {/* =====================================================================
+          7. GREEN STICKY CART BAR ("2 items · ₹658 | View cart →", safe-area-inset-bottom)
+         ===================================================================== */}
+      {totalCartItems > 0 && checkoutStep === 'store' && (
+        <div
+          style={{
+            paddingBottom: 'env(safe-area-inset-bottom, 0px)',
+          }}
+          className="fixed bottom-[56px] md:bottom-5 left-0 right-0 w-full max-w-full z-30 px-4 pointer-events-none animate-cart-bar"
+        >
+          <div className="w-full max-w-[540px] mx-auto pointer-events-auto">
+            <button
+              type="button"
+              onClick={() => navigateFlowStep('cart')}
+              className="w-full min-h-[56px] px-4 sm:px-5 rounded-2xl bg-[#1BA672] hover:bg-[#158f61] text-white shadow-[0_12px_28px_-6px_rgba(27,166,114,0.55)] flex items-center justify-between gap-2 cursor-pointer transition-all active:scale-[0.98]"
             >
               <div className="flex items-center gap-2 min-w-0">
-                <span className="h-7 px-2.5 rounded-full bg-primary dark:bg-black/25 text-white text-[11px] font-bold inline-flex items-center justify-center tabular-nums shrink-0">
-                  {totalCartItems} {totalCartItems === 1 ? 'item' : 'items'}
-                </span>
-                <span className="text-[13px] font-bold tabular-nums text-white shrink-0">
-                  ₹{totalCartAmount}
+                <span className="text-[15px] sm:text-[16px] font-extrabold tabular-nums text-white whitespace-nowrap">
+                  {totalCartItems} {totalCartItems === 1 ? 'item' : 'items'} · ₹{totalCartAmount}
                 </span>
                 {billPreview && billPreview.withinZone && (
-                  <span className="text-[10px] text-white/75 truncate hidden sm:inline">
-                    · +₹{billPreview.deliveryFee} del
+                  <span className="text-[13px] font-semibold text-white/90 truncate hidden sm:inline">
+                    (+₹{billPreview.deliveryFee} delivery)
                   </span>
                 )}
               </div>
 
-              <span className="text-[12px] font-semibold text-white whitespace-nowrap shrink-0 inline-flex items-center gap-0.5">
-                <span>{lang === 'hi' ? 'Cart dekhein' : 'View cart'}</span>
-                <ChevronRight className="w-3.5 h-3.5" />
-              </span>
+              <div className="flex items-center gap-2.5 shrink-0">
+                <span aria-hidden="true" className="text-white/50 font-light text-[18px]">
+                  |
+                </span>
+                <span className="text-[15px] sm:text-[16px] font-extrabold text-white whitespace-nowrap inline-flex items-center gap-1">
+                  <span>View cart →</span>
+                </span>
+              </div>
             </button>
           </div>
         </div>
@@ -1784,27 +3385,28 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className="w-full max-w-md rounded-t-2xl sm:rounded-2xl bg-surface text-text border border-border p-4 space-y-3 pb-safe animate-sheet-up"
+            className="w-full max-w-md rounded-t-3xl sm:rounded-3xl bg-surface text-text border border-border p-5 space-y-4 pb-safe overflow-x-hidden animate-sheet-up"
           >
             <div className="w-10 h-1 bg-border rounded-full mx-auto sm:hidden" />
             <div className="flex items-center justify-between">
-              <h3 className="font-display text-base font-bold text-text">
-                Menu sort karein
+              <h3 className="font-display text-[18px] font-extrabold text-text">
+                Sort menu
               </h3>
               <button
                 type="button"
                 onClick={() => setSortSheetOpen(false)}
-                className="p-1.5 text-muted hover:text-text cursor-pointer"
+                aria-label="Close sort options"
+                className="w-11 h-11 flex items-center justify-center text-muted hover:text-text cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
-            <div className="space-y-1.5">
+            <div className="space-y-2">
               {(
                 [
-                  { id: 'POPULAR', label: 'Sabse pasandida (Popularity)' },
-                  { id: 'PRICE_ASC', label: 'Keemat: Kam se zyada (Low to High)' },
-                  { id: 'PRICE_DESC', label: 'Keemat: Zyada se kam (High to Low)' },
+                  { id: 'POPULAR', label: 'Most Popular' },
+                  { id: 'PRICE_ASC', label: 'Price: Low to High' },
+                  { id: 'PRICE_DESC', label: 'Price: High to Low' },
                 ] as const
               ).map((opt) => (
                 <button
@@ -1814,14 +3416,14 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                     setSortBy(opt.id);
                     setSortSheetOpen(false);
                   }}
-                  className={`w-full min-h-[42px] px-3.5 rounded-xl border text-left text-xs sm:text-sm font-medium flex items-center justify-between cursor-pointer ${
+                  className={`w-full min-h-[48px] px-4 rounded-2xl border text-left text-[15px] font-semibold flex items-center justify-between cursor-pointer ${
                     sortBy === opt.id
-                      ? 'border-primary bg-primary/10 text-primary font-semibold'
+                      ? 'border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/15 text-[#E23744] font-bold'
                       : 'border-border bg-bg text-text'
                   }`}
                 >
                   <span className="break-words">{opt.label}</span>
-                  {sortBy === opt.id && <Check className="w-4 h-4 text-primary shrink-0" />}
+                  {sortBy === opt.id && <Check className="w-5 h-5 text-[#E23744] shrink-0" />}
                 </button>
               ))}
             </div>
@@ -1830,38 +3432,39 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
       )}
 
       {/* =====================================================================
-          BOTTOM SHEET 1: DELIVERY ADDRESS & MAP PIN SELECTOR
+          BOTTOM SHEET 1: DELIVERY ADDRESS & MAP PIN SELECTOR (From Top Header Chip)
          ===================================================================== */}
       {addressSheetOpen && (
         <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-xs">
-          <div className="w-full max-w-lg max-h-[90dvh] rounded-t-2xl sm:rounded-2xl bg-surface text-text border border-border flex flex-col overflow-hidden pb-safe animate-sheet-up">
+          <div className="w-full max-w-lg max-h-[90dvh] rounded-t-3xl sm:rounded-3xl bg-surface text-text border border-border flex flex-col overflow-hidden overflow-x-hidden pb-safe animate-sheet-up">
             <div className="w-10 h-1 bg-border rounded-full mx-auto mt-3 sm:hidden" />
-            <div className="px-4 py-3 border-b border-border flex items-center justify-between gap-2">
-              <h3 className="font-display text-base font-bold text-text break-words">
-                Delivery pata chunein
+            <div className="px-5 py-3.5 border-b border-border flex items-center justify-between gap-2">
+              <h3 className="font-display text-[18px] font-extrabold text-text break-words">
+                Select delivery address
               </h3>
               <button
                 type="button"
                 onClick={() => setAddressSheetOpen(false)}
-                className="p-1.5 rounded-full text-muted hover:text-text shrink-0 cursor-pointer"
+                aria-label="Close address selector"
+                className="w-11 h-11 rounded-full flex items-center justify-center text-muted hover:text-text shrink-0 cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <div className="p-4 overflow-y-auto space-y-4 text-xs">
+            <div className="p-5 overflow-y-auto space-y-4 text-[14px]">
               <button
                 type="button"
                 onClick={handleUseCurrentGps}
-                className="w-full min-h-[40px] px-4 rounded-xl border border-primary/40 bg-primary/10 text-text font-semibold text-xs sm:text-sm flex items-center justify-center gap-2 whitespace-nowrap cursor-pointer"
+                className="w-full min-h-[48px] px-4 rounded-2xl border border-[#E23744]/40 bg-[#FFF5F3] dark:bg-[#E23744]/15 text-[#E23744] font-bold text-[15px] flex items-center justify-center gap-2 whitespace-nowrap cursor-pointer active:scale-[0.98]"
               >
-                <Compass className="w-4 h-4 text-primary shrink-0" />
-                <span>Mera current GPS location lein</span>
+                <Compass className="w-5 h-5 text-[#E23744] shrink-0" />
+                <span>Use my current GPS location</span>
               </button>
 
               <div className="space-y-2">
-                <label className="block font-semibold text-text">
-                  Nearby area chunein (Delivery radius check)
+                <label className="block font-bold text-text text-[14px]">
+                  Select a nearby area (Delivery radius check)
                 </label>
                 <div className="space-y-2">
                   {LOCATION_PRESETS.map((p, idx) => (
@@ -1874,81 +3477,52 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                         setGuestLng(p.lng);
                         setLocationPinned(true);
                       }}
-                      className={`w-full p-2.5 rounded-xl border text-left transition-colors cursor-pointer ${
+                      className={`w-full p-3.5 rounded-2xl border text-left transition-colors cursor-pointer ${
                         locationPinned && guestLat === p.lat && guestLng === p.lng
-                          ? 'border-primary bg-primary/10 font-semibold'
-                          : 'border-border bg-bg hover:border-primary/50'
+                          ? 'border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/15 font-bold'
+                          : 'border-border bg-bg hover:border-[#E23744]/50'
                       }`}
                     >
-                      <p className="text-text break-words">{p.label}</p>
-                      <p className="text-muted break-words mt-0.5">{p.address}</p>
+                      <p className="text-[15px] text-text break-words">{p.label}</p>
+                      <p className="text-[13px] text-muted break-words mt-0.5">{p.address}</p>
                     </button>
                   ))}
                 </div>
               </div>
 
               <div>
-                <label className="block font-semibold text-text mb-1">
-                  Poora flat / building / gali ka pata
+                <label className="block font-bold text-text text-[14px] mb-1.5">
+                  Complete flat / building / street address
                 </label>
                 <textarea
                   rows={2}
                   value={guestAddress}
                   onChange={(e) => setGuestAddress(e.target.value)}
-                  placeholder="Flat no., building name, street & landmark likhein"
-                  className="w-full p-2.5 rounded-xl border border-border bg-bg text-xs sm:text-sm text-text focus:outline-none focus:border-primary"
+                  placeholder="Enter flat no., building name, street & landmark"
+                  className="w-full p-3 rounded-2xl border border-border bg-bg text-[16px] text-text focus:outline-none focus:border-[#E23744]"
                 />
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-muted mb-1">Latitude</label>
-                  <input
-                    type="number"
-                    step="0.0001"
-                    value={guestLat || ''}
-                    onChange={(e) => {
-                      setGuestLat(Number(e.target.value));
-                      setLocationPinned(true);
-                    }}
-                    className="w-full px-3 py-2 rounded-xl border border-border bg-bg tabular-nums text-text"
-                  />
-                </div>
-                <div>
-                  <label className="block text-muted mb-1">Longitude</label>
-                  <input
-                    type="number"
-                    step="0.0001"
-                    value={guestLng || ''}
-                    onChange={(e) => {
-                      setGuestLng(Number(e.target.value));
-                      setLocationPinned(true);
-                    }}
-                    className="w-full px-3 py-2 rounded-xl border border-border bg-bg tabular-nums text-text"
-                  />
-                </div>
               </div>
 
               {liveAddressDistance.pinned && (
                 <div
-                  className={`p-3 rounded-xl border ${
+                  className={`p-3.5 rounded-2xl border text-[14px] ${
                     liveAddressDistance.within
-                      ? 'border-emerald-500/30 bg-emerald-500/10 text-text'
-                      : 'border-red-500/40 bg-red-500/10 text-red-600 font-medium'
+                      ? 'border-[#1BA672]/40 bg-[#1BA672]/10 text-text font-semibold'
+                      : 'border-[#E23744]/40 bg-[#E23744]/10 text-[#E23744] font-bold'
                   }`}
                 >
                   {liveAddressDistance.within
-                    ? `✓ Yahan delivery uplabdh hai (${liveAddressDistance.km} km · max ${deliveryZone.radiusKm} km)`
-                    : `✕ Ye area delivery zone se bahar hai (${liveAddressDistance.km} km · max ${deliveryZone.radiusKm} km)`}
+                    ? `✓ Delivery available here (${liveAddressDistance.km} km · max ${deliveryZone.radiusKm} km)`
+                    : `✕ Outside delivery area (${liveAddressDistance.km} km · max ${deliveryZone.radiusKm} km)`}
                 </div>
               )}
 
               <button
                 type="button"
                 onClick={() => setAddressSheetOpen(false)}
-                className="w-full min-h-[42px] rounded-full bg-primary text-primary-contrast text-xs sm:text-sm font-semibold whitespace-nowrap cursor-pointer"
+                className="w-full min-h-[48px] rounded-2xl bg-[#E23744] text-white text-[16px] font-extrabold whitespace-nowrap cursor-pointer active:scale-[0.98]"
               >
-                Pata save karein
+                Save address
               </button>
             </div>
           </div>
@@ -1956,23 +3530,23 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
       )}
 
       {/* =====================================================================
-          BOTTOM SHEET 2: DISH CUSTOMIZATION & DETAIL SHEET
+          BOTTOM SHEET 2: DISH CUSTOMIZATION & DETAIL SHEET (PART A BUG 2 FIX)
          ===================================================================== */}
       {customizingItem && (
         <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-xs">
-          <div className="w-full max-w-lg max-h-[90dvh] rounded-t-2xl sm:rounded-2xl bg-surface text-text border border-border flex flex-col overflow-hidden pb-safe animate-sheet-up">
-            <div className="w-10 h-1 bg-border rounded-full mx-auto mt-3 sm:hidden" />
-            <div className="p-4 border-b border-border flex items-start justify-between gap-3">
+          <div className="w-full max-w-lg max-h-[90dvh] rounded-t-3xl sm:rounded-3xl bg-surface text-text border border-border flex flex-col overflow-hidden overflow-x-hidden box-border animate-sheet-up">
+            <div className="w-10 h-1 bg-border rounded-full mx-auto mt-3 sm:hidden shrink-0" />
+            <div className="p-4 sm:p-5 border-b border-border flex items-start justify-between gap-3 min-w-0 max-w-full">
               <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-1.5 text-xs text-muted">
+                <div className="flex items-center gap-2 text-[13px] font-semibold text-muted">
                   {renderDietMark(customizingItem.isVeg)}
-                  <span>Ready in {customizingItem.prepTimeMins} min</span>
+                  <span>Ready in {customizingItem.prepTimeMins} mins</span>
                 </div>
-                <h3 className="mt-1 font-display text-base font-bold text-text leading-snug break-words">
+                <h3 className="mt-1.5 font-display text-[18px] sm:text-[20px] font-extrabold text-text leading-snug break-words whitespace-normal">
                   {customizingItem.name}
                 </h3>
                 {customizingItem.description && (
-                  <p className="mt-1 text-xs text-muted leading-relaxed break-words">
+                  <p className="mt-1 text-[14px] text-muted leading-relaxed break-words">
                     {customizingItem.description}
                   </p>
                 )}
@@ -1980,41 +3554,42 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
               <button
                 type="button"
                 onClick={() => setCustomizingItem(null)}
-                className="p-1.5 rounded-full text-muted hover:text-text shrink-0 cursor-pointer"
+                aria-label="Close customization sheet"
+                className="w-10 h-10 rounded-full flex items-center justify-center text-muted hover:text-text shrink-0 cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <div className="p-4 overflow-y-auto space-y-5 flex-1">
+            <div className="p-4 sm:p-5 overflow-y-auto overflow-x-hidden space-y-5 flex-1 min-w-0 max-w-full">
               {customizingItem.variants.length > 0 && (
-                <div>
-                  <h4 className="text-xs font-semibold text-text mb-2">
-                    Handi / portion size chunein (Zaroori)
+                <div className="min-w-0 max-w-full">
+                  <h4 className="text-[14px] font-bold text-text mb-2.5">
+                    Choose portion size (Required)
                   </h4>
-                  <div className="space-y-2">
+                  <div className="space-y-2.5">
                     {customizingItem.variants.map((v) => (
                       <label
                         key={v.id}
-                        className={`flex items-center justify-between gap-2 p-3 rounded-xl border cursor-pointer ${
+                        className={`flex items-center justify-between gap-2 p-3.5 rounded-2xl border cursor-pointer min-w-0 max-w-full ${
                           selectedVariantId === v.id
-                            ? 'border-primary bg-primary/10'
+                            ? 'border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/15'
                             : 'border-border bg-bg'
                         }`}
                       >
-                        <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                        <div className="flex items-center gap-3 min-w-0 flex-1">
                           <input
                             type="radio"
                             name="dish-variant"
                             checked={selectedVariantId === v.id}
                             onChange={() => setSelectedVariantId(v.id)}
-                            className="accent-primary shrink-0"
+                            className="accent-[#E23744] w-4 h-4 shrink-0"
                           />
-                          <span className="text-sm font-medium text-text break-words">
+                          <span className="text-[15px] font-semibold text-text break-words min-w-0">
                             {v.name}
                           </span>
                         </div>
-                        <span className="text-sm font-semibold tabular-nums text-text shrink-0">
+                        <span className="text-[16px] font-bold tabular-nums text-text shrink-0 whitespace-nowrap">
                           ₹{v.price}
                         </span>
                       </label>
@@ -2024,21 +3599,23 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
               )}
 
               {customizingItem.addons.length > 0 && (
-                <div>
-                  <h4 className="text-xs font-semibold text-text mb-2">
-                    Saath me kuch aur jodein (Optional)
+                <div className="min-w-0 max-w-full">
+                  <h4 className="text-[14px] font-bold text-text mb-2.5">
+                    Add extras (Optional)
                   </h4>
-                  <div className="space-y-2">
+                  <div className="space-y-2.5">
                     {customizingItem.addons.map((addon) => {
                       const checked = selectedAddonIds.includes(addon.id);
                       return (
                         <label
                           key={addon.id}
-                          className={`flex items-center justify-between gap-2 p-3 rounded-xl border cursor-pointer ${
-                            checked ? 'border-primary bg-primary/10' : 'border-border bg-bg'
+                          className={`flex items-center justify-between gap-2 p-3.5 rounded-2xl border cursor-pointer min-w-0 max-w-full ${
+                            checked
+                              ? 'border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/15'
+                              : 'border-border bg-bg'
                           }`}
                         >
-                          <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                          <div className="flex items-center gap-3 min-w-0 flex-1">
                             <input
                               type="checkbox"
                               checked={checked}
@@ -2049,11 +3626,13 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                                     : [...prev, addon.id]
                                 )
                               }
-                              className="accent-primary shrink-0"
+                              className="accent-[#E23744] w-4 h-4 shrink-0"
                             />
-                            <span className="text-sm text-text break-words">{addon.name}</span>
+                            <span className="text-[15px] font-medium text-text break-words min-w-0">
+                              {addon.name}
+                            </span>
                           </div>
-                          <span className="text-sm tabular-nums text-muted shrink-0">
+                          <span className="text-[15px] font-semibold tabular-nums text-muted shrink-0 whitespace-nowrap">
                             +₹{addon.price}
                           </span>
                         </label>
@@ -2063,520 +3642,58 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                 </div>
               )}
 
-              <div>
-                <label className="block text-xs font-semibold text-text mb-1.5">
-                  Chef ke liye khaas nirdesh (Optional)
+              <div className="min-w-0 max-w-full">
+                <label className="block text-[14px] font-bold text-text mb-1.5">
+                  Special cooking instructions (Optional)
                 </label>
                 <input
                   type="text"
                   maxLength={120}
                   value={customItemNote}
                   onChange={(e) => setCustomItemNote(e.target.value)}
-                  placeholder="Jaise: kam mirch, bina pyaz, raita alag se..."
-                  className="w-full px-3 py-2.5 rounded-xl border border-border bg-bg text-xs text-text"
+                  placeholder="Add a note (e.g. less spicy, Jain preparation)"
+                  className="w-full max-w-full min-h-[48px] px-3.5 py-2.5 rounded-2xl border border-border bg-bg text-[16px] text-text box-border"
                 />
               </div>
             </div>
 
-            <div className="p-4 border-t border-border bg-bg flex items-center gap-3">
-              <div className="flex items-center border border-border rounded-full bg-surface h-10 shrink-0">
+            {/* PART A BUG 2 FIX: Overflow-free bottom bar with 112px stepper (40x40 buttons) & responsive "Add to cart · ₹XXX" / "Add · ₹XXX" CTA */}
+            <div className="flex items-center gap-3 px-4 pt-3 pb-[max(12px,env(safe-area-inset-bottom))] w-full box-border overflow-hidden border-t border-border bg-bg shrink-0">
+              <div className="w-[112px] h-10 shrink-0 flex items-center justify-between border border-border rounded-xl bg-surface">
                 <button
                   type="button"
+                  aria-label="Decrease quantity"
                   onClick={() => setCustomQty((q) => Math.max(1, q - 1))}
-                  className="px-3 h-10 text-text cursor-pointer"
+                  className="w-10 h-10 flex items-center justify-center text-text cursor-pointer shrink-0"
                 >
-                  <Minus className="w-3.5 h-3.5" />
+                  <Minus className="w-4 h-4" />
                 </button>
-                <span className="px-2 text-sm font-semibold tabular-nums">
+                <span className="text-[15px] font-extrabold tabular-nums">
                   {customQty}
                 </span>
                 <button
                   type="button"
+                  aria-label="Increase quantity"
                   onClick={() => setCustomQty((q) => q + 1)}
-                  className="px-3 h-10 text-text cursor-pointer"
+                  className="w-10 h-10 flex items-center justify-center text-text cursor-pointer shrink-0"
                 >
-                  <Plus className="w-3.5 h-3.5" />
+                  <Plus className="w-4 h-4" />
                 </button>
               </div>
 
               <button
                 type="button"
                 onClick={confirmAddToCart}
-                className="flex-1 h-10 px-4 rounded-full bg-primary text-primary-contrast text-sm font-semibold whitespace-nowrap flex items-center justify-center cursor-pointer"
+                className="flex-1 min-w-0 h-11 px-3 rounded-xl bg-[#E23744] hover:bg-[#c82d39] text-white text-[15px] font-bold whitespace-nowrap flex items-center justify-center cursor-pointer active:scale-[0.98] transition-transform"
               >
-                Cart me jodein · ₹
-                {((customizingItem.variants.find((v) => v.id === selectedVariantId)?.price ||
-                  customizingItem.basePrice) +
-                  customizingItem.addons
-                    .filter((a) => selectedAddonIds.includes(a.id))
-                    .reduce((s, a) => s + a.price, 0)) *
-                  customQty}
+                <span className="hidden min-[380px]:inline">
+                  Add to cart · ₹{customModalTotal}
+                </span>
+                <span className="inline min-[380px]:hidden">
+                  Add · ₹{customModalTotal}
+                </span>
               </button>
             </div>
-          </div>
-        </div>
-      )}
-
-      {/* =====================================================================
-          BOTTOM SHEET 3: SINGLE-PAGE CART & GUEST CHECKOUT SHEET
-         ===================================================================== */}
-      {cartDrawerOpen && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-xs">
-          <div className="w-full max-w-xl max-h-[92dvh] rounded-t-2xl sm:rounded-2xl bg-surface text-text border border-border flex flex-col shadow-2xl overflow-hidden pb-safe animate-sheet-up">
-            <div className="w-10 h-1 bg-border rounded-full mx-auto mt-2.5 sm:hidden shrink-0" />
-            <div className="px-4 py-3 border-b border-border flex items-center justify-between gap-2 shrink-0">
-              <div className="flex items-center gap-2 min-w-0 flex-1">
-                <ShoppingBag className="w-4 h-4 text-primary shrink-0" />
-                <h2 className="font-display text-base font-bold text-text break-words">
-                  Aapka Cart ({totalCartItems})
-                </h2>
-              </div>
-              <button
-                type="button"
-                onClick={() => setCartDrawerOpen(false)}
-                className="p-1.5 rounded-full text-muted hover:text-text shrink-0 cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            {cart.length === 0 ? (
-              <div className="flex-1 p-10 flex flex-col items-center justify-center text-center">
-                <ShoppingBag className="w-10 h-10 text-muted mb-3" />
-                <p className="font-display text-base font-semibold text-text">
-                  Aapka cart abhi khali hai
-                </p>
-                <p className="mt-1 text-xs text-muted max-w-xs">
-                  Menu se apni pasand ki biryani ya kebab jodein.
-                </p>
-              </div>
-            ) : (
-              <form
-                onSubmit={handlePlaceOrder}
-                className="flex-1 flex flex-col overflow-hidden"
-              >
-                <div className="flex-1 overflow-y-auto p-4 space-y-4">
-                  {/* 1. Cart Items + Per-Item Note */}
-                  <div className="divide-y divide-border rounded-xl border border-border bg-bg/50 px-3">
-                    {cart.map((item) => (
-                      <div key={item.cartLineId} className="py-3 space-y-2">
-                        <div className="flex items-start justify-between gap-2.5">
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-start gap-1.5 min-w-0">
-                              <span className="mt-0.5 shrink-0">{renderDietMark(item.isVeg)}</span>
-                              <p className="text-[14px] font-semibold text-text line-clamp-2 break-words">
-                                {item.name}
-                              </p>
-                            </div>
-                            {(item.variantName || item.selectedAddons.length > 0) && (
-                              <p className="text-xs text-muted break-words mt-0.5">
-                                {item.variantName}
-                                {item.selectedAddons.length > 0 &&
-                                  ` · +${item.selectedAddons.map((a) => a.name).join(', ')}`}
-                              </p>
-                            )}
-                            <p className="text-xs tabular-nums text-text mt-0.5">
-                              ₹{item.unitPrice}
-                            </p>
-                          </div>
-
-                          <div className="flex items-center gap-2 shrink-0">
-                            <div className="flex items-center border border-border rounded-lg bg-surface">
-                              <button
-                                type="button"
-                                onClick={() => updateCartQty(item.cartLineId, -1)}
-                                className="p-1.5 text-text cursor-pointer"
-                              >
-                                <Minus className="w-3.5 h-3.5" />
-                              </button>
-                              <span className="px-2 text-xs font-bold tabular-nums">
-                                {item.quantity}
-                              </span>
-                              <button
-                                type="button"
-                                onClick={() => updateCartQty(item.cartLineId, 1)}
-                                className="p-1.5 text-text cursor-pointer"
-                              >
-                                <Plus className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
-                            <span className="min-w-[48px] text-right text-[14px] font-bold tabular-nums text-text">
-                              ₹{item.unitPrice * item.quantity}
-                            </span>
-                          </div>
-                        </div>
-
-                        <input
-                          type="text"
-                          maxLength={120}
-                          value={item.itemNote || ''}
-                          onChange={(e) => updateCartItemNote(item.cartLineId, e.target.value)}
-                          placeholder="Dish note (e.g. kam mirch, Jain prep)..."
-                          className="w-full px-2.5 py-1.5 rounded-lg border border-border bg-surface text-[11px] text-text"
-                        />
-                      </div>
-                    ))}
-                  </div>
-
-                  {/* 2. Delivery Address & Distance */}
-                  <div className="rounded-xl border border-border p-3.5 space-y-3">
-                    <div className="flex items-center justify-between gap-2">
-                      <h3 className="text-xs font-semibold text-text break-words">
-                        Delivery pata aur naam
-                      </h3>
-                      <button
-                        type="button"
-                        onClick={() => setAddressSheetOpen(true)}
-                        className="text-xs font-semibold text-primary underline whitespace-nowrap shrink-0 cursor-pointer"
-                      >
-                        {locationPinned ? 'Map pin badlein' : 'GPS / Map pin chunein *'}
-                      </button>
-                    </div>
-
-                    {!locationPinned && (
-                      <div className="rounded-xl border border-primary/40 bg-primary/10 p-3 flex items-center justify-between gap-2">
-                        <span className="text-xs font-medium text-text">
-                          Distance aur delivery fee ke liye location chunein
-                        </span>
-                        <button
-                          type="button"
-                          onClick={handleUseCurrentGps}
-                          className="px-3 py-1.5 rounded-full bg-primary text-primary-contrast text-xs font-semibold shrink-0 cursor-pointer"
-                        >
-                          GPS lein
-                        </button>
-                      </div>
-                    )}
-
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                      <input
-                        type="text"
-                        required
-                        value={guestName}
-                        onChange={(e) => setGuestName(e.target.value)}
-                        placeholder="Aapka poora naam *"
-                        className="w-full px-3 py-2 rounded-lg border border-border bg-bg text-xs sm:text-sm text-text"
-                      />
-                      <input
-                        type="tel"
-                        required
-                        maxLength={10}
-                        value={guestPhone}
-                        onChange={(e) => setGuestPhone(e.target.value.replace(/\D/g, ''))}
-                        placeholder="10-digit mobile number *"
-                        className="w-full px-3 py-2 rounded-lg border border-border bg-bg text-xs sm:text-sm tabular-nums text-text"
-                      />
-                    </div>
-
-                    <textarea
-                      rows={2}
-                      required
-                      value={guestAddress}
-                      onChange={(e) => setGuestAddress(e.target.value)}
-                      placeholder="Flat / Building / Street Address *"
-                      className="w-full px-3 py-2 rounded-lg border border-border bg-bg text-xs sm:text-sm text-text"
-                    />
-
-                    {billPreview && (
-                      <div
-                        className={`rounded-lg p-2.5 text-xs border ${
-                          billPreview.withinZone
-                            ? 'border-emerald-500/30 bg-emerald-500/10 text-text'
-                            : 'border-red-500/40 bg-red-500/10 text-red-600 font-medium'
-                        }`}
-                      >
-                        {billPreview.withinZone
-                          ? `✓ Shop se ${billPreview.distanceKm} km · Delivery charge ₹${billPreview.deliveryFee}`
-                          : `✕ Delivery zone se bahar (${billPreview.distanceKm} km; max ${billPreview.maxRadiusKm} km)`}
-                      </div>
-                    )}
-
-                    <div className="pt-1 border-t border-border space-y-2">
-                      <label className="flex items-center gap-2 text-xs font-semibold text-text cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={isScheduled}
-                          onChange={(e) => {
-                            setIsScheduled(e.target.checked);
-                            if (e.target.checked && !scheduledFor && timeSlots[0]) {
-                              setScheduledFor(timeSlots[0].iso);
-                            }
-                          }}
-                          className="accent-primary"
-                        />
-                        <span>Baad ke liye schedule karein ({settings.weeklyTimings})</span>
-                      </label>
-                      {isScheduled && (
-                        <select
-                          value={scheduledFor}
-                          onChange={(e) => setScheduledFor(e.target.value)}
-                          className="w-full px-3 py-2 rounded-lg border border-border bg-bg text-xs font-semibold text-text"
-                        >
-                          <option value="">Delivery time slot chunein...</option>
-                          {timeSlots.map((slot) => (
-                            <option key={slot.iso} value={slot.iso}>
-                              {slot.label}
-                            </option>
-                          ))}
-                        </select>
-                      )}
-                    </div>
-
-                    <input
-                      type="text"
-                      value={orderNotes}
-                      onChange={(e) => setOrderNotes(e.target.value)}
-                      placeholder="Rider ya kitchen ke liye koi instruction (optional)"
-                      className="w-full px-3 py-2 rounded-lg border border-border bg-bg text-xs text-text"
-                    />
-                  </div>
-
-                  {/* 3. Coupon Code */}
-                  <div className="rounded-xl border border-border p-3.5 space-y-2.5">
-                    <div className="flex gap-2">
-                      <input
-                        type="text"
-                        value={couponInput}
-                        onChange={(e) => setCouponInput(e.target.value.toUpperCase())}
-                        placeholder="Coupon code (jaise FEAST150)"
-                        className="min-w-0 flex-1 px-3 py-2 rounded-lg border border-border bg-bg text-xs uppercase text-text focus:outline-none focus:border-primary"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setAppliedCouponCode(couponInput.trim().toUpperCase())}
-                        className="h-9 px-4 rounded-lg bg-primary text-primary-contrast text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer"
-                      >
-                        Lagayein
-                      </button>
-                    </div>
-                    {coupons.length > 0 && (
-                      <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pr-4 pt-0.5">
-                        {coupons.map((c) => (
-                          <button
-                            key={c.code}
-                            type="button"
-                            onClick={() => handleCopyAndApplyCoupon(c.code)}
-                            className={`px-2.5 py-1 rounded-full border text-[11px] tabular-nums shrink-0 cursor-pointer whitespace-nowrap ${
-                              appliedCouponCode === c.code
-                                ? 'border-emerald-600 bg-emerald-500/15 text-emerald-700 font-bold'
-                                : 'border-border bg-bg text-muted hover:text-text'
-                            }`}
-                          >
-                            {c.code}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                    {billPreview?.couponMessage && (
-                      <p
-                        className={`text-xs font-medium break-words ${
-                          billPreview.appliedCoupon ? 'text-emerald-600' : 'text-primary'
-                        }`}
-                      >
-                        {billPreview.couponMessage}
-                      </p>
-                    )}
-                  </div>
-
-                  {/* 4. Payment Method & Smooth Inline COD OTP */}
-                  <div className="rounded-xl border border-border p-3.5 space-y-3">
-                    <div className="flex items-center justify-between gap-2">
-                      <h3 className="text-xs font-semibold text-text">Payment ka tarika</h3>
-                      {billPreview && !billPreview.codAllowed && (
-                        <span className="text-[11px] text-amber-600 font-medium">
-                          {billPreview.codDisallowedReason}
-                        </span>
-                      )}
-                    </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                      <label
-                        className={`p-3 rounded-xl border cursor-pointer flex items-start gap-2 ${
-                          paymentMethod === 'RAZORPAY'
-                            ? 'border-primary bg-primary/10'
-                            : 'border-border bg-bg'
-                        }`}
-                      >
-                        <input
-                          type="radio"
-                          name="pay-method"
-                          checked={paymentMethod === 'RAZORPAY'}
-                          onChange={() => setPaymentMethod('RAZORPAY')}
-                          className="mt-0.5 accent-primary shrink-0"
-                        />
-                        <div className="min-w-0 text-xs">
-                          <p className="font-semibold text-text break-words">
-                            UPI / Card (Razorpay)
-                          </p>
-                          <p className="text-muted">
-                            {homeData.razorpayMode === 'live'
-                              ? 'Instant online payment'
-                              : 'Fast verified payment'}
-                          </p>
-                        </div>
-                      </label>
-
-                      <label
-                        className={`p-3 rounded-xl border flex items-start gap-2 ${
-                          !billPreview?.codAllowed
-                            ? 'border-border bg-bg opacity-60 cursor-not-allowed'
-                            : paymentMethod === 'COD'
-                            ? 'border-primary bg-primary/10 cursor-pointer'
-                            : 'border-border bg-bg cursor-pointer'
-                        }`}
-                      >
-                        <input
-                          type="radio"
-                          name="pay-method"
-                          disabled={!billPreview?.codAllowed}
-                          checked={paymentMethod === 'COD'}
-                          onChange={() => setPaymentMethod('COD')}
-                          className="mt-0.5 accent-primary shrink-0"
-                        />
-                        <div className="min-w-0 text-xs">
-                          <p className="font-semibold text-text break-words">
-                            Cash on Delivery (COD)
-                          </p>
-                          <p className="text-muted break-words">
-                            {billPreview && !billPreview.codAllowed
-                              ? billPreview.codDisallowedReason
-                              : `Delivery par cash/UPI (Max ₹${settings.codMaxAmount})`}
-                          </p>
-                        </div>
-                      </label>
-                    </div>
-
-                    {/* Smooth Inline COD Phone OTP step */}
-                    {paymentMethod === 'COD' && billPreview?.requirePhoneOtpForCod && (
-                      <div className="rounded-xl border border-primary/30 bg-primary/10 p-3 space-y-2 text-xs">
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="font-semibold text-text">
-                            COD ke liye phone OTP verify karein
-                          </span>
-                          {codOtpVerified && (
-                            <span className="text-emerald-700 font-semibold text-[11px]">
-                              ✓ Verified
-                            </span>
-                          )}
-                        </div>
-                        {!codOtpVerified && (
-                          <div className="flex flex-wrap items-center gap-2">
-                            <button
-                              type="button"
-                              disabled={codOtpBusy}
-                              onClick={handleRequestCodOtp}
-                              className="px-3 py-1.5 rounded-lg bg-primary text-primary-contrast font-semibold text-xs cursor-pointer disabled:opacity-50"
-                            >
-                              {codOtpRequested ? 'OTP dobara bhejein' : 'OTP bhejein'}
-                            </button>
-                            {codOtpRequested && (
-                              <>
-                                <input
-                                  type="text"
-                                  inputMode="numeric"
-                                  maxLength={4}
-                                  value={codOtpCode}
-                                  onChange={(e) =>
-                                    setCodOtpCode(e.target.value.replace(/\D/g, '').slice(0, 4))
-                                  }
-                                  placeholder="4-digit OTP"
-                                  className="w-28 px-2.5 py-1.5 rounded-lg border border-border bg-surface text-xs tabular-nums text-text"
-                                />
-                                <button
-                                  type="button"
-                                  disabled={codOtpBusy}
-                                  onClick={handleVerifyCodOtp}
-                                  className="px-3 py-1.5 rounded-lg bg-emerald-700 text-white font-semibold text-xs cursor-pointer disabled:opacity-50"
-                                >
-                                  Verify karein
-                                </button>
-                              </>
-                            )}
-                          </div>
-                        )}
-                        {codOtpDemoHint && !codOtpVerified && (
-                          <p className="text-[11px] tabular-nums text-primary">
-                            Demo OTP: <strong>{codOtpDemoHint}</strong>
-                          </p>
-                        )}
-                      </div>
-                    )}
-
-                    {homeData.turnstileSiteKey && (
-                      <div className="p-2.5 rounded-xl border border-border bg-bg">
-                        <div
-                          className="cf-turnstile"
-                          data-sitekey={homeData.turnstileSiteKey}
-                          data-callback="onAanganTurnstileSuccess"
-                        />
-                      </div>
-                    )}
-                  </div>
-
-                  {/* 5. Clear Bill Breakdown */}
-                  {billPreview && (
-                    <div className="rounded-xl border border-border bg-bg p-3.5 space-y-1.5 text-xs">
-                      <div className="flex justify-between text-muted">
-                        <span>Items ka kul daam</span>
-                        <span className="tabular-nums">₹{billPreview.itemTotal}</span>
-                      </div>
-                      {billPreview.discountAmount > 0 && (
-                        <div className="flex justify-between text-emerald-600 font-medium">
-                          <span>Coupon bachat ({billPreview.appliedCoupon})</span>
-                          <span className="tabular-nums">-₹{billPreview.discountAmount}</span>
-                        </div>
-                      )}
-                      <div className="flex justify-between text-muted">
-                        <span>Delivery charge ({billPreview.distanceKm} km shop se)</span>
-                        <span className="tabular-nums">₹{billPreview.deliveryFee}</span>
-                      </div>
-                      <div className="flex justify-between text-muted">
-                        <span>GST ({billPreview.gstPercent}%)</span>
-                        <span className="tabular-nums">₹{billPreview.gstAmount}</span>
-                      </div>
-                      <div className="flex justify-between pt-2 border-t border-border text-sm font-bold text-text">
-                        <span>Kul dena hai</span>
-                        <span className="tabular-nums">₹{billPreview.grandTotal}</span>
-                      </div>
-                    </div>
-                  )}
-
-                  {verifyingPayment && (
-                    <div className="rounded-xl border border-primary bg-primary/10 p-3 text-xs font-semibold text-text">
-                      Payment verification in progress, do not pay twice.
-                    </div>
-                  )}
-
-                  {(checkoutError || paymentFailureMessage) && (
-                    <div className="rounded-xl border border-red-500/40 bg-red-500/10 p-3 text-xs text-red-600 font-medium break-words">
-                      {checkoutError || paymentFailureMessage}
-                    </div>
-                  )}
-                </div>
-
-                {/* Sticky Place Order Button with Total inside */}
-                <div className="p-3.5 border-t border-border bg-surface shrink-0">
-                  <button
-                    type="submit"
-                    disabled={
-                      placingOrder ||
-                      verifyingPayment ||
-                      (billPreview !== null && (!billPreview.withinZone || !billPreview.minOrderMet))
-                    }
-                    className="w-full h-11 px-4 rounded-full bg-primary text-primary-contrast text-sm font-semibold whitespace-nowrap cursor-pointer disabled:opacity-50 flex items-center justify-center shadow-xs"
-                  >
-                    {placingOrder
-                      ? 'Order bheja ja raha hai...'
-                      : !locationPinned
-                      ? 'Delivery location chunein'
-                      : billPreview && !billPreview.withinZone
-                      ? 'Delivery area se bahar hai'
-                      : billPreview && !billPreview.minOrderMet
-                      ? `Kam se kam ₹${billPreview.minOrderAmount} ka order karein`
-                      : `Order karein · ₹${billPreview?.grandTotal ?? totalCartAmount}`}
-                  </button>
-                </div>
-              </form>
-            )}
           </div>
         </div>
       )}
@@ -2586,41 +3703,41 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
          ===================================================================== */}
       {pendingRazorpayModal && (
         <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-xs p-0 sm:p-4">
-          <div className="w-full max-w-md rounded-t-2xl sm:rounded-2xl bg-surface text-text border border-border shadow-2xl overflow-hidden pb-safe animate-sheet-up">
-            <div className="bg-primary text-primary-contrast p-4 flex items-center justify-between gap-2">
+          <div className="w-full max-w-md rounded-t-3xl sm:rounded-3xl bg-surface text-text border border-border shadow-2xl overflow-hidden pb-safe animate-sheet-up">
+            <div className="bg-[#E23744] text-white p-4 sm:p-5 flex items-center justify-between gap-2">
               <div className="min-w-0">
-                <p className="text-[11px] opacity-90">
+                <p className="text-[13px] opacity-90 font-semibold">
                   Razorpay Secure Checkout
                 </p>
-                <h3 className="font-display text-base font-bold break-words mt-0.5">
+                <h3 className="font-display text-[18px] font-extrabold break-words mt-0.5">
                   {settings.shopName}
                 </h3>
               </div>
-              <span className="text-lg font-bold tabular-nums shrink-0">
+              <span className="text-[20px] font-extrabold tabular-nums shrink-0">
                 ₹{(pendingRazorpayModal.amountPaise / 100).toFixed(0)}
               </span>
             </div>
 
-            <div className="p-5 space-y-4 text-xs text-muted">
-              <div className="rounded-xl bg-bg border border-border p-3 tabular-nums space-y-1">
+            <div className="p-5 space-y-4 text-[14px] text-muted">
+              <div className="rounded-2xl bg-bg border border-border p-3.5 tabular-nums space-y-1">
                 <p className="break-words">
                   Order: <strong className="text-text">{pendingRazorpayModal.order.orderNumber}</strong>
                 </p>
-                <p className="break-all">Razorpay ID: {pendingRazorpayModal.razorpayOrderId}</p>
+                <p className="break-all text-[13px]">Razorpay ID: {pendingRazorpayModal.razorpayOrderId}</p>
               </div>
 
               {verifyingPayment && (
-                <div className="rounded-xl border border-primary/40 bg-primary/10 p-3.5 text-xs font-semibold text-text space-y-1">
+                <div className="rounded-2xl border border-[#E23744]/40 bg-[#FFF5F3] dark:bg-[#E23744]/15 p-3.5 text-[14px] font-bold text-text space-y-1">
                   <p>Payment verification in progress, do not pay twice.</p>
-                  <p className="text-[11px] text-muted font-normal">
-                    Server Razorpay se payment confirm kar raha hai...
+                  <p className="text-[13px] text-muted font-normal">
+                    Confirming payment signature with Razorpay...
                   </p>
                 </div>
               )}
 
               {paymentFailureMessage && (
-                <div className="rounded-xl border border-red-500/40 bg-red-500/10 p-3.5 text-xs font-medium text-red-600 space-y-1">
-                  <p className="font-bold">Payment poora nahi hua</p>
+                <div className="rounded-2xl border border-[#E23744]/40 bg-[#E23744]/10 p-3.5 text-[14px] font-semibold text-[#E23744] space-y-1">
+                  <p className="font-extrabold">Payment was not completed</p>
                   <p>{paymentFailureMessage}</p>
                 </div>
               )}
@@ -2630,12 +3747,12 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   type="button"
                   disabled={verifyingPayment}
                   onClick={() => handleCompleteRazorpayPayment(false)}
-                  className="w-full h-11 px-4 rounded-full bg-emerald-700 hover:bg-emerald-600 text-white text-sm font-semibold whitespace-nowrap cursor-pointer disabled:opacity-50"
+                  className="w-full min-h-[48px] px-4 rounded-2xl bg-[#1BA672] hover:bg-[#158f61] text-white text-[15px] font-extrabold whitespace-nowrap cursor-pointer disabled:opacity-50"
                 >
                   {verifyingPayment
-                    ? 'Payment verification in progress, do not pay twice...'
+                    ? 'Verifying payment...'
                     : paymentFailureMessage
-                    ? `Dobara payment karein · ₹${pendingRazorpayModal.amountPaise / 100}`
+                    ? `Retry payment · ₹${pendingRazorpayModal.amountPaise / 100}`
                     : `Pay ₹${pendingRazorpayModal.amountPaise / 100} (UPI / Card)`}
                 </button>
 
@@ -2643,9 +3760,9 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   type="button"
                   disabled={verifyingPayment}
                   onClick={() => handleCompleteRazorpayPayment(true)}
-                  className="w-full h-10 px-4 rounded-full border border-red-500/30 text-red-600 hover:bg-red-500/10 text-xs sm:text-sm font-medium whitespace-nowrap cursor-pointer disabled:opacity-50"
+                  className="w-full min-h-[44px] px-4 rounded-2xl border border-[#E23744]/30 text-[#E23744] hover:bg-[#E23744]/10 text-[14px] font-bold whitespace-nowrap cursor-pointer disabled:opacity-50"
                 >
-                  Payment fail check karein
+                  Simulate failed payment
                 </button>
 
                 <button
@@ -2658,9 +3775,9 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                     setPaymentFailureMessage('Payment pending — listening to live order status.');
                     onOpenTracking(tok);
                   }}
-                  className="w-full h-9 px-4 rounded-full border border-border text-muted hover:text-text text-xs font-medium whitespace-nowrap cursor-pointer disabled:opacity-50"
+                  className="w-full min-h-[44px] px-4 rounded-2xl border border-border text-muted hover:text-text text-[13px] font-semibold whitespace-nowrap cursor-pointer disabled:opacity-50"
                 >
-                  Band karein (Payment pending — live status dekhein)
+                  Close & view live order status
                 </button>
               </div>
             </div>
@@ -2673,21 +3790,21 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
          ===================================================================== */}
       {confirmedSuccessOrder && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4">
-          <div className="w-full max-w-sm rounded-2xl bg-surface text-text border border-border p-6 text-center space-y-4 shadow-xl animate-sheet-up">
-            <div className="w-14 h-14 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-600 flex items-center justify-center mx-auto animate-tick-pop">
-              <Check className="w-7 h-7 stroke-[2.5]" />
+          <div className="w-full max-w-sm rounded-3xl bg-surface text-text border border-border p-6 text-center space-y-4 shadow-xl animate-sheet-up">
+            <div className="w-16 h-16 rounded-full bg-[#1BA672]/15 border border-[#1BA672]/30 text-[#1BA672] flex items-center justify-center mx-auto animate-tick-pop">
+              <Check className="w-8 h-8 stroke-[2.5]" />
             </div>
-            <div className="space-y-1">
-              <p className="text-xs font-semibold text-emerald-600">
+            <div className="space-y-1.5">
+              <p className="text-[14px] font-bold text-[#1BA672]">
                 {confirmedSuccessOrder.paymentMethod === 'COD'
-                  ? 'Order confirm ho gaya (Cash on Delivery)'
-                  : 'Payment safal · Order confirm ho gaya'}
+                  ? 'Order confirmed (Cash on Delivery)'
+                  : 'Payment verified · Order confirmed'}
               </p>
-              <h3 className="font-display text-xl font-bold text-text">
+              <h3 className="font-display text-[22px] font-extrabold text-text">
                 Order #{confirmedSuccessOrder.orderNumber}
               </h3>
-              <p className="text-xs text-muted">
-                Kitchen me aapka khana banna shuru ho raha hai. Doorstep OTP:{' '}
+              <p className="text-[14px] text-muted">
+                Our kitchen has started preparing your order. Doorstep OTP:{' '}
                 <strong className="text-text tabular-nums">
                   {confirmedSuccessOrder.deliveryOtp}
                 </strong>
@@ -2700,9 +3817,9 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                 setConfirmedSuccessOrder(null);
                 onOpenTracking(tok);
               }}
-              className="w-full h-11 px-4 rounded-full bg-primary text-primary-contrast text-sm font-semibold cursor-pointer"
+              className="w-full min-h-[48px] px-5 rounded-2xl bg-[#E23744] text-white text-[15px] font-extrabold cursor-pointer active:scale-[0.98]"
             >
-              Live order track karein
+              Track live order
             </button>
           </div>
         </div>
@@ -2711,24 +3828,25 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
       {/* Policy Modal */}
       {activePolicyModal && (
         <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 p-0 sm:p-4">
-          <div className="w-full max-w-lg rounded-t-2xl sm:rounded-2xl bg-surface text-text border border-border p-6 space-y-4 pb-safe animate-sheet-up">
+          <div className="w-full max-w-lg rounded-t-3xl sm:rounded-3xl bg-surface text-text border border-border p-6 space-y-4 pb-safe animate-sheet-up">
             <div className="flex items-center justify-between gap-2">
-              <h3 className="font-display text-base font-bold text-text break-words">
+              <h3 className="font-display text-[18px] font-extrabold text-text break-words">
                 {activePolicyModal === 'privacy'
                   ? 'Guest Privacy Policy'
                   : activePolicyModal === 'terms'
                   ? 'Terms of Service'
-                  : 'Refund & Cancellation Policy'}
+                  : 'Help, Support & Refund Policy'}
               </h3>
               <button
                 type="button"
                 onClick={() => setActivePolicyModal(null)}
-                className="p-1.5 text-muted hover:text-text cursor-pointer shrink-0"
+                aria-label="Close modal"
+                className="w-11 h-11 flex items-center justify-center text-muted hover:text-text cursor-pointer shrink-0"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
-            <div className="text-xs text-muted space-y-2 leading-relaxed">
+            <div className="text-[14px] text-muted space-y-2 leading-relaxed">
               {activePolicyModal === 'privacy' && (
                 <p>
                   We operate in Guest Mode and collect only your name, 10-digit phone number, and delivery coordinates to fulfill your order. Card data is never stored on our servers.
@@ -2741,16 +3859,16 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
               )}
               {activePolicyModal === 'refund' && (
                 <p>
-                  Unaccepted orders are automatically cancelled after {settings.autoCancelUnacceptedMins} minutes and refunded in full via the Razorpay Refunds API.
+                  Unaccepted orders are automatically cancelled after {settings.autoCancelUnacceptedMins} minutes and refunded in full via the Razorpay Refunds API. For instant support, contact {settings.supportPhone}.
                 </p>
               )}
             </div>
             <button
               type="button"
               onClick={() => setActivePolicyModal(null)}
-              className="w-full h-10 rounded-full bg-primary text-primary-contrast text-sm font-semibold whitespace-nowrap cursor-pointer"
+              className="w-full min-h-[46px] rounded-2xl bg-[#E23744] text-white text-[15px] font-extrabold whitespace-nowrap cursor-pointer"
             >
-              Band karein
+              Close
             </button>
           </div>
         </div>
