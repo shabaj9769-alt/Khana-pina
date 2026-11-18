@@ -58,6 +58,7 @@ interface HomePayload {
   coupons: Coupon[];
   razorpayKeyId: string;
   razorpayMode?: 'demo' | 'live';
+  onlinePaymentEnabled?: boolean;
   demoMode?: boolean;
   turnstileSiteKey?: string | null;
 }
@@ -553,6 +554,9 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
       const data = await res.json();
       if (res.ok) {
         setHomeData(data);
+        if (data.onlinePaymentEnabled === false) {
+          setPaymentMethod('COD');
+        }
         if (!data.settings.isOpen && data.settings.allowPreOrdersWhenClosed) {
           setIsScheduled(true);
           if (!scheduledFor && timeSlots[0]) {
@@ -628,7 +632,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
         const data = await res.json();
         if (res.ok) {
           setBillPreview(data);
-          if (!data.codAllowed && paymentMethod === 'COD') {
+          if (!data.codAllowed && paymentMethod === 'COD' && homeData?.onlinePaymentEnabled !== false) {
             setPaymentMethod('RAZORPAY');
           }
         }
@@ -638,7 +642,13 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
     }, 150);
 
     return () => clearTimeout(timer);
-  }, [cart, guestLat, guestLng, locationPinned, appliedCouponCode, guestPhone]);
+  }, [cart, guestLat, guestLng, locationPinned, appliedCouponCode, guestPhone, homeData?.onlinePaymentEnabled]);
+
+  useEffect(() => {
+    if (homeData?.onlinePaymentEnabled === false && paymentMethod !== 'COD') {
+      setPaymentMethod('COD');
+    }
+  }, [homeData?.onlinePaymentEnabled, paymentMethod]);
 
   // Load "Recent Orders" from localStorage tokens (also used for the Home "Order again" card)
   const loadRecentOrders = async () => {
@@ -1096,6 +1106,11 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
 
     if (homeData?.turnstileSiteKey && !turnstileToken) {
       setCheckoutError('Please complete the Cloudflare Turnstile security verification.');
+      return;
+    }
+
+    if (paymentMethod === 'RAZORPAY' && homeData?.onlinePaymentEnabled === false) {
+      setCheckoutError('Online payment is not available right now. Please choose Cash on Delivery.');
       return;
     }
 
@@ -2288,32 +2303,34 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   )}
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <label
-                    className={`min-h-[56px] p-3.5 rounded-xl border cursor-pointer flex items-start gap-3 ${
-                      paymentMethod === 'RAZORPAY'
-                        ? 'border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/15'
-                        : 'border-border bg-bg'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="pay-method"
-                      checked={paymentMethod === 'RAZORPAY'}
-                      onChange={() => setPaymentMethod('RAZORPAY')}
-                      className="mt-1 accent-[#E23744] w-4 h-4 shrink-0"
-                    />
-                    <div className="min-w-0 text-[14px]">
-                      <p className="font-bold text-text break-words">
-                        UPI / Card (Razorpay)
-                      </p>
-                      <p className="text-[13px] text-muted">
-                        {homeData.razorpayMode === 'live'
-                          ? 'Instant online payment'
-                          : 'Fast verified online payment'}
-                      </p>
-                    </div>
-                  </label>
+                <div className={`grid gap-3 ${homeData?.onlinePaymentEnabled === false ? 'grid-cols-1' : 'grid-cols-1 sm:grid-cols-2'}`}>
+                  {homeData?.onlinePaymentEnabled !== false && (
+                    <label
+                      className={`min-h-[56px] p-3.5 rounded-xl border cursor-pointer flex items-start gap-3 ${
+                        paymentMethod === 'RAZORPAY'
+                          ? 'border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/15'
+                          : 'border-border bg-bg'
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="pay-method"
+                        checked={paymentMethod === 'RAZORPAY'}
+                        onChange={() => setPaymentMethod('RAZORPAY')}
+                        className="mt-1 accent-[#E23744] w-4 h-4 shrink-0"
+                      />
+                      <div className="min-w-0 text-[14px]">
+                        <p className="font-bold text-text break-words">
+                          UPI / Card (Razorpay)
+                        </p>
+                        <p className="text-[13px] text-muted">
+                          {homeData?.razorpayMode === 'live'
+                            ? 'Instant online payment'
+                            : 'Fast verified online payment'}
+                        </p>
+                      </div>
+                    </label>
+                  )}
 
                   <label
                     className={`min-h-[56px] p-3.5 rounded-xl border flex items-start gap-3 ${

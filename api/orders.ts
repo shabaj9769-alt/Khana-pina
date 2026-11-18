@@ -9,6 +9,7 @@ import {
   getClientIp,
   getRazorpayConfig,
   isDemoModeEnabled,
+  isRazorpayConfigured,
   verifyTurnstileToken,
 } from './_lib/security.ts';
 import {
@@ -415,6 +416,12 @@ export default async function handler(req: Request, res: Response) {
       let razorpayOrderId: string | undefined;
       const rzpCfg = getRazorpayConfig();
       if (method === 'RAZORPAY') {
+        if (!isRazorpayConfigured()) {
+          res.status(400).json({
+            error: 'Online payment is not available right now. Please choose Cash on Delivery.',
+          });
+          return;
+        }
         const gatewayOrder = await createRazorpayGatewayOrder({
           amountPaise: Math.round(bill.grandTotal * 100),
           orderNumber,

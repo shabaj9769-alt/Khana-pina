@@ -11,6 +11,7 @@ import {
   getClientIp,
   getRazorpayConfig,
   isDemoModeEnabled,
+  isRazorpayConfigured,
 } from './_lib/security.ts';
 
 // Disable automatic body parsing on Vercel so /api/payments/webhook can verify HMAC over the exact raw stream
@@ -43,6 +44,17 @@ export default async function handler(req: Request, res: Response) {
 
   const rawPath = (req.originalUrl || req.url || '').split('?')[0].replace(/\/+$/, '');
   const clientIp = getClientIp(req);
+
+  if (!isRazorpayConfigured()) {
+    if (rawPath.endsWith('/webhook')) {
+      res.status(200).json({ status: 'ignored_unconfigured', message: 'Razorpay is not configured.' });
+      return;
+    }
+    res.status(400).json({
+      error: 'Online payment is not available right now. Please choose Cash on Delivery.',
+    });
+    return;
+  }
 
   try {
     // 1. POST /api/payments/webhook (Raw body stream HMAC verification)

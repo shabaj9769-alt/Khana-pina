@@ -30,7 +30,7 @@ import {
 } from '../../src/types.ts';
 import { DEFAULT_STOREFRONT_THEME } from '../../src/utils/themeTokens.ts';
 import { getRtdb } from './firebaseAdmin.ts';
-import { hashPasswordScrypt, parseCookies, verifyJwtRaw } from './security.ts';
+import { hashPasswordScrypt, isRazorpayConfigured, parseCookies, verifyJwtRaw } from './security.ts';
 
 // Image URLs (Optimized <80KB WebP assets)
 export const IMG_HERO = '/src/assets/images/hero_artisanal_feast_1793975537331.webp';
@@ -1577,7 +1577,7 @@ export function calculateAuthoritativeBill(params: {
   if (!db.settings.codEnabled) {
     codAllowed = false;
     codDisallowedReason = 'Cash on Delivery is currently disabled by the kitchen';
-  } else if (db.settings.onlineOnlyFirstOrder && isFirstOrder) {
+  } else if (db.settings.onlineOnlyFirstOrder && isFirstOrder && isRazorpayConfigured()) {
     codAllowed = false;
     codDisallowedReason = 'First-time guest orders require Online Payment (UPI/Card)';
   } else if (grandTotal > db.settings.codMaxAmount) {

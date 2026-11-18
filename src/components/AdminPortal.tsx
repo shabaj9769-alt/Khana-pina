@@ -150,6 +150,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const [adminUsers, setAdminUsers] = useState<AdminUserPublic[]>([]);
   const [adminSessions, setAdminSessions] = useState<AdminSessionRecord[]>([]);
   const [broadcastProviderConfigured, setBroadcastProviderConfigured] = useState(false);
+  const [razorpayConfigured, setRazorpayConfigured] = useState<boolean>(false);
   const [broadcastMessage, setBroadcastMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
@@ -394,6 +395,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       setPayments(data.payments || []);
       setRefunds(data.refunds || []);
       setBroadcastProviderConfigured(Boolean(data.broadcastProviderConfigured));
+      setRazorpayConfigured(Boolean(data.razorpayConfigured ?? data.onlinePaymentEnabled));
 
       if (data.firebaseCustomToken) {
         setFirebaseCustomToken(data.firebaseCustomToken);
@@ -3417,9 +3419,30 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
               {financeSubTab === 'payments' ? (
                 <div className="bg-surface rounded-2xl border border-border p-4 space-y-3">
-                  <h3 className="text-sm font-bold text-text">
-                    Payment Ledger & Partial/Full Refunds
-                  </h3>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h3 className="text-sm font-bold text-text">
+                      Payment Ledger & Partial/Full Refunds
+                    </h3>
+                    <span
+                      className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${
+                        razorpayConfigured
+                          ? 'bg-emerald-500/15 text-emerald-600'
+                          : 'bg-amber-500/15 text-amber-600'
+                      }`}
+                    >
+                      {razorpayConfigured ? 'Razorpay Gateway Active' : 'Razorpay Gateway Unconfigured (COD Mode)'}
+                    </span>
+                  </div>
+
+                  {!razorpayConfigured && (
+                    <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-700 dark:text-amber-400">
+                      <p className="font-bold">Razorpay payment gateway is not configured</p>
+                      <p className="text-[11px] opacity-90 mt-0.5">
+                        Online payments and online refunds are disabled. Customer storefront accepts Cash on Delivery (COD).
+                      </p>
+                    </div>
+                  )}
+
                   <div className="space-y-2.5">
                     {payments.slice(0, 25).map((p) => {
                       const existingRefund = refunds.find((r) => r.paymentId === p.id);
@@ -3438,6 +3461,11 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                             </p>
                           </div>
                           {p.status !== 'REFUNDED' && canEditSettings && (
+                            p.gateway === 'RAZORPAY' && !razorpayConfigured ? (
+                              <span className="text-muted italic text-[11px]">
+                                Online refunds disabled (Razorpay not configured)
+                              </span>
+                            ) : (
                             <div className="flex flex-wrap items-center gap-2">
                               <input
                                 type="number"
@@ -3487,10 +3515,11 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                                   }
                                 }}
                                 className="px-3 py-1.5 rounded-lg border border-red-500/30 text-red-600 font-semibold hover:bg-red-500/10 cursor-pointer"
-                              >
-                                Issue Refund
-                              </button>
-                            </div>
+                                >
+                                  Issue Refund
+                                </button>
+                              </div>
+                            )
                           )}
                         </div>
                       );
@@ -3785,6 +3814,47 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   >
                     Save Store Info
                   </button>
+
+                  {/* Payment Gateway Configuration Card */}
+                  <div className="pt-3 border-t border-border space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <h4 className="text-xs font-bold text-text">
+                          Payment Gateway Status
+                        </h4>
+                        <p className="text-[11px] text-muted">
+                          Razorpay API credentials and customer checkout gateway status
+                        </p>
+                      </div>
+                      <span
+                        className={`px-2.5 py-1 rounded-full text-[11px] font-bold ${
+                          razorpayConfigured
+                            ? 'bg-emerald-500/15 text-emerald-600'
+                            : 'bg-amber-500/15 text-amber-600'
+                        }`}
+                      >
+                        {razorpayConfigured ? 'RAZORPAY ACTIVE' : 'COD ONLY (UNCONFIGURED)'}
+                      </span>
+                    </div>
+
+                    <div className="p-3 rounded-xl border border-border bg-bg space-y-2 text-xs">
+                      <div className="flex items-center justify-between">
+                        <span className="font-semibold text-text">Razorpay Online Gateway (UPI/Cards):</span>
+                        <span className={`font-bold ${razorpayConfigured ? 'text-emerald-600' : 'text-muted'}`}>
+                          {razorpayConfigured ? 'Connected & Verified' : 'Disabled (Keys Not Configured)'}
+                        </span>
+                      </div>
+                      {!razorpayConfigured ? (
+                        <p className="text-muted text-[11px] leading-relaxed">
+                          Razorpay keys (RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET, RAZORPAY_WEBHOOK_SECRET) are missing. Online gateway settings and online refunds are disabled to prevent errors. The storefront is safely operating in Cash on Delivery (COD) mode.
+                        </p>
+                      ) : (
+                        <p className="text-muted text-[11px] leading-relaxed">
+                          Razorpay keys are detected and active. Customers can pay online with automated verification.
+                        </p>
+                      )}
+                    </div>
+                  </div>
                 </div>
               )}
 
@@ -4450,7 +4520,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 className="min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs"
               >
                 <option value="COD">Cash on Delivery (COD)</option>
-                <option value="RAZORPAY">Already Paid Online / UPI</option>
+                {razorpayConfigured && <option value="RAZORPAY">Already Paid Online / UPI</option>}
               </select>
               <input
                 type="text"

@@ -27,6 +27,7 @@ import {
   getRazorpayConfig,
   hashPasswordScrypt,
   isDemoModeEnabled,
+  isRazorpayConfigured,
   parseCookies,
   REFRESH_TTL_SEC,
   setAdminAuthCookies,
@@ -168,6 +169,8 @@ export default async function handler(req: Request, res: Response) {
       res.json({
         demoMode: isDemoModeEnabled(),
         razorpayMode: rzpCfg.mode,
+        razorpayConfigured: isRazorpayConfigured(),
+        onlinePaymentEnabled: isRazorpayConfigured(),
         turnstileSiteKey: process.env.TURNSTILE_SITE_KEY || null,
         broadcastProviderConfigured,
       });
@@ -822,6 +825,8 @@ export default async function handler(req: Request, res: Response) {
         broadcastProviderConfigured,
         demoMode: isDemoModeEnabled(),
         razorpayMode: rzpCfg.mode,
+        razorpayConfigured: isRazorpayConfigured(),
+        onlinePaymentEnabled: isRazorpayConfigured(),
       });
       return;
     }
@@ -1736,6 +1741,12 @@ export default async function handler(req: Request, res: Response) {
       }
       if (payment.status === 'REFUNDED') {
         res.status(400).json({ error: 'Payment has already been refunded' });
+        return;
+      }
+      if (payment.gateway === 'RAZORPAY' && !isRazorpayConfigured()) {
+        res.status(400).json({
+          error: 'Razorpay payment gateway is not configured. Online refunds are unavailable.',
+        });
         return;
       }
 

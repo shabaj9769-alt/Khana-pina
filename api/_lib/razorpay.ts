@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import type { IncomingMessage } from 'http';
 import { getRtdb, isStrictProductionOrLiveMode } from './firebaseAdmin.ts';
-import { getRazorpayConfig } from './security.ts';
+import { getRazorpayConfig, isRazorpayConfigured } from './security.ts';
 import {
   clearHomeCache,
   db,
@@ -83,6 +83,10 @@ export async function createRazorpayGatewayOrder(params: {
   orderNumber: string;
   customFetch?: typeof fetch;
 }): Promise<{ id: string; amount: number; currency: string; receipt: string }> {
+  if (!isRazorpayConfigured()) {
+    throw new Error('Online payment is not available right now. Please choose Cash on Delivery.');
+  }
+
   const { amountPaise, orderNumber, customFetch = fetch } = params;
   const cfg = getRazorpayConfig();
 
@@ -689,6 +693,10 @@ export async function processRazorpayRefundAuthoritative(params: {
 
   if (requestedAmountRupees !== undefined && requestedAmountRupees > maxCapturableRupees) {
     throw new Error(`Refund amount cannot exceed captured amount (₹${maxCapturableRupees})`);
+  }
+
+  if (payment.gateway === 'RAZORPAY' && !isRazorpayConfigured()) {
+    throw new Error('Razorpay payment gateway is not configured. Online refunds are unavailable.');
   }
 
   const cfg = getRazorpayConfig();

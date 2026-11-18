@@ -34,31 +34,35 @@ export function getRazorpayMode(): 'demo' | 'live' {
   return 'demo';
 }
 
+export function isRazorpayConfigured(): boolean {
+  const keyId = (process.env.RAZORPAY_KEY_ID || '').trim();
+  const keySecret = (process.env.RAZORPAY_KEY_SECRET || '').trim();
+  const webhookSecret = (process.env.RAZORPAY_WEBHOOK_SECRET || '').trim();
+  return Boolean(keyId && keySecret && webhookSecret);
+}
+
 export function getRazorpayConfig(): {
   mode: 'demo' | 'live';
   keyId: string;
   keySecret: string;
   webhookSecret: string;
 } {
-  const mode = getRazorpayMode();
-  const keyId = process.env.RAZORPAY_KEY_ID || '';
-  const keySecret = process.env.RAZORPAY_KEY_SECRET || '';
-  const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET || '';
-
-  if (mode === 'live' || isStrictProductionOrLiveMode()) {
-    if (!keyId || !keySecret || !webhookSecret) {
-      throw new Error(
-        'SERVER CONFIG ERROR: RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET, and RAZORPAY_WEBHOOK_SECRET are required in live/production mode.'
-      );
-    }
-    return { mode: 'live', keyId, keySecret, webhookSecret };
+  const configured = isRazorpayConfigured();
+  if (!configured) {
+    return {
+      mode: 'demo',
+      keyId: '',
+      keySecret: '',
+      webhookSecret: '',
+    };
   }
 
+  const mode = getRazorpayMode();
   return {
-    mode: 'demo',
-    keyId: keyId || 'rzp_test_demo_only_local',
-    keySecret: keySecret || 'rzp_test_secret_demo_only_local',
-    webhookSecret: webhookSecret || 'whsec_demo_only_local',
+    mode,
+    keyId: (process.env.RAZORPAY_KEY_ID || '').trim(),
+    keySecret: (process.env.RAZORPAY_KEY_SECRET || '').trim(),
+    webhookSecret: (process.env.RAZORPAY_WEBHOOK_SECRET || '').trim(),
   };
 }
 

@@ -11,6 +11,7 @@ import {
   ensureFirebaseSeeded,
   getRazorpayConfig,
   isLoginLocked,
+  isRazorpayConfigured,
   recordLoginFailure,
   clearLoginFailures,
   loginAttemptsByEmail,
@@ -99,6 +100,9 @@ describe('Aangan Kitchen Core & Bypass-Proof Razorpay Suite', () => {
   beforeEach(() => {
     loginAttemptsByEmail.clear();
     loginAttemptsByIp.clear();
+    process.env.RAZORPAY_KEY_ID = 'rzp_test_suite_key';
+    process.env.RAZORPAY_KEY_SECRET = 'rzp_test_suite_secret';
+    process.env.RAZORPAY_WEBHOOK_SECRET = 'whsec_test_suite_secret';
   });
 
   it('1. Haversine zone check & dynamic delivery fee slabs', async () => {
@@ -243,6 +247,13 @@ describe('Aangan Kitchen Core & Bypass-Proof Razorpay Suite', () => {
       razorpayOrderId: rzpOrder1,
       razorpayPaymentId: sharedPaymentId,
       razorpaySignature: sig1,
+      gatewayFetcher: async (payId) => ({
+        id: payId,
+        status: 'captured',
+        order_id: rzpOrder1,
+        amount: 35000,
+        currency: 'INR',
+      }),
     });
     expect(firstVerify.status).toBe(200);
     if ('payload' in firstVerify) {
@@ -381,5 +392,21 @@ describe('Aangan Kitchen Core & Bypass-Proof Razorpay Suite', () => {
       const ratio = getContrastRatio(preset.primaryColor, contrastColor);
       expect(ratio).toBeGreaterThanOrEqual(4.5);
     }
+  });
+
+  it('9. When Razorpay keys are not configured, isRazorpayConfigured() returns false and getRazorpayConfig() never throws', () => {
+    delete process.env.RAZORPAY_KEY_ID;
+    delete process.env.RAZORPAY_KEY_SECRET;
+    delete process.env.RAZORPAY_WEBHOOK_SECRET;
+
+    expect(isRazorpayConfigured()).toBe(false);
+    expect(() => getRazorpayConfig()).not.toThrow();
+    const cfg = getRazorpayConfig();
+    expect(cfg).toEqual({
+      mode: 'demo',
+      keyId: '',
+      keySecret: '',
+      webhookSecret: '',
+    });
   });
 });

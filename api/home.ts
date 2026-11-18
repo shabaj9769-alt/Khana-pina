@@ -5,6 +5,7 @@ import {
   getClientIp,
   getRazorpayConfig,
   isDemoModeEnabled,
+  isRazorpayConfigured,
 } from './_lib/security.ts';
 import {
   checkFirebaseRateLimit,
@@ -101,6 +102,7 @@ export default async function handler(req: Request, res: Response) {
       coupons: db.coupons.filter((c) => c.isActive),
       razorpayKeyId: rzpCfg.keyId,
       razorpayMode: rzpCfg.mode,
+      onlinePaymentEnabled: isRazorpayConfigured(),
       demoMode: isDemoModeEnabled(),
       turnstileSiteKey: process.env.TURNSTILE_SITE_KEY || null,
       firebaseClientConfig: process.env.FIREBASE_DB_URL

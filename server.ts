@@ -30,7 +30,12 @@ import {
   verifyHmacTimingSafe,
   verifyRazorpayPaymentAuthoritative,
 } from './api/_lib/razorpay.ts';
-import { getAdminJwtSecret, getRazorpayConfig, isDemoModeEnabled } from './api/_lib/security.ts';
+import {
+  getAdminJwtSecret,
+  getRazorpayConfig,
+  isDemoModeEnabled,
+  isRazorpayConfigured,
+} from './api/_lib/security.ts';
 
 dotenv.config();
 
@@ -45,6 +50,7 @@ export {
   expireStaleOrdersLazy,
   getRazorpayConfig,
   isLoginLocked,
+  isRazorpayConfigured,
   loginAttemptsByEmail,
   loginAttemptsByIp,
   processRazorpayRefundAuthoritative,
