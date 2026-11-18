@@ -1387,13 +1387,13 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
   if (loadError || !homeData) {
     return (
       <div className="w-full max-w-[480px] mx-auto px-4 py-14 text-center space-y-4">
-        <AlertTriangle className="w-12 h-12 text-[#E23744] mx-auto" />
+        <AlertTriangle className="w-12 h-12 text-primary mx-auto" />
         <h2 className="text-[20px] font-bold text-text">Could not load the menu</h2>
         <p className="text-[14px] text-muted">{loadError || 'Please check your internet connection.'}</p>
         <button
           type="button"
           onClick={fetchHomeData}
-          className="min-h-[46px] px-6 rounded-2xl bg-[#E23744] text-white text-[15px] font-bold inline-flex items-center gap-2 cursor-pointer active:scale-[0.98] transition-transform"
+          className="min-h-[46px] px-6 rounded-2xl bg-primary text-primary-contrast text-[15px] font-bold inline-flex items-center gap-2 cursor-pointer active:scale-[0.98] transition-transform"
         >
           <RotateCcw className="w-4 h-4" />
           <span>Try again</span>
@@ -1407,6 +1407,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
   const totalCartAmount = cart.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
 
   // Authentic FSSAI Veg (green #1BA672 dot in square) & Non-Veg (red #E23744 dot in square) mark
+  
   const renderDietMark = (isVeg: boolean) => (
     <span
       className={`inline-flex items-center justify-center w-4 h-4 rounded-[4px] border-2 shrink-0 ${
@@ -1422,6 +1423,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
       />
     </span>
   );
+  
 
   // Bold Zomato/Swiggy-style ADD button (red outline + soft red fill #FFF5F3) that turns into a solid red (− 1 +) stepper
   const renderCardAddOrStepper = (item: MenuItem) => {
@@ -1439,7 +1441,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
     if (inCartQty > 0) {
       const targetLine = matchingLines[matchingLines.length - 1];
       return (
-        <div className="h-[34px] min-w-[84px] rounded-xl bg-[#E23744] text-white flex items-center justify-between px-1 shrink-0 shadow-sm">
+        <div className="h-[34px] min-w-[84px] rounded-xl bg-primary text-primary-contrast flex items-center justify-between px-1 shrink-0 shadow-sm">
           <button
             type="button"
             aria-label={`Decrease quantity of ${item.name}`}
@@ -1477,7 +1479,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
             openCustomizeModal(item);
           }
         }}
-        className="h-[34px] px-3 rounded-xl border-2 border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/15 text-[#E23744] hover:bg-[#E23744] hover:text-white text-[13px] font-extrabold whitespace-nowrap inline-flex items-center justify-center gap-1 transition-all active:scale-[0.98] cursor-pointer shrink-0 shadow-2xs"
+        className="h-[34px] px-3 rounded-xl border-2 border-primary bg-soft-tint text-primary hover:bg-primary hover:text-primary-contrast text-[13px] font-extrabold whitespace-nowrap inline-flex items-center justify-center gap-1 transition-all active:scale-[0.98] cursor-pointer shrink-0 shadow-2xs"
       >
         <span>ADD</span>
         <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
@@ -1504,12 +1506,12 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
       : "Chef's Pick";
 
     const badgeBgClass = isComboSection && comboSavings > 0
-      ? 'bg-[#1BA672] text-white'
+      ? 'bg-accent text-white'
       : item.isBestseller
-      ? 'bg-[#E23744] text-white'
+      ? 'bg-primary text-primary-contrast'
       : item.isNewArrival
-      ? 'bg-[#1BA672] text-white'
-      : 'bg-[#1C1C1C]/85 text-white backdrop-blur-xs';
+      ? 'bg-accent text-white'
+      : 'bg-black/75 text-white backdrop-blur-xs';
 
     return (
       <article
@@ -1522,8 +1524,8 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
             : 'w-full h-auto'
         } rounded-2xl border ${
           isComboSection
-            ? 'border-[#1BA672]/40 bg-[#FFF5F3]/40 dark:bg-[#1C1C1C]'
-            : 'border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface'
+            ? 'border-accent/40 bg-soft-tint/40 '
+            : 'border-border  bg-surface'
         } p-3.5 sm:p-4 shadow-[0_2px_10px_rgba(0,0,0,0.04)] flex flex-col justify-between min-w-0 overflow-hidden box-border transition-all duration-150 hover:shadow-md active:scale-[0.98] ${
           !item.inStock ? 'grayscale opacity-75' : ''
         }`}
@@ -1533,7 +1535,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
           {/* 4:3 Food Photo with Top-Left FSSAI Dot & Bottom-Left Badge */}
           <div
             onClick={() => openCustomizeModal(item)}
-            className="relative w-full aspect-[4/3] rounded-xl bg-[#FFF5F3] dark:bg-[#2A1618] overflow-hidden shrink-0 cursor-pointer"
+            className="relative w-full aspect-[4/3] rounded-xl bg-soft-tint  overflow-hidden shrink-0 cursor-pointer"
           >
             <SafeImage
               src={item.imageUrl}
@@ -1542,7 +1544,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
             />
 
             {/* Top-left floating FSSAI Veg/Non-veg square dot */}
-            <div className="absolute top-2.5 left-2.5 bg-white/95 dark:bg-[#1C1C1C]/95 p-1 rounded-md shadow-xs flex items-center justify-center">
+            <div className="absolute top-2.5 left-2.5 bg-surface/95 p-1 rounded-md shadow-xs flex items-center justify-center">
               {renderDietMark(item.isVeg)}
             </div>
 
@@ -1563,10 +1565,10 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
               aria-label={isFav ? `Remove ${item.name} from favorites` : `Save ${item.name} to favorites`}
               className="absolute top-1.5 right-1.5 w-11 h-11 rounded-full flex items-center justify-center cursor-pointer"
             >
-              <span className="w-8 h-8 rounded-full bg-white/90 dark:bg-[#1C1C1C]/90 backdrop-blur-xs shadow-xs flex items-center justify-center">
+              <span className="w-8 h-8 rounded-full bg-surface/90 backdrop-blur-xs shadow-xs flex items-center justify-center">
                 <Heart
                   className={`w-4 h-4 ${
-                    isFav ? 'fill-[#E23744] text-[#E23744]' : 'text-muted'
+                    isFav ? 'fill-primary text-primary' : 'text-muted'
                   }`}
                 />
               </span>
@@ -1577,7 +1579,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
           <h3
             onClick={() => openCustomizeModal(item)}
             title={item.name}
-            className="mt-3 text-base font-bold text-text leading-snug line-clamp-2 break-words cursor-pointer hover:text-[#E23744] transition-colors"
+            className="mt-3 text-base font-bold text-text leading-snug line-clamp-2 break-words cursor-pointer hover:text-primary transition-colors"
           >
             {item.name}
           </h3>
@@ -1589,7 +1591,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
         </div>
 
         {/* Footer */}
-        <div className="mt-3.5 pt-3 border-t border-[#E8E8E8]/70 dark:border-[#2E2E2E] flex items-center justify-between gap-2.5 min-w-0">
+        <div className="mt-3.5 pt-3 border-t border-border/70  flex items-center justify-between gap-2.5 min-w-0">
           <div className="flex-1 min-w-0">
             <div className="flex items-baseline gap-1.5 flex-wrap">
               <span className="text-base sm:text-lg font-bold text-text tabular-nums leading-none">
@@ -1701,10 +1703,10 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
     >
       {/* 1. SHOP CLOSED / HOLIDAY / PRE-ORDER TIMINGS BANNER */}
       {(!settings.isOpen || settings.holidaysNote) && (
-        <div className="w-full max-w-full bg-[#FFF5F3] dark:bg-[#2A1618] border-b border-[#E23744]/25 px-4 py-2.5">
+        <div className="w-full max-w-full bg-soft-tint  border-b border-primary/25 px-4 py-2.5">
           <div className="w-full max-w-[1200px] mx-auto flex flex-wrap items-center justify-between gap-2 text-[14px]">
             <div className="flex items-center gap-2 min-w-0 flex-1">
-              <CalendarClock className="w-4 h-4 text-[#E23744] shrink-0" />
+              <CalendarClock className="w-4 h-4 text-primary shrink-0" />
               <span className="font-semibold text-text break-words">
                 {!settings.isOpen
                   ? `Kitchen is currently closed · Opens at ${settings.opensAtText || '11:00 AM'}`
@@ -1712,7 +1714,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
               </span>
             </div>
             {!settings.isOpen && settings.allowPreOrdersWhenClosed && (
-              <span className="text-[13px] font-bold text-[#E23744] shrink-0">
+              <span className="text-[13px] font-bold text-primary shrink-0">
                 Pre-orders open
               </span>
             )}
@@ -1743,7 +1745,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   </h1>
                 </div>
               </div>
-              <span className="px-3 py-1 rounded-full bg-[#FFF5F3] dark:bg-[#2A1618] border border-[#E23744]/25 text-[#E23744] text-[13px] font-extrabold tabular-nums shrink-0">
+              <span className="px-3 py-1 rounded-full bg-soft-tint  border border-primary/25 text-primary text-[13px] font-extrabold tabular-nums shrink-0">
                 {totalCartItems} {totalCartItems === 1 ? 'item' : 'items'}
               </span>
             </div>
@@ -1764,7 +1766,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                 <button
                   type="button"
                   onClick={() => navigateFlowStep('store')}
-                  className="min-h-[48px] px-6 rounded-2xl bg-[#E23744] text-white text-[15px] font-extrabold cursor-pointer active:scale-[0.98]"
+                  className="min-h-[48px] px-6 rounded-2xl bg-primary text-primary-contrast text-[15px] font-extrabold cursor-pointer active:scale-[0.98]"
                 >
                   Browse menu
                 </button>
@@ -1797,23 +1799,23 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
 
                       {/* Row 3: Compact quantity stepper on left (36px height, "− 1 +"), line total on right */}
                       <div className="flex items-center justify-between gap-3 pt-0.5 min-w-0 w-full">
-                        <div className="h-9 min-w-[108px] px-1 rounded-xl border border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/15 flex items-center justify-between shrink-0">
+                        <div className="h-9 min-w-[108px] px-1 rounded-xl border border-primary bg-soft-tint flex items-center justify-between shrink-0">
                           <button
                             type="button"
                             aria-label={`Decrease ${item.name}`}
                             onClick={() => updateCartQty(item.cartLineId, -1)}
-                            className="w-8 h-8 flex items-center justify-center text-[#E23744] cursor-pointer"
+                            className="w-8 h-8 flex items-center justify-center text-primary cursor-pointer"
                           >
                             <Minus className="w-3.5 h-3.5 stroke-[2.5]" />
                           </button>
-                          <span className="px-2 text-[14px] font-extrabold tabular-nums text-[#E23744]">
+                          <span className="px-2 text-[14px] font-extrabold tabular-nums text-primary">
                             {item.quantity}
                           </span>
                           <button
                             type="button"
                             aria-label={`Increase ${item.name}`}
                             onClick={() => updateCartQty(item.cartLineId, 1)}
-                            className="w-8 h-8 flex items-center justify-center text-[#E23744] cursor-pointer"
+                            className="w-8 h-8 flex items-center justify-center text-primary cursor-pointer"
                           >
                             <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
                           </button>
@@ -1834,7 +1836,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                         onBlur={handleCheckoutInputBlur}
                         onChange={(e) => updateCartItemNote(item.cartLineId, e.target.value)}
                         placeholder="Add a note (e.g. less spicy, Jain preparation)"
-                        className="w-full max-w-full min-h-[48px] px-3.5 py-2.5 rounded-xl border border-border bg-bg text-[16px] text-text box-border focus:outline-none focus:border-[#E23744]"
+                        className="w-full max-w-full min-h-[48px] px-3.5 py-2.5 rounded-xl border border-border bg-bg text-[16px] text-text box-border focus:outline-none focus:border-primary"
                       />
                     </div>
                   ))}
@@ -1844,7 +1846,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                     <button
                       type="button"
                       onClick={() => navigateFlowStep('store')}
-                      className="text-[14px] font-bold text-[#E23744] hover:underline inline-flex items-center gap-1 cursor-pointer"
+                      className="text-[14px] font-bold text-primary hover:underline inline-flex items-center gap-1 cursor-pointer"
                     >
                       <Plus className="w-4 h-4" />
                       <span>Add more dishes</span>
@@ -1854,7 +1856,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                       href={whatsappHref}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="text-[14px] font-semibold text-[#1BA672] hover:underline inline-flex items-center gap-1.5 cursor-pointer"
+                      className="text-[14px] font-semibold text-accent hover:underline inline-flex items-center gap-1.5 cursor-pointer"
                     >
                       <MessageCircle className="w-4 h-4 shrink-0" />
                       <span>Order via WhatsApp instead →</span>
@@ -1872,7 +1874,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                 <button
                   type="button"
                   onClick={() => navigateFlowStep('checkout')}
-                  className="w-full min-h-[52px] px-5 rounded-2xl bg-[#E23744] hover:bg-[#c82d39] text-white text-[16px] font-extrabold whitespace-nowrap flex items-center justify-center gap-2 shadow-md cursor-pointer active:scale-[0.98] transition-all"
+                  className="w-full min-h-[52px] px-5 rounded-2xl bg-primary hover:opacity-90 text-primary-contrast text-[16px] font-extrabold whitespace-nowrap flex items-center justify-center gap-2 shadow-md cursor-pointer active:scale-[0.98] transition-all"
                 >
                   <span>Proceed to checkout · ₹{estimatedGrandTotal}</span>
                   <ChevronRight className="w-5 h-5 stroke-[2.5]" />
@@ -1922,7 +1924,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                 <button
                   type="button"
                   onClick={() => navigateFlowStep('store')}
-                  className="min-h-[48px] px-6 rounded-2xl bg-[#E23744] text-white text-[15px] font-extrabold cursor-pointer"
+                  className="min-h-[48px] px-6 rounded-2xl bg-primary text-primary-contrast text-[15px] font-extrabold cursor-pointer"
                 >
                   Browse menu
                 </button>
@@ -1938,11 +1940,11 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
               {isOutsideDeliveryZone && (
                 <div
                   role="alert"
-                  className="rounded-2xl border-2 border-[#E23744] bg-[#FFF5F3] dark:bg-[#2A1618] p-4 flex items-start gap-3 shadow-xs"
+                  className="rounded-2xl border-2 border-primary bg-soft-tint  p-4 flex items-start gap-3 shadow-xs"
                 >
-                  <AlertTriangle className="w-6 h-6 text-[#E23744] shrink-0 mt-0.5" />
+                  <AlertTriangle className="w-6 h-6 text-primary shrink-0 mt-0.5" />
                   <div className="min-w-0 flex-1 space-y-1">
-                    <p className="text-[15px] font-extrabold text-[#E23744] break-words">
+                    <p className="text-[15px] font-extrabold text-primary break-words">
                       Sorry, we don&apos;t deliver to this location yet. Try a different address or pin.
                     </p>
                     <p className="text-[13px] font-medium text-text break-words">
@@ -1957,13 +1959,13 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                 aria-label="Delivery address"
                 className={`rounded-2xl border p-4 sm:p-5 space-y-4 min-w-0 max-w-full transition-colors ${
                   isOutsideDeliveryZone || ((checkoutTouched || addressTouched) && addressFieldError)
-                    ? 'border-2 border-[#E23744] bg-[#FFF5F3]/50 dark:bg-[#2A1618]/40'
+                    ? 'border-2 border-primary bg-soft-tint/50 /40'
                     : 'border-border bg-surface'
                 }`}
               >
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex items-center gap-2 min-w-0">
-                    <MapPin className="w-5 h-5 text-[#E23744] shrink-0" />
+                    <MapPin className="w-5 h-5 text-primary shrink-0" />
                     <h2 className="text-[16px] font-extrabold text-text break-words">
                       1. Delivery address
                     </h2>
@@ -1972,8 +1974,8 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                     <span
                       className={`px-2.5 py-1 rounded-full text-[13px] font-bold shrink-0 ${
                         liveAddressDistance.within
-                          ? 'bg-[#1BA672]/15 text-[#1BA672]'
-                          : 'bg-[#E23744]/15 text-[#E23744]'
+                          ? 'bg-accent/15 text-accent'
+                          : 'bg-primary/15 text-primary'
                       }`}
                     >
                       {liveAddressDistance.within
@@ -1987,9 +1989,9 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                 <button
                   type="button"
                   onClick={handleUseCurrentGps}
-                  className="w-full min-h-[48px] px-4 rounded-xl border border-[#E23744]/40 bg-[#FFF5F3] dark:bg-[#E23744]/15 text-[#E23744] font-bold text-[15px] flex items-center justify-center gap-2 cursor-pointer active:scale-[0.98]"
+                  className="w-full min-h-[48px] px-4 rounded-xl border border-primary/40 bg-soft-tint text-primary font-bold text-[15px] flex items-center justify-center gap-2 cursor-pointer active:scale-[0.98]"
                 >
-                  <Compass className="w-5 h-5 text-[#E23744] shrink-0" />
+                  <Compass className="w-5 h-5 text-primary shrink-0" />
                   <span>Use my current GPS location</span>
                 </button>
 
@@ -2015,8 +2017,8 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                           }}
                           className={`min-h-[48px] p-3 rounded-xl border text-left transition-colors cursor-pointer ${
                             isSelected
-                              ? 'border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/15 font-bold'
-                              : 'border-border bg-bg hover:border-[#E23744]/50'
+                              ? 'border-primary bg-soft-tint font-bold'
+                              : 'border-border bg-bg hover:border-primary/50'
                           }`}
                         >
                           <p className="text-[14px] font-bold text-text break-words">
@@ -2067,10 +2069,10 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                     }}
                     onChange={(e) => setGuestAddress(e.target.value)}
                     placeholder="Enter flat no., building name, street & landmark"
-                    className="w-full max-w-full min-h-[64px] px-3.5 py-3 rounded-xl border border-border bg-bg text-[16px] text-text box-border focus:outline-none focus:border-[#E23744]"
+                    className="w-full max-w-full min-h-[64px] px-3.5 py-3 rounded-xl border border-border bg-bg text-[16px] text-text box-border focus:outline-none focus:border-primary"
                   />
                   {(checkoutTouched || addressTouched) && addressFieldError && (
-                    <p className="text-[13px] font-semibold text-[#E23744] break-words">
+                    <p className="text-[13px] font-semibold text-primary break-words">
                       {addressFieldError}
                     </p>
                   )}
@@ -2094,7 +2096,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                     onBlur={handleCheckoutInputBlur}
                     onChange={(e) => setGuestPincode(e.target.value.replace(/\D/g, ''))}
                     placeholder="e.g. 400050"
-                    className="w-full max-w-full min-h-[48px] px-3.5 py-2.5 rounded-xl border border-border bg-bg text-[16px] tabular-nums text-text box-border focus:outline-none focus:border-[#E23744]"
+                    className="w-full max-w-full min-h-[48px] px-3.5 py-2.5 rounded-xl border border-border bg-bg text-[16px] tabular-nums text-text box-border focus:outline-none focus:border-primary"
                   />
                 </div>
               </section>
@@ -2131,14 +2133,14 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                       }}
                       onChange={(e) => setGuestName(e.target.value)}
                       placeholder="Enter your full name"
-                      className={`w-full max-w-full min-h-[48px] px-3.5 py-2.5 rounded-xl border bg-bg text-[16px] text-text box-border focus:outline-none focus:border-[#E23744] ${
+                      className={`w-full max-w-full min-h-[48px] px-3.5 py-2.5 rounded-xl border bg-bg text-[16px] text-text box-border focus:outline-none focus:border-primary ${
                         (checkoutTouched || nameTouched) && nameFieldError
-                          ? 'border-[#E23744]'
+                          ? 'border-primary'
                           : 'border-border'
                       }`}
                     />
                     {(checkoutTouched || nameTouched) && nameFieldError && (
-                      <p className="text-[13px] font-semibold text-[#E23744] break-words">
+                      <p className="text-[13px] font-semibold text-primary break-words">
                         {nameFieldError}
                       </p>
                     )}
@@ -2167,14 +2169,14 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                       }}
                       onChange={(e) => setGuestPhone(e.target.value.replace(/\D/g, ''))}
                       placeholder="e.g. 9820144500"
-                      className={`w-full max-w-full min-h-[48px] px-3.5 py-2.5 rounded-xl border bg-bg text-[16px] tabular-nums text-text box-border focus:outline-none focus:border-[#E23744] ${
+                      className={`w-full max-w-full min-h-[48px] px-3.5 py-2.5 rounded-xl border bg-bg text-[16px] tabular-nums text-text box-border focus:outline-none focus:border-primary ${
                         (checkoutTouched || phoneTouched) && phoneFieldError
-                          ? 'border-[#E23744]'
+                          ? 'border-primary'
                           : 'border-border'
                       }`}
                     />
                     {(checkoutTouched || phoneTouched) && phoneFieldError && (
-                      <p className="text-[13px] font-semibold text-[#E23744] break-words">
+                      <p className="text-[13px] font-semibold text-primary break-words">
                         {phoneFieldError}
                       </p>
                     )}
@@ -2197,7 +2199,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                     onClick={() => setIsScheduled(false)}
                     className={`min-h-[48px] p-3.5 rounded-xl border text-left flex items-center justify-between gap-2 cursor-pointer ${
                       !isScheduled
-                        ? 'border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/15 font-bold'
+                        ? 'border-primary bg-soft-tint font-bold'
                         : 'border-border bg-bg'
                     }`}
                   >
@@ -2207,10 +2209,10 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                     </div>
                     <span
                       className={`w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 ${
-                        !isScheduled ? 'border-[#E23744]' : 'border-muted'
+                        !isScheduled ? 'border-primary' : 'border-muted'
                       }`}
                     >
-                      {!isScheduled && <span className="w-2.5 h-2.5 rounded-full bg-[#E23744]" />}
+                      {!isScheduled && <span className="w-2.5 h-2.5 rounded-full bg-primary" />}
                     </span>
                   </button>
 
@@ -2224,7 +2226,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                     }}
                     className={`min-h-[48px] p-3.5 rounded-xl border text-left flex items-center justify-between gap-2 cursor-pointer ${
                       isScheduled
-                        ? 'border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/15 font-bold'
+                        ? 'border-primary bg-soft-tint font-bold'
                         : 'border-border bg-bg'
                     }`}
                   >
@@ -2234,10 +2236,10 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                     </div>
                     <span
                       className={`w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 ${
-                        isScheduled ? 'border-[#E23744]' : 'border-muted'
+                        isScheduled ? 'border-primary' : 'border-muted'
                       }`}
                     >
-                      {isScheduled && <span className="w-2.5 h-2.5 rounded-full bg-[#E23744]" />}
+                      {isScheduled && <span className="w-2.5 h-2.5 rounded-full bg-primary" />}
                     </span>
                   </button>
                 </div>
@@ -2266,7 +2268,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                       ))}
                     </select>
                     {checkoutTouched && scheduleFieldError && (
-                      <p className="text-[13px] font-semibold text-[#E23744]">
+                      <p className="text-[13px] font-semibold text-primary">
                         {scheduleFieldError}
                       </p>
                     )}
@@ -2289,7 +2291,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                     onBlur={handleCheckoutInputBlur}
                     onChange={(e) => setOrderNotes(e.target.value)}
                     placeholder="e.g. Leave with security guard, do not ring bell"
-                    className="w-full max-w-full min-h-[48px] px-3.5 py-2.5 rounded-xl border border-border bg-bg text-[16px] text-text box-border focus:outline-none focus:border-[#E23744]"
+                    className="w-full max-w-full min-h-[48px] px-3.5 py-2.5 rounded-xl border border-border bg-bg text-[16px] text-text box-border focus:outline-none focus:border-primary"
                   />
                 </div>
               </section>
@@ -2315,7 +2317,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                     <label
                       className={`min-h-[56px] p-3.5 rounded-xl border cursor-pointer flex items-start gap-3 ${
                         paymentMethod === 'RAZORPAY'
-                          ? 'border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/15'
+                          ? 'border-primary bg-soft-tint'
                           : 'border-border bg-bg'
                       }`}
                     >
@@ -2324,7 +2326,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                         name="pay-method"
                         checked={paymentMethod === 'RAZORPAY'}
                         onChange={() => setPaymentMethod('RAZORPAY')}
-                        className="mt-1 accent-[#E23744] w-4 h-4 shrink-0"
+                        className="mt-1 accent-primary w-4 h-4 shrink-0"
                       />
                       <div className="min-w-0 text-[14px]">
                         <p className="font-bold text-text break-words">
@@ -2344,7 +2346,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                       billPreview && !billPreview.codAllowed
                         ? 'border-border bg-bg opacity-60 cursor-not-allowed'
                         : paymentMethod === 'COD'
-                        ? 'border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/15 cursor-pointer'
+                        ? 'border-primary bg-soft-tint cursor-pointer'
                         : 'border-border bg-bg cursor-pointer'
                     }`}
                   >
@@ -2354,7 +2356,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                       disabled={billPreview !== null && !billPreview.codAllowed}
                       checked={paymentMethod === 'COD'}
                       onChange={() => setPaymentMethod('COD')}
-                      className="mt-1 accent-[#E23744] w-4 h-4 shrink-0"
+                      className="mt-1 accent-primary w-4 h-4 shrink-0"
                     />
                     <div className="min-w-0 text-[14px]">
                       <p className="font-bold text-text break-words">
@@ -2371,13 +2373,13 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
 
                 {/* Inline COD Phone OTP Verification if required */}
                 {paymentMethod === 'COD' && billPreview?.requirePhoneOtpForCod && (
-                  <div className="rounded-xl border border-[#E23744]/30 bg-[#FFF5F3] dark:bg-[#E23744]/15 p-3.5 space-y-2.5 text-[14px]">
+                  <div className="rounded-xl border border-primary/30 bg-soft-tint p-3.5 space-y-2.5 text-[14px]">
                     <div className="flex items-center justify-between gap-2">
                       <span className="font-bold text-text">
                         Verify mobile OTP for Cash on Delivery
                       </span>
                       {codOtpVerified && (
-                        <span className="text-[#1BA672] font-bold text-[13px]">
+                        <span className="text-accent font-bold text-[13px]">
                           ✓ Verified
                         </span>
                       )}
@@ -2388,7 +2390,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                           type="button"
                           disabled={codOtpBusy}
                           onClick={handleRequestCodOtp}
-                          className="min-h-[48px] px-4 rounded-xl bg-[#E23744] text-white font-bold text-[14px] cursor-pointer disabled:opacity-50"
+                          className="min-h-[48px] px-4 rounded-xl bg-primary text-primary-contrast font-bold text-[14px] cursor-pointer disabled:opacity-50"
                         >
                           {codOtpRequested ? 'Resend OTP' : 'Send OTP'}
                         </button>
@@ -2411,7 +2413,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                               type="button"
                               disabled={codOtpBusy}
                               onClick={handleVerifyCodOtp}
-                              className="min-h-[48px] px-4 rounded-xl bg-[#1BA672] text-white font-bold text-[14px] cursor-pointer disabled:opacity-50"
+                              className="min-h-[48px] px-4 rounded-xl bg-accent text-white font-bold text-[14px] cursor-pointer disabled:opacity-50"
                             >
                               Verify OTP
                             </button>
@@ -2420,7 +2422,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                       </div>
                     )}
                     {codOtpDemoHint && !codOtpVerified && (
-                      <p className="text-[13px] tabular-nums text-[#E23744]">
+                      <p className="text-[13px] tabular-nums text-primary">
                         Demo OTP: <strong>{codOtpDemoHint}</strong>
                       </p>
                     )}
@@ -2450,7 +2452,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   <button
                     type="button"
                     onClick={() => navigateFlowStep('cart')}
-                    className="text-[13px] font-bold text-[#E23744] hover:underline cursor-pointer"
+                    className="text-[13px] font-bold text-primary hover:underline cursor-pointer"
                   >
                     Edit cart
                   </button>
@@ -2492,7 +2494,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                     </span>
                   </div>
                   {billPreview && billPreview.discountAmount > 0 && (
-                    <div className="flex justify-between text-[#1BA672] font-bold">
+                    <div className="flex justify-between text-accent font-bold">
                       <span>Coupon discount ({billPreview.appliedCoupon})</span>
                       <span className="tabular-nums">-₹{billPreview.discountAmount}</span>
                     </div>
@@ -2520,7 +2522,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
               </section>
 
               {verifyingPayment && (
-                <div className="rounded-2xl border border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/15 p-4 text-[14px] font-bold text-text">
+                <div className="rounded-2xl border border-primary bg-soft-tint p-4 text-[14px] font-bold text-text">
                   Payment verification in progress, do not pay twice.
                 </div>
               )}
@@ -2528,7 +2530,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
               {(checkoutError || paymentFailureMessage) && (
                 <div
                   role="alert"
-                  className="rounded-2xl border border-[#E23744]/40 bg-[#E23744]/10 p-4 text-[14px] text-[#E23744] font-semibold break-words"
+                  className="rounded-2xl border border-primary/40 bg-primary/10 p-4 text-[14px] text-primary font-semibold break-words"
                 >
                   {checkoutError || paymentFailureMessage}
                 </div>
@@ -2540,14 +2542,14 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   <button
                     type="submit"
                     disabled={isPlaceOrderDisabled}
-                    className="w-full min-h-[52px] px-5 rounded-2xl bg-[#E23744] text-white text-[16px] font-extrabold whitespace-nowrap flex items-center justify-center shadow-md cursor-pointer disabled:opacity-50"
+                    className="w-full min-h-[52px] px-5 rounded-2xl bg-primary text-primary-contrast text-[16px] font-extrabold whitespace-nowrap flex items-center justify-center shadow-md cursor-pointer disabled:opacity-50"
                   >
                     {placingOrder
                       ? 'Placing order...'
                       : `Place order · ₹${estimatedGrandTotal}`}
                   </button>
                   {placeOrderDisabledReason && (
-                    <p className="text-[13px] font-semibold text-[#E23744] text-center break-words">
+                    <p className="text-[13px] font-semibold text-primary text-center break-words">
                       {placeOrderDisabledReason}
                     </p>
                   )}
@@ -2561,14 +2563,14 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                     <button
                       type="submit"
                       disabled={isPlaceOrderDisabled}
-                      className="w-full min-h-[52px] px-5 rounded-2xl bg-[#E23744] hover:bg-[#c82d39] text-white text-[16px] font-extrabold whitespace-nowrap flex items-center justify-center shadow-md cursor-pointer disabled:opacity-50 active:scale-[0.98] transition-all"
+                      className="w-full min-h-[52px] px-5 rounded-2xl bg-primary hover:opacity-90 text-primary-contrast text-[16px] font-extrabold whitespace-nowrap flex items-center justify-center shadow-md cursor-pointer disabled:opacity-50 active:scale-[0.98] transition-all"
                     >
                       {placingOrder
                         ? 'Placing order...'
                         : `Place order · ₹${estimatedGrandTotal}`}
                     </button>
                     {placeOrderDisabledReason && (
-                      <p className="text-[13px] font-semibold text-[#E23744] text-center break-words">
+                      <p className="text-[13px] font-semibold text-primary text-center break-words">
                         {placeOrderDisabledReason}
                       </p>
                     )}
@@ -2607,7 +2609,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
 
           <div className="w-full max-w-[720px] mx-auto px-4 pt-4 space-y-5 min-w-0 box-border">
             {profileSavedToast && (
-              <div role="status" className="rounded-2xl bg-[#1BA672]/15 border border-[#1BA672]/40 p-4 text-[#1BA672] font-bold text-sm">
+              <div role="status" className="rounded-2xl bg-accent/15 border border-accent/40 p-4 text-accent font-bold text-sm">
                 ✓ Profile saved successfully! Checkout will auto-fill from these details.
               </div>
             )}
@@ -2640,7 +2642,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                     value={guestName}
                     onChange={(e) => setGuestName(e.target.value)}
                     placeholder="Enter your full name"
-                    className="w-full max-w-full min-h-[48px] px-3.5 py-2.5 rounded-xl border border-border bg-bg text-[16px] text-text box-border focus:outline-none focus:border-[#E23744]"
+                    className="w-full max-w-full min-h-[48px] px-3.5 py-2.5 rounded-xl border border-border bg-bg text-[16px] text-text box-border focus:outline-none focus:border-primary"
                   />
                 </div>
 
@@ -2652,7 +2654,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                     value={guestPhone}
                     onChange={(e) => setGuestPhone(e.target.value.replace(/\D/g, ''))}
                     placeholder="10-digit mobile number"
-                    className="w-full max-w-full min-h-[48px] px-3.5 py-2.5 rounded-xl border border-border bg-bg text-[16px] tabular-nums text-text box-border focus:outline-none focus:border-[#E23744]"
+                    className="w-full max-w-full min-h-[48px] px-3.5 py-2.5 rounded-xl border border-border bg-bg text-[16px] tabular-nums text-text box-border focus:outline-none focus:border-primary"
                   />
                 </div>
 
@@ -2663,7 +2665,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                     value={guestEmail}
                     onChange={(e) => setGuestEmail(e.target.value)}
                     placeholder="your.email@example.com"
-                    className="w-full max-w-full min-h-[48px] px-3.5 py-2.5 rounded-xl border border-border bg-bg text-[16px] text-text box-border focus:outline-none focus:border-[#E23744]"
+                    className="w-full max-w-full min-h-[48px] px-3.5 py-2.5 rounded-xl border border-border bg-bg text-[16px] text-text box-border focus:outline-none focus:border-primary"
                   />
                 </div>
 
@@ -2674,13 +2676,13 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                     value={guestAddress}
                     onChange={(e) => setGuestAddress(e.target.value)}
                     placeholder="Flat / Building / Street address"
-                    className="w-full max-w-full min-h-[64px] px-3.5 py-3 rounded-xl border border-border bg-bg text-[16px] text-text box-border focus:outline-none focus:border-[#E23744]"
+                    className="w-full max-w-full min-h-[64px] px-3.5 py-3 rounded-xl border border-border bg-bg text-[16px] text-text box-border focus:outline-none focus:border-primary"
                   />
                 </div>
 
                 <button
                   type="submit"
-                  className="w-full min-h-[48px] rounded-xl bg-[#E23744] hover:bg-[#c82d39] text-white font-extrabold text-[15px] cursor-pointer active:scale-[0.98] transition-transform"
+                  className="w-full min-h-[48px] rounded-xl bg-primary hover:opacity-90 text-primary-contrast font-extrabold text-[15px] cursor-pointer active:scale-[0.98] transition-transform"
                 >
                   Save Profile
                 </button>
@@ -2690,7 +2692,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
             {/* Favorites Section */}
             <div className="rounded-2xl border border-border bg-surface p-4 sm:p-5 space-y-3 min-w-0 max-w-full box-border shadow-2xs">
               <h2 className="text-[16px] font-extrabold text-text flex items-center gap-2">
-                <Star className="w-5 h-5 text-[#E23744] fill-[#E23744]" />
+                <Star className="w-5 h-5 text-primary fill-primary" />
                 <span>Favorites ({favourites.length})</span>
               </h2>
               {favourites.length === 0 ? (
@@ -2719,7 +2721,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                             setCheckoutStep('store');
                             openCustomizeModal(item);
                           }}
-                          className="min-h-[36px] px-3 rounded-lg bg-[#E23744] text-white text-xs font-bold shrink-0 cursor-pointer"
+                          className="min-h-[36px] px-3 rounded-lg bg-primary text-primary-contrast text-xs font-bold shrink-0 cursor-pointer"
                         >
                           Order
                         </button>
@@ -2741,7 +2743,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   setActiveSubTab('orders');
                   navigateFlowStep('store');
                 }}
-                className="min-h-[44px] px-4 rounded-xl border border-[#E23744] text-[#E23744] font-bold text-[14px] hover:bg-[#FFF5F3] shrink-0 cursor-pointer whitespace-nowrap"
+                className="min-h-[44px] px-4 rounded-xl border border-primary text-primary font-bold text-[14px] hover:bg-soft-tint shrink-0 cursor-pointer whitespace-nowrap"
               >
                 View Orders →
               </button>
@@ -2795,7 +2797,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
             {/* Hours & Timings */}
             <div className="rounded-2xl border border-border bg-surface p-4 sm:p-5 space-y-2 min-w-0 max-w-full box-border shadow-2xs">
               <h3 className="text-[15px] font-extrabold text-text flex items-center gap-2">
-                <Clock className="w-4 h-4 text-[#E23744]" />
+                <Clock className="w-4 h-4 text-primary" />
                 <span>Operating Hours</span>
               </h3>
               <p className="text-[14px] text-text font-semibold break-words">{settings.weeklyTimings || 'Monday – Sunday: 11:00 AM – 11:30 PM'}</p>
@@ -2805,7 +2807,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
             {/* Address & Location */}
             <div className="rounded-2xl border border-border bg-surface p-4 sm:p-5 space-y-3 min-w-0 max-w-full box-border shadow-2xs">
               <h3 className="text-[15px] font-extrabold text-text flex items-center gap-2">
-                <MapPin className="w-4 h-4 text-[#E23744]" />
+                <MapPin className="w-4 h-4 text-primary" />
                 <span>Kitchen Location & Delivery Radius</span>
               </h3>
               <p className="text-[14px] text-text break-words font-medium">{deliveryZone.shopAddress}</p>
@@ -2814,7 +2816,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                 href={`https://maps.google.com/?q=${encodeURIComponent(deliveryZone.shopAddress)}`}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex items-center gap-1.5 text-sm font-bold text-[#E23744] hover:underline pt-1 cursor-pointer"
+                className="inline-flex items-center gap-1.5 text-sm font-bold text-primary hover:underline pt-1 cursor-pointer"
               >
                 <span>View on Google Maps</span>
                 <ExternalLink className="w-4 h-4" />
@@ -2836,7 +2838,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   href={whatsappHref}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="min-h-[44px] px-4 rounded-xl bg-[#1BA672] text-white font-bold text-[14px] inline-flex items-center gap-2 hover:bg-[#15865b] cursor-pointer"
+                  className="min-h-[44px] px-4 rounded-xl bg-accent text-white font-bold text-[14px] inline-flex items-center gap-2 hover:opacity-90 cursor-pointer"
                 >
                   <span>Chat on WhatsApp →</span>
                 </a>
@@ -2890,7 +2892,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                     heroPauseUntilRef.current = Date.now() + 6000;
                     lastHeroSlideAtRef.current = Date.now() + 2000;
                   }}
-                  className="relative w-full max-w-full h-[200px] sm:h-[240px] md:h-[280px] rounded-2xl overflow-hidden bg-[#121212] border border-[#E8E8E8] dark:border-[#2E2E2E] shadow-sm"
+                  className="relative w-full max-w-full h-[200px] sm:h-[240px] md:h-[280px] rounded-2xl overflow-hidden bg-surface border border-border  shadow-sm"
                 >
                   <div
                     className="flex w-full h-full transition-transform duration-[450ms] ease-out"
@@ -2961,7 +2963,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                                     block: 'start',
                                   });
                                 }}
-                                className="h-10 px-4 rounded-xl bg-[#E23744] hover:bg-[#c82d39] text-white text-sm font-extrabold whitespace-nowrap inline-flex items-center justify-center gap-1.5 shadow-md cursor-pointer transition-all active:scale-[0.98]"
+                                className="h-10 px-4 rounded-xl bg-primary hover:opacity-90 text-primary-contrast text-sm font-extrabold whitespace-nowrap inline-flex items-center justify-center gap-1.5 shadow-md cursor-pointer transition-all active:scale-[0.98]"
                               >
                                 <span>Order now</span>
                                 <ChevronRight className="w-4 h-4 stroke-[2.5]" />
@@ -2984,7 +2986,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                                       <span
                                         className={`h-1.5 rounded-full transition-all ${
                                           dotIdx === activeBannerIdx % banners.length
-                                            ? 'w-5 bg-[#E23744]'
+                                            ? 'w-5 bg-primary'
                                             : 'w-1.5 bg-white/60'
                                         }`}
                                       />
@@ -3005,14 +3007,14 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
             {/* SEARCH BAR + GREEN VEG TOGGLE SWITCH (Immediately below Hero so both Hero, Search, and start of first menu section are visible on 360x740 without scrolling) */}
             <div className="flex items-stretch gap-2.5 w-full max-w-full min-w-0">
               <div className="relative flex-1 min-w-0">
-                <Search className="w-5 h-5 text-[#E23744] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <Search className="w-5 h-5 text-primary absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                 <input
                   type="search"
                   aria-label="Search menu dishes"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   placeholder="Search dishes..."
-                  className="w-full min-h-[48px] py-2.5 pl-11 pr-9 rounded-2xl border border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface text-base font-medium text-text placeholder:text-muted focus:outline-none focus:border-[#E23744] shadow-2xs"
+                  className="w-full min-h-[48px] py-2.5 pl-11 pr-9 rounded-2xl border border-border  bg-surface text-base font-medium text-text placeholder:text-muted focus:outline-none focus:border-primary shadow-2xs"
                 />
                 {searchQuery && (
                   <button
@@ -3038,7 +3040,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                 className={`min-h-[48px] px-3 sm:px-4 rounded-2xl border flex items-center gap-2 shrink-0 cursor-pointer transition-all active:scale-[0.98] ${
                   dietFilter === 'VEG'
                     ? 'border-[#1BA672] bg-[#1BA672]/10 text-text shadow-2xs'
-                    : 'border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface text-text'
+                    : 'border-border bg-surface text-text'
                 }`}
               >
                 <div className="flex flex-col items-start leading-none">
@@ -3071,8 +3073,8 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   }
                   className={`min-h-[40px] px-3.5 rounded-full border text-xs sm:text-sm font-bold flex items-center gap-1.5 shrink-0 whitespace-nowrap cursor-pointer transition-all active:scale-[0.98] ${
                     dietFilter === 'NON_VEG'
-                      ? 'border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/20 text-[#E23744]'
-                      : 'border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface text-text'
+                      ? 'border-primary bg-soft-tint text-primary'
+                      : 'border-border  bg-surface text-text'
                   }`}
                 >
                   {renderDietMark(false)}
@@ -3084,11 +3086,11 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   onClick={() => setSortSheetOpen(true)}
                   className={`min-h-[40px] px-3.5 rounded-full border text-xs sm:text-sm font-bold flex items-center gap-1.5 shrink-0 whitespace-nowrap cursor-pointer transition-all active:scale-[0.98] ${
                     sortBy !== 'POPULAR'
-                      ? 'border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/20 text-[#E23744]'
-                      : 'border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface text-text'
+                      ? 'border-primary bg-soft-tint text-primary'
+                      : 'border-border  bg-surface text-text'
                   }`}
                 >
-                  <ArrowUpDown className="w-3.5 h-3.5 text-[#E23744] shrink-0" />
+                  <ArrowUpDown className="w-3.5 h-3.5 text-primary shrink-0" />
                   <span>Sort: {sortLabelMap[sortBy]}</span>
                 </button>
 
@@ -3097,8 +3099,8 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   onClick={() => setFilterBestseller((v) => !v)}
                   className={`min-h-[40px] px-3.5 rounded-full text-xs sm:text-sm font-bold whitespace-nowrap shrink-0 border transition-all active:scale-[0.98] cursor-pointer ${
                     filterBestseller
-                      ? 'border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/20 text-[#E23744]'
-                      : 'border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface text-text'
+                      ? 'border-primary bg-soft-tint text-primary'
+                      : 'border-border  bg-surface text-text'
                   }`}
                 >
                   Bestseller
@@ -3109,8 +3111,8 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   onClick={() => setFilterUnder350((v) => !v)}
                   className={`min-h-[40px] px-3.5 rounded-full text-xs sm:text-sm font-bold whitespace-nowrap shrink-0 border transition-all active:scale-[0.98] cursor-pointer ${
                     filterUnder350
-                      ? 'border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/20 text-[#E23744]'
-                      : 'border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface text-text'
+                      ? 'border-primary bg-soft-tint text-primary'
+                      : 'border-border  bg-surface text-text'
                   }`}
                 >
                   Under ₹350
@@ -3121,8 +3123,8 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   onClick={() => setFilterRating4Plus((v) => !v)}
                   className={`min-h-[40px] px-3.5 rounded-full text-xs sm:text-sm font-bold whitespace-nowrap shrink-0 border transition-all active:scale-[0.98] cursor-pointer ${
                     filterRating4Plus
-                      ? 'border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/20 text-[#E23744]'
-                      : 'border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface text-text'
+                      ? 'border-primary bg-soft-tint text-primary'
+                      : 'border-border  bg-surface text-text'
                   }`}
                 >
                   Rating 4.0+
@@ -3133,8 +3135,8 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   onClick={() => setFilterSavedOnly((v) => !v)}
                   className={`min-h-[40px] px-3.5 rounded-full text-xs sm:text-sm font-bold whitespace-nowrap shrink-0 border transition-all active:scale-[0.98] cursor-pointer ${
                     filterSavedOnly
-                      ? 'border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/20 text-[#E23744]'
-                      : 'border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface text-text'
+                      ? 'border-primary bg-soft-tint text-primary'
+                      : 'border-border  bg-surface text-text'
                   }`}
                 >
                   Saved ({favourites.length})
@@ -3144,7 +3146,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
           </div>
 
           {/* LARGE ROUNDED-FULL CATEGORY CHIPS (selected chip dark/filled + Favorites chip when >=1 favorite exists) */}
-          <div className="sticky top-0 left-0 right-0 z-20 w-full max-w-full bg-bg/95 backdrop-blur-md border-b border-[#E8E8E8] dark:border-[#2E2E2E] mt-2.5">
+          <div className="sticky top-0 left-0 right-0 z-20 w-full max-w-full bg-bg/95 backdrop-blur-md border-b border-border  mt-2.5">
             <div className="w-full max-w-[1200px] mx-auto px-4 py-2 min-w-0 max-w-full">
               <div
                 role="tablist"
@@ -3159,8 +3161,8 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                     onClick={() => setSelectedCategory('ALL')}
                     className={`min-h-[46px] pl-2.5 pr-4 rounded-full border flex items-center gap-2 shrink-0 transition-all active:scale-[0.98] cursor-pointer whitespace-nowrap ${
                       selectedCategory === 'ALL'
-                        ? 'border-[#1C1C1C] bg-[#1C1C1C] text-white dark:border-white dark:bg-white dark:text-[#121212] font-extrabold shadow-sm'
-                        : 'border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface text-text hover:border-[#E23744] font-bold'
+                        ? 'border-primary bg-primary text-primary-contrast font-extrabold shadow-sm'
+                        : 'border-border  bg-surface text-text hover:border-primary font-bold'
                     }`}
                   >
                     <SafeImage
@@ -3185,12 +3187,12 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                       }
                       className={`min-h-[46px] px-4 rounded-full border flex items-center gap-2 shrink-0 transition-all active:scale-[0.98] cursor-pointer whitespace-nowrap ${
                         selectedCategory === 'FAVORITES'
-                          ? 'border-[#1C1C1C] bg-[#1C1C1C] text-white dark:border-white dark:bg-white dark:text-[#121212] font-extrabold shadow-sm'
-                          : 'border-[#E23744]/40 bg-[#FFF5F3] dark:bg-[#2A1618] text-[#E23744] hover:border-[#E23744] font-bold'
+                          ? 'border-primary bg-primary text-primary-contrast font-extrabold shadow-sm'
+                          : 'border-primary/40 bg-soft-tint  text-primary hover:border-primary font-bold'
                       }`}
                     >
                       <Heart
-                        className="w-4 h-4 shrink-0 fill-[#E23744] text-[#E23744]"
+                        className="w-4 h-4 shrink-0 fill-primary text-primary"
                       />
                       <span className="text-[14px]">Favorites ({favourites.length})</span>
                     </button>
@@ -3208,8 +3210,8 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                         onClick={() => setSelectedCategory(cat.id)}
                         className={`min-h-[46px] ${thumb ? 'pl-2.5' : 'px-4'} pr-4 rounded-full border flex items-center gap-2 shrink-0 transition-all active:scale-[0.98] cursor-pointer whitespace-nowrap ${
                           isActive
-                            ? 'border-[#1C1C1C] bg-[#1C1C1C] text-white dark:border-white dark:bg-white dark:text-[#121212] font-extrabold shadow-sm'
-                            : 'border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface text-text hover:border-[#E23744] font-bold'
+                            ? 'border-primary bg-primary text-primary-contrast font-extrabold shadow-sm'
+                            : 'border-border  bg-surface text-text hover:border-primary font-bold'
                         }`}
                       >
                         {thumb ? (
@@ -3350,8 +3352,8 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                 >
                   <div className="flex items-center gap-2.5 min-w-0">
                     {/* Chip 1: Rating */}
-                    <div className="min-h-[42px] px-3.5 rounded-2xl border border-[#E8E8E8] dark:border-[#2E2E2E] bg-[#FFF5F3] dark:bg-[#1C1C1C] flex items-center gap-2 shrink-0 whitespace-nowrap">
-                      <span className="w-5.5 h-5.5 rounded-lg bg-[#1BA672] text-white flex items-center justify-center">
+                    <div className="min-h-[42px] px-3.5 rounded-2xl border border-border  bg-soft-tint  flex items-center gap-2 shrink-0 whitespace-nowrap">
+                      <span className="w-5.5 h-5.5 rounded-lg bg-accent text-white flex items-center justify-center">
                         <Star className="w-3.5 h-3.5 fill-white text-white" />
                       </span>
                       <span className="text-sm font-extrabold text-text tabular-nums">
@@ -3363,8 +3365,8 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                     </div>
 
                     {/* Chip 2: Free Delivery Threshold */}
-                    <div className="min-h-[42px] px-3.5 rounded-2xl border border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface flex items-center gap-2 shrink-0 whitespace-nowrap">
-                      <Truck className="w-4 h-4 text-[#E23744] shrink-0" />
+                    <div className="min-h-[42px] px-3.5 rounded-2xl border border-border  bg-surface flex items-center gap-2 shrink-0 whitespace-nowrap">
+                      <Truck className="w-4 h-4 text-primary shrink-0" />
                       <span className="text-sm font-bold text-text">
                         Free delivery above ₹499
                       </span>
@@ -3378,15 +3380,15 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                         className={`min-h-[42px] px-3.5 rounded-2xl border flex items-center gap-2 shrink-0 whitespace-nowrap cursor-pointer transition-all active:scale-[0.98] ${
                           copiedCoupon === primaryCoupon.code ||
                           appliedCouponCode === primaryCoupon.code
-                            ? 'border-[#1BA672] bg-[#1BA672]/10 text-text'
-                            : 'border-[#E23744]/30 bg-[#FFF5F3] dark:bg-[#2A1618] text-text hover:border-[#E23744]'
+                            ? 'border-accent bg-accent/10 text-text'
+                            : 'border-primary/30 bg-soft-tint  text-text hover:border-primary'
                         }`}
                       >
-                        <Tag className="w-4 h-4 text-[#E23744] shrink-0" />
+                        <Tag className="w-4 h-4 text-primary shrink-0" />
                         <span className="text-sm font-semibold text-text">
                           {primaryCoupon.description}
                         </span>
-                        <span className="text-xs font-extrabold text-[#E23744] tabular-nums">
+                        <span className="text-xs font-extrabold text-primary tabular-nums">
                           {copiedCoupon === primaryCoupon.code ||
                           appliedCouponCode === primaryCoupon.code
                             ? `✓ ${primaryCoupon.code}`
@@ -3406,15 +3408,15 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                           onClick={() => handleCopyAndApplyCoupon(c.code)}
                           className={`min-h-[42px] px-3.5 rounded-2xl border flex items-center gap-2 shrink-0 whitespace-nowrap cursor-pointer transition-all active:scale-[0.98] ${
                             isApplied
-                              ? 'border-[#1BA672] bg-[#1BA672]/10 text-text'
-                              : 'border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface text-text hover:border-[#E23744]'
+                              ? 'border-accent bg-accent/10 text-text'
+                              : 'border-border  bg-surface text-text hover:border-primary'
                           }`}
                         >
-                          <Tag className="w-4 h-4 text-[#E23744] shrink-0" />
+                          <Tag className="w-4 h-4 text-primary shrink-0" />
                           <span className="text-sm font-semibold text-text">
                             {c.description}
                           </span>
-                          <span className="text-xs font-extrabold text-[#E23744] tabular-nums">
+                          <span className="text-xs font-extrabold text-primary tabular-nums">
                             {isApplied ? `✓ ${c.code}` : `· ${c.code}`}
                           </span>
                         </button>
@@ -3436,11 +3438,11 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                       }}
                       className={`min-h-[42px] px-3.5 rounded-2xl border flex items-center gap-2 shrink-0 whitespace-nowrap cursor-pointer transition-all active:scale-[0.98] ${
                         isScheduled
-                          ? 'border-[#1BA672] bg-[#1BA672]/10 text-text'
-                          : 'border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface text-text hover:border-[#E23744]'
+                          ? 'border-accent bg-accent/10 text-text'
+                          : 'border-border  bg-surface text-text hover:border-primary'
                       }`}
                     >
-                      <CalendarClock className="w-4 h-4 text-[#1BA672] shrink-0" />
+                      <CalendarClock className="w-4 h-4 text-accent shrink-0" />
                       <span className="text-sm font-bold text-text">
                         Schedule order
                       </span>
@@ -3455,10 +3457,10 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                 {recentOrders.length > 0 && (
                   <div
                     aria-label="Order again"
-                    className="w-full max-w-full rounded-2xl border border-[#E8E8E8] dark:border-[#2E2E2E] bg-[#FFF5F3] dark:bg-[#1C1C1C] p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3.5"
+                    className="w-full max-w-full rounded-2xl border border-border  bg-soft-tint  p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3.5"
                   >
                     <div className="flex items-start gap-3 min-w-0 flex-1">
-                      <div className="w-11 h-11 rounded-xl bg-[#E23744]/12 text-[#E23744] flex items-center justify-center shrink-0">
+                      <div className="w-11 h-11 rounded-xl bg-primary/12 text-primary flex items-center justify-center shrink-0">
                         <RotateCcw className="w-5 h-5" />
                       </div>
                       <div className="min-w-0 flex-1">
@@ -3482,7 +3484,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                       <button
                         type="button"
                         onClick={() => onOpenTracking(recentOrders[0].trackingToken)}
-                        className="min-h-[44px] px-3.5 rounded-xl border border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface text-xs font-bold text-text whitespace-nowrap cursor-pointer active:scale-[0.98]"
+                        className="min-h-[44px] px-3.5 rounded-xl border border-border  bg-surface text-xs font-bold text-text whitespace-nowrap cursor-pointer active:scale-[0.98]"
                       >
                         Track order
                       </button>
@@ -3493,7 +3495,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                             onReorder(recentOrders[0], homeData.allMenuItems);
                           }
                         }}
-                        className="min-h-[44px] px-4 rounded-xl bg-[#E23744] hover:bg-[#c82d39] text-white text-sm font-extrabold whitespace-nowrap inline-flex items-center gap-1.5 cursor-pointer active:scale-[0.98] shadow-xs"
+                        className="min-h-[44px] px-4 rounded-xl bg-primary hover:opacity-90 text-primary-contrast text-sm font-extrabold whitespace-nowrap inline-flex items-center gap-1.5 cursor-pointer active:scale-[0.98] shadow-xs"
                       >
                         <RotateCcw className="w-4 h-4" />
                         <span>Order again</span>
@@ -3510,7 +3512,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
               className="w-full max-w-full min-w-0 space-y-8"
             >
               {filteredMenuItems.length === 0 ? (
-                <div className="rounded-2xl border border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface p-8 text-center space-y-4">
+                <div className="rounded-2xl border border-border  bg-surface p-8 text-center space-y-4">
                   <p className="text-[16px] font-bold text-text">
                     No dishes match the selected filters
                   </p>
@@ -3525,7 +3527,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                       setFilterSavedOnly(false);
                       setSearchQuery('');
                     }}
-                    className="min-h-[44px] px-5 rounded-full bg-[#E23744] text-white text-[14px] font-bold whitespace-nowrap cursor-pointer active:scale-[0.98] transition-transform"
+                    className="min-h-[44px] px-5 rounded-full bg-primary text-primary-contrast text-[14px] font-bold whitespace-nowrap cursor-pointer active:scale-[0.98] transition-transform"
                   >
                     Clear all filters
                   </button>
@@ -3601,7 +3603,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
           </div>
 
           <div className="w-full max-w-[1200px] mx-auto px-4 py-5 space-y-5 min-w-0 max-w-full overflow-x-hidden">
-          <div className="rounded-2xl border border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface p-5 space-y-4">
+          <div className="rounded-2xl border border-border  bg-surface p-5 space-y-4">
             <div>
               <h2 className="font-display text-[20px] font-extrabold text-text break-words">
                 Find my order
@@ -3633,13 +3635,13 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
               <button
                 type="submit"
                 disabled={lookupBusy}
-                className="min-h-[48px] px-5 rounded-xl bg-[#E23744] text-white text-[15px] font-bold cursor-pointer disabled:opacity-50 active:scale-[0.98] transition-transform"
+                className="min-h-[48px] px-5 rounded-xl bg-primary text-primary-contrast text-[15px] font-bold cursor-pointer disabled:opacity-50 active:scale-[0.98] transition-transform"
               >
                 {lookupBusy ? 'Searching...' : 'Find order'}
               </button>
             </form>
             {lookupError && (
-              <p className="text-[14px] text-[#E23744] font-semibold break-words">{lookupError}</p>
+              <p className="text-[14px] text-primary font-semibold break-words">{lookupError}</p>
             )}
           </div>
 
@@ -3671,12 +3673,12 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
               ))}
             </div>
           ) : recentOrders.length === 0 ? (
-            <div className="rounded-2xl border border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface p-8 text-center space-y-4">
+            <div className="rounded-2xl border border-border  bg-surface p-8 text-center space-y-4">
               <p className="text-[16px] font-bold text-text">No orders placed yet</p>
               <button
                 type="button"
                 onClick={() => setActiveSubTab('home')}
-                className="min-h-[44px] px-5 rounded-full bg-[#E23744] text-white text-[14px] font-bold whitespace-nowrap cursor-pointer active:scale-[0.98]"
+                className="min-h-[44px] px-5 rounded-full bg-primary text-primary-contrast text-[14px] font-bold whitespace-nowrap cursor-pointer active:scale-[0.98]"
               >
                 Browse menu
               </button>
@@ -3686,12 +3688,12 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
               {recentOrders.map((ord) => (
                 <div
                   key={ord.id}
-                  className="rounded-2xl border border-[#E8E8E8] dark:border-[#2E2E2E] bg-surface p-4 sm:p-5 space-y-3.5 min-w-0 overflow-hidden"
+                  className="rounded-2xl border border-border  bg-surface p-4 sm:p-5 space-y-3.5 min-w-0 overflow-hidden"
                 >
                   <div className="flex items-start justify-between gap-3 min-w-0">
                     <div className="min-w-0 flex-1">
                       <p className="text-[14px] text-muted tabular-nums break-words">
-                        {ord.orderNumber} · <strong className="text-[#E23744]">{ord.status}</strong> · OTP: {ord.deliveryOtp}
+                        {ord.orderNumber} · <strong className="text-primary">{ord.status}</strong> · OTP: {ord.deliveryOtp}
                       </p>
                       <p className="mt-1 text-[16px] font-bold text-text line-clamp-2 break-words">
                         {ord.items.map((i) => `${i.quantity}x ${i.itemName}`).join(', ')}
@@ -3720,7 +3722,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                     <button
                       type="button"
                       onClick={() => onOpenTracking(ord.trackingToken)}
-                      className="flex-1 min-h-[44px] px-4 rounded-xl bg-[#E23744] text-white text-[14px] font-bold whitespace-nowrap cursor-pointer active:scale-[0.98]"
+                      className="flex-1 min-h-[44px] px-4 rounded-xl bg-primary text-primary-contrast text-[14px] font-bold whitespace-nowrap cursor-pointer active:scale-[0.98]"
                     >
                       Track live
                     </button>
@@ -3737,7 +3739,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
           8. SIMPLE FOOTER: Privacy, Terms, Help, FSSAI number + Green "Order on WhatsApp" button
          ===================================================================== */}
       {checkoutStep === 'store' && (
-        <footer className="w-full max-w-[1200px] mx-auto mt-12 px-4 pt-8 pb-6 border-t border-[#E8E8E8] dark:border-[#2E2E2E] text-[14px] text-muted space-y-5 min-w-0 max-w-full overflow-x-hidden">
+        <footer className="w-full max-w-[1200px] mx-auto mt-12 px-4 pt-8 pb-6 border-t border-border  text-[14px] text-muted space-y-5 min-w-0 max-w-full overflow-x-hidden">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div className="min-w-0 space-y-1">
               <p className="font-display text-[18px] font-extrabold text-text break-words">
@@ -3754,18 +3756,18 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
               href={whatsappHref}
               target="_blank"
               rel="noopener noreferrer"
-              className="min-h-[48px] px-5 rounded-2xl bg-[#1BA672] hover:bg-[#158f61] text-white text-[15px] font-extrabold inline-flex items-center justify-center gap-2.5 shadow-sm whitespace-nowrap shrink-0 transition-all active:scale-[0.98]"
+              className="min-h-[48px] px-5 rounded-2xl bg-accent hover:opacity-90 text-white text-[15px] font-extrabold inline-flex items-center justify-center gap-2.5 shadow-sm whitespace-nowrap shrink-0 transition-all active:scale-[0.98]"
             >
               <MessageCircle className="w-5 h-5 fill-white/20 shrink-0" />
               <span>Order on WhatsApp</span>
             </a>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-[#E8E8E8]/60 dark:border-[#2E2E2E]">
+          <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-border/60 ">
             <button
               type="button"
               onClick={() => setActivePolicyModal('privacy')}
-              className="min-h-[44px] px-3 rounded-xl hover:bg-[#FFF5F3] dark:hover:bg-white/5 text-[14px] font-semibold text-text cursor-pointer whitespace-nowrap"
+              className="min-h-[44px] px-3 rounded-xl hover:bg-soft-tint text-[14px] font-semibold text-text cursor-pointer whitespace-nowrap"
             >
               Privacy
             </button>
@@ -3775,7 +3777,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
             <button
               type="button"
               onClick={() => setActivePolicyModal('terms')}
-              className="min-h-[44px] px-3 rounded-xl hover:bg-[#FFF5F3] dark:hover:bg-white/5 text-[14px] font-semibold text-text cursor-pointer whitespace-nowrap"
+              className="min-h-[44px] px-3 rounded-xl hover:bg-soft-tint text-[14px] font-semibold text-text cursor-pointer whitespace-nowrap"
             >
               Terms
             </button>
@@ -3785,7 +3787,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
             <button
               type="button"
               onClick={() => setActivePolicyModal('refund')}
-              className="min-h-[44px] px-3 rounded-xl hover:bg-[#FFF5F3] dark:hover:bg-white/5 text-[14px] font-semibold text-text cursor-pointer whitespace-nowrap"
+              className="min-h-[44px] px-3 rounded-xl hover:bg-soft-tint text-[14px] font-semibold text-text cursor-pointer whitespace-nowrap"
             >
               Help
             </button>
@@ -3808,7 +3810,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
             <button
               type="button"
               onClick={() => navigateFlowStep('cart')}
-              className="w-full min-h-[56px] px-4 sm:px-5 rounded-2xl bg-[#1BA672] hover:bg-[#158f61] text-white shadow-[0_12px_28px_-6px_rgba(27,166,114,0.55)] flex items-center justify-between gap-2 cursor-pointer transition-all active:scale-[0.98]"
+              className="w-full min-h-[56px] px-4 sm:px-5 rounded-2xl bg-accent hover:opacity-90 text-white shadow-lg flex items-center justify-between gap-2 cursor-pointer transition-all active:scale-[0.98]"
             >
               <div className="flex items-center gap-2 min-w-0">
                 <span className="text-[15px] sm:text-[16px] font-extrabold tabular-nums text-white whitespace-nowrap">
@@ -3877,12 +3879,12 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   }}
                   className={`w-full min-h-[48px] px-4 rounded-2xl border text-left text-[15px] font-semibold flex items-center justify-between cursor-pointer ${
                     sortBy === opt.id
-                      ? 'border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/15 text-[#E23744] font-bold'
+                      ? 'border-primary bg-soft-tint text-primary font-bold'
                       : 'border-border bg-bg text-text'
                   }`}
                 >
                   <span className="break-words">{opt.label}</span>
-                  {sortBy === opt.id && <Check className="w-5 h-5 text-[#E23744] shrink-0" />}
+                  {sortBy === opt.id && <Check className="w-5 h-5 text-primary shrink-0" />}
                 </button>
               ))}
             </div>
@@ -3915,9 +3917,9 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
               <button
                 type="button"
                 onClick={handleUseCurrentGps}
-                className="w-full min-h-[48px] px-4 rounded-2xl border border-[#E23744]/40 bg-[#FFF5F3] dark:bg-[#E23744]/15 text-[#E23744] font-bold text-[15px] flex items-center justify-center gap-2 whitespace-nowrap cursor-pointer active:scale-[0.98]"
+                className="w-full min-h-[48px] px-4 rounded-2xl border border-primary/40 bg-soft-tint text-primary font-bold text-[15px] flex items-center justify-center gap-2 whitespace-nowrap cursor-pointer active:scale-[0.98]"
               >
-                <Compass className="w-5 h-5 text-[#E23744] shrink-0" />
+                <Compass className="w-5 h-5 text-primary shrink-0" />
                 <span>Use my current GPS location</span>
               </button>
 
@@ -3938,8 +3940,8 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                       }}
                       className={`w-full p-3.5 rounded-2xl border text-left transition-colors cursor-pointer ${
                         locationPinned && guestLat === p.lat && guestLng === p.lng
-                          ? 'border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/15 font-bold'
-                          : 'border-border bg-bg hover:border-[#E23744]/50'
+                          ? 'border-primary bg-soft-tint font-bold'
+                          : 'border-border bg-bg hover:border-primary/50'
                       }`}
                     >
                       <p className="text-[15px] text-text break-words">{p.label}</p>
@@ -3958,7 +3960,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   value={guestAddress}
                   onChange={(e) => setGuestAddress(e.target.value)}
                   placeholder="Enter flat no., building name, street & landmark"
-                  className="w-full p-3 rounded-2xl border border-border bg-bg text-[16px] text-text focus:outline-none focus:border-[#E23744]"
+                  className="w-full p-3 rounded-2xl border border-border bg-bg text-[16px] text-text focus:outline-none focus:border-primary"
                 />
               </div>
 
@@ -3966,8 +3968,8 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                 <div
                   className={`p-3.5 rounded-2xl border text-[14px] ${
                     liveAddressDistance.within
-                      ? 'border-[#1BA672]/40 bg-[#1BA672]/10 text-text font-semibold'
-                      : 'border-[#E23744]/40 bg-[#E23744]/10 text-[#E23744] font-bold'
+                      ? 'border-accent/40 bg-accent/10 text-text font-semibold'
+                      : 'border-primary/40 bg-primary/10 text-primary font-bold'
                   }`}
                 >
                   {liveAddressDistance.within
@@ -3979,7 +3981,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
               <button
                 type="button"
                 onClick={() => setAddressSheetOpen(false)}
-                className="w-full min-h-[48px] rounded-2xl bg-[#E23744] text-white text-[16px] font-extrabold whitespace-nowrap cursor-pointer active:scale-[0.98]"
+                className="w-full min-h-[48px] rounded-2xl bg-primary text-primary-contrast text-[16px] font-extrabold whitespace-nowrap cursor-pointer active:scale-[0.98]"
               >
                 Save address
               </button>
@@ -4040,7 +4042,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                     <button
                       type="button"
                       onClick={() => setDescExpanded(!descExpanded)}
-                      className="mt-1 text-xs font-bold text-[#E23744] hover:underline cursor-pointer inline-flex items-center"
+                      className="mt-1 text-xs font-bold text-primary hover:underline cursor-pointer inline-flex items-center"
                     >
                       {descExpanded ? 'Show less' : 'Read more'}
                     </button>
@@ -4059,7 +4061,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                         key={v.id}
                         className={`flex items-center justify-between gap-2 p-3.5 rounded-2xl border cursor-pointer ${
                           selectedVariantId === v.id
-                            ? 'border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/15'
+                            ? 'border-primary bg-soft-tint'
                             : 'border-border bg-bg'
                         }`}
                       >
@@ -4069,7 +4071,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                             name="dish-variant"
                             checked={selectedVariantId === v.id}
                             onChange={() => setSelectedVariantId(v.id)}
-                            className="accent-[#E23744] w-4 h-4 shrink-0"
+                            className="accent-primary w-4 h-4 shrink-0"
                           />
                           <span className="text-[15px] font-semibold text-text break-words min-w-0">
                             {v.name}
@@ -4097,7 +4099,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                           key={addon.id}
                           className={`flex items-center justify-between gap-3 p-3.5 rounded-2xl border cursor-pointer ${
                             checked
-                              ? 'border-[#E23744] bg-[#FFF5F3] dark:bg-[#E23744]/15'
+                              ? 'border-primary bg-soft-tint'
                               : 'border-border bg-bg'
                           }`}
                         >
@@ -4112,7 +4114,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                                     : [...prev, addon.id]
                                 )
                               }
-                              className="accent-[#E23744] w-4 h-4 shrink-0"
+                              className="accent-primary w-4 h-4 shrink-0"
                             />
                             <span className="text-[15px] font-medium text-text line-clamp-2 break-words min-w-0">
                               {addon.name}
@@ -4170,7 +4172,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
               <button
                 type="button"
                 onClick={confirmAddToCart}
-                className="flex-1 min-w-0 h-[46px] px-3 rounded-xl bg-[#E23744] hover:bg-[#c82d39] text-white text-[15px] font-bold whitespace-nowrap flex items-center justify-center cursor-pointer active:scale-[0.98] transition-transform shadow-sm"
+                className="flex-1 min-w-0 h-[46px] px-3 rounded-xl bg-primary hover:opacity-90 text-primary-contrast text-[15px] font-bold whitespace-nowrap flex items-center justify-center cursor-pointer active:scale-[0.98] transition-transform shadow-sm"
               >
                 <span className="hidden min-[380px]:inline">
                   Add to cart · ₹{customModalTotal}
@@ -4190,7 +4192,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
       {pendingRazorpayModal && (
         <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-xs p-0 sm:p-4">
           <div className="w-full max-w-md rounded-t-3xl sm:rounded-3xl bg-surface text-text border border-border shadow-2xl overflow-hidden pb-safe animate-sheet-up">
-            <div className="bg-[#E23744] text-white p-4 sm:p-5 flex items-center justify-between gap-2">
+            <div className="bg-primary text-primary-contrast p-4 sm:p-5 flex items-center justify-between gap-2">
               <div className="min-w-0">
                 <p className="text-[13px] opacity-90 font-semibold">
                   Razorpay Secure Checkout
@@ -4213,7 +4215,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
               </div>
 
               {verifyingPayment && (
-                <div className="rounded-2xl border border-[#E23744]/40 bg-[#FFF5F3] dark:bg-[#E23744]/15 p-3.5 text-[14px] font-bold text-text space-y-1">
+                <div className="rounded-2xl border border-primary/40 bg-soft-tint p-3.5 text-[14px] font-bold text-text space-y-1">
                   <p>Payment verification in progress, do not pay twice.</p>
                   <p className="text-[13px] text-muted font-normal">
                     Confirming payment signature with Razorpay...
@@ -4222,7 +4224,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
               )}
 
               {paymentFailureMessage && (
-                <div className="rounded-2xl border border-[#E23744]/40 bg-[#E23744]/10 p-3.5 text-[14px] font-semibold text-[#E23744] space-y-1">
+                <div className="rounded-2xl border border-primary/40 bg-primary/10 p-3.5 text-[14px] font-semibold text-primary space-y-1">
                   <p className="font-extrabold">Payment was not completed</p>
                   <p>{paymentFailureMessage}</p>
                 </div>
@@ -4233,7 +4235,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   type="button"
                   disabled={verifyingPayment}
                   onClick={() => handleCompleteRazorpayPayment(false)}
-                  className="w-full min-h-[48px] px-4 rounded-2xl bg-[#1BA672] hover:bg-[#158f61] text-white text-[15px] font-extrabold whitespace-nowrap cursor-pointer disabled:opacity-50"
+                  className="w-full min-h-[48px] px-4 rounded-2xl bg-accent hover:opacity-90 text-white text-[15px] font-extrabold whitespace-nowrap cursor-pointer disabled:opacity-50"
                 >
                   {verifyingPayment
                     ? 'Verifying payment...'
@@ -4246,7 +4248,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   type="button"
                   disabled={verifyingPayment}
                   onClick={() => handleCompleteRazorpayPayment(true)}
-                  className="w-full min-h-[44px] px-4 rounded-2xl border border-[#E23744]/30 text-[#E23744] hover:bg-[#E23744]/10 text-[14px] font-bold whitespace-nowrap cursor-pointer disabled:opacity-50"
+                  className="w-full min-h-[44px] px-4 rounded-2xl border border-primary/30 text-primary hover:bg-primary/10 text-[14px] font-bold whitespace-nowrap cursor-pointer disabled:opacity-50"
                 >
                   Simulate failed payment
                 </button>
@@ -4277,11 +4279,11 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
       {confirmedSuccessOrder && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4">
           <div className="w-full max-w-sm rounded-3xl bg-surface text-text border border-border p-6 text-center space-y-4 shadow-xl animate-sheet-up">
-            <div className="w-16 h-16 rounded-full bg-[#1BA672]/15 border border-[#1BA672]/30 text-[#1BA672] flex items-center justify-center mx-auto animate-tick-pop">
+            <div className="w-16 h-16 rounded-full bg-accent/15 border border-accent/30 text-accent flex items-center justify-center mx-auto animate-tick-pop">
               <Check className="w-8 h-8 stroke-[2.5]" />
             </div>
             <div className="space-y-1.5">
-              <p className="text-[14px] font-bold text-[#1BA672]">
+              <p className="text-[14px] font-bold text-accent">
                 {confirmedSuccessOrder.paymentMethod === 'COD'
                   ? 'Order confirmed (Cash on Delivery)'
                   : 'Payment verified · Order confirmed'}
@@ -4303,7 +4305,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                 setConfirmedSuccessOrder(null);
                 onOpenTracking(tok);
               }}
-              className="w-full min-h-[48px] px-5 rounded-2xl bg-[#E23744] text-white text-[15px] font-extrabold cursor-pointer active:scale-[0.98]"
+              className="w-full min-h-[48px] px-5 rounded-2xl bg-primary text-primary-contrast text-[15px] font-extrabold cursor-pointer active:scale-[0.98]"
             >
               Track live order
             </button>
@@ -4352,7 +4354,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
             <button
               type="button"
               onClick={() => setActivePolicyModal(null)}
-              className="w-full min-h-[46px] rounded-2xl bg-[#E23744] text-white text-[15px] font-extrabold whitespace-nowrap cursor-pointer"
+              className="w-full min-h-[46px] rounded-2xl bg-primary text-primary-contrast text-[15px] font-extrabold whitespace-nowrap cursor-pointer"
             >
               Close
             </button>

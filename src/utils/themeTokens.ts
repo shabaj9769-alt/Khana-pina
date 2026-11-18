@@ -304,8 +304,14 @@ export function applyStorefrontThemeToDocument(
     }
   }
 
+  const softTint = isDark
+    ? `color-mix(in srgb, ${primary} 16%, ${surface})`
+    : `color-mix(in srgb, ${primary} 8%, ${surface})`;
+
   root.style.setProperty('--color-bg', bg);
   root.style.setProperty('--color-surface', surface);
+  root.style.setProperty('--color-soft-tint', softTint);
+  root.style.setProperty('--aangan-soft-tint', softTint);
   root.style.setProperty('--color-text', text);
   root.style.setProperty('--color-muted', muted);
   root.style.setProperty('--color-border', border);
@@ -318,7 +324,7 @@ export function applyStorefrontThemeToDocument(
 
   const metaTheme = document.querySelector('meta[name="theme-color"]');
   if (metaTheme) {
-    metaTheme.setAttribute('content', cfg.pwaThemeColor || primary);
+    metaTheme.setAttribute('content', primary);
   }
 
   try {

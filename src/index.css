@@ -62,15 +62,6 @@
   }
 
   .dark {
-    --color-bg: #121212;
-    --color-surface: #1C1C1C;
-    --color-soft-tint: #2A1618;
-    --color-text: #F4F4F4;
-    --color-muted: #A1A1AA;
-    --color-border: #2E2E2E;
-    --color-primary: #E23744;
-    --color-primary-contrast: #FFFFFF;
-    --color-accent: #1BA672;
     --color-veg: #1BA672;
   }
 

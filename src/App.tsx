@@ -349,10 +349,10 @@ export default function App() {
                   <span
                     className={`w-2 h-2 rounded-full shrink-0 ${
                       headerMeta.isOpen && !headerMeta.busyMode
-                        ? 'bg-[#1BA672]'
+                        ? 'bg-accent'
                         : headerMeta.isOpen && headerMeta.busyMode
                         ? 'bg-amber-500'
-                        : 'bg-[#E23744]'
+                        : 'bg-primary'
                     }`}
                   />
                   <span className="font-semibold text-text">
@@ -576,7 +576,7 @@ export default function App() {
                         <span>Cart</span>
                       </div>
                       {totalCartItems > 0 && (
-                        <span className={`px-2 py-0.5 rounded-full text-xs font-extrabold ${cartDrawerOpen && window.location.hash !== '#/checkout' ? 'bg-white text-primary' : 'bg-primary text-primary-contrast'}`}>
+                        <span className={`px-2 py-0.5 rounded-full text-xs font-extrabold ${cartDrawerOpen && window.location.hash !== '#/checkout' ? 'bg-primary-contrast text-primary' : 'bg-primary text-primary-contrast'}`}>
                           {totalCartItems}
                         </span>
                       )}
@@ -706,13 +706,13 @@ export default function App() {
             <div className="w-full max-w-[480px] md:max-w-[1000px] mx-auto px-3.5 sm:px-4 pt-4">
               <div
                 role="status"
-                className="rounded-2xl border border-[#1BA672]/40 bg-[#1BA672]/10 p-4 flex items-center gap-3"
+                className="rounded-2xl border border-accent/40 bg-accent/10 p-4 flex items-center gap-3"
               >
-                <span className="w-9 h-9 rounded-full bg-[#1BA672] text-white flex items-center justify-center shrink-0 font-bold">
+                <span className="w-9 h-9 rounded-full bg-accent text-white flex items-center justify-center shrink-0 font-bold">
                   ✓
                 </span>
                 <div className="min-w-0 flex-1">
-                  <p className="font-display text-lg font-extrabold text-[#1BA672]">
+                  <p className="font-display text-lg font-extrabold text-accent">
                     Order placed!
                   </p>
                   <p className="text-sm text-text mt-0.5">

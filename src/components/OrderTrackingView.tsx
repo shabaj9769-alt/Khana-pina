@@ -384,7 +384,7 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
               {order.deliveryBoyPhone && (
                 <a
                   href={`tel:+91${order.deliveryBoyPhone}`}
-                  className="min-h-[44px] px-3.5 rounded-xl bg-[#1BA672] hover:bg-[#158f61] text-white text-[13px] font-semibold inline-flex items-center gap-1.5 shrink-0 cursor-pointer"
+                  className="min-h-[44px] px-3.5 rounded-xl bg-accent hover:opacity-90 text-white text-[13px] font-semibold inline-flex items-center gap-1.5 shrink-0 cursor-pointer"
                 >
                   <Phone className="w-3.5 h-3.5" />
                   <span>Call rider</span>
@@ -464,7 +464,7 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
                         isCurrent
                           ? 'bg-primary text-primary-contrast'
                           : isCompleted
-                          ? 'bg-emerald-600/15 text-emerald-700 dark:text-emerald-400'
+                          ? 'bg-accent/15 text-accent'
                           : 'bg-border/50 text-muted'
                       }`}
                     >
@@ -545,7 +545,7 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
               <span className="tabular-nums">₹{order.itemTotal}</span>
             </div>
             {order.discountAmount > 0 && (
-              <div className="flex justify-between text-[#1BA672] font-semibold">
+              <div className="flex justify-between text-accent font-semibold">
                 <span>Coupon discount ({order.couponCode})</span>
                 <span className="tabular-nums">-₹{order.discountAmount}</span>
               </div>
@@ -613,7 +613,7 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
               placeholder="Report an issue (e.g. missing item, late delivery)..."
               className="w-full rounded-xl border border-border bg-bg text-text p-2.5 text-[14px] focus:border-primary"
             />
-            {reviewFeedback && <p className="text-[#1BA672] font-semibold text-[13px]">{reviewFeedback}</p>}
+            {reviewFeedback && <p className="text-accent font-semibold text-[13px]">{reviewFeedback}</p>}
             <button
               type="submit"
               disabled={submittingReview}
