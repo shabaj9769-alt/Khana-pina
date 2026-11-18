@@ -192,6 +192,39 @@ export function getFirebaseAdminApp(): admin.app.App | null {
   return initializedApp;
 }
 
+export function stripUndefined<T = any>(value: T): T {
+  if (value === undefined) return undefined as unknown as T;
+  if (value === null || typeof value !== 'object') return value;
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return value;
+  }
+}
+
+function wrapLiveRef(rawRef: admin.database.Reference): RtdbRef {
+  return {
+    get: () => rawRef.get() as Promise<RtdbSnapshot>,
+    set: (value: any) => rawRef.set(stripUndefined(value)),
+    update: (values: Record<string, any>) => rawRef.update(stripUndefined(values)),
+    remove: () => rawRef.remove(),
+    transaction: async (
+      updateFn: (currentData: any) => any
+    ): Promise<RtdbTransactionResult> => {
+      const res = await rawRef.transaction((currentData: any) => {
+        const next = updateFn(currentData);
+        if (next === undefined) return undefined;
+        return stripUndefined(next);
+      });
+      return {
+        committed: res.committed,
+        snapshot: res.snapshot as RtdbSnapshot,
+      };
+    },
+    child: (subPath: string): RtdbRef => wrapLiveRef(rawRef.child(subPath)),
+  };
+}
+
 export function getRtdb(): RtdbClient {
   const app = getFirebaseAdminApp();
   if (!app) {
@@ -203,7 +236,7 @@ export function getRtdb(): RtdbClient {
 
   const db = admin.database(app);
   return {
-    ref: (path?: string) => db.ref(path) as unknown as RtdbRef,
+    ref: (path?: string) => wrapLiveRef(db.ref(path)),
     isLiveFirebase: true,
   };
 }

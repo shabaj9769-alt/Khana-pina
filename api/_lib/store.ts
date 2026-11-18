@@ -788,10 +788,10 @@ export function buildPublicTrackingProjection(order: OrderRecord): PublicTrackin
     grandTotal: order.grandTotal,
     itemsSummary: order.items.map((it) => ({
       itemName: it.itemName,
-      variantName: it.variantName,
+      ...(it.variantName ? { variantName: it.variantName } : {}),
       quantity: it.quantity,
       lineTotal: it.lineTotal,
-      itemNote: it.itemNote,
+      ...(it.itemNote ? { itemNote: it.itemNote } : {}),
     })),
     updatedAt: new Date().toISOString(),
   };
