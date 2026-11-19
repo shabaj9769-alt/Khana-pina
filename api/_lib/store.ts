@@ -1085,7 +1085,10 @@ export async function ensureHomeDataLoaded(): Promise<void> {
 
     applySettingsAndZoneToDb(settingsSnap.val(), zoneSnap.val());
     db.categories = recordToArray<Category>(catSnap.val())
-      .map((c) => ({ ...c, imageUrl: normalizeImageUrl(c.imageUrl) }))
+      .map((c) => ({
+        ...c,
+        imageUrl: c.imageUrl && c.imageUrl.trim() ? normalizeImageUrl(c.imageUrl) : '',
+      }))
       .sort((a, b) => a.sortOrder - b.sortOrder);
     db.menuItems = recordToArray<MenuItem>(menuSnap.val()).map((m) => ({
       ...m,
@@ -1398,7 +1401,7 @@ export async function ensureFirebaseSeeded(force = false): Promise<DatabaseState
     db.categories = recordToArray<Category>(rootVal.categories)
       .map((c) => ({
         ...c,
-        imageUrl: normalizeImageUrl(c.imageUrl),
+        imageUrl: c.imageUrl && c.imageUrl.trim() ? normalizeImageUrl(c.imageUrl) : '',
       }))
       .sort((a, b) => a.sortOrder - b.sortOrder);
     db.menuItems = recordToArray<MenuItem>(rootVal.menuItems).map((m) => ({

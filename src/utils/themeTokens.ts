@@ -489,6 +489,53 @@ export function applyAdminOrRiderThemeToDocument(
 }
 
 /**
+ * Shared Photo URL validation:
+ * - Empty string is allowed (falls back to default image where applicable)
+ * - Max 500 characters
+ * - Only https:// URLs or /assets/ paths allowed
+ * - Rejects javascript:, data:, http://, vbscript:, base64 strings
+ */
+export const PHOTO_URL_ERROR_MESSAGE = 'Photo link sahi nahi hai';
+
+export function isValidPhotoUrl(url?: string | null): boolean {
+  if (url === undefined || url === null) return true;
+  const trimmed = String(url).trim();
+  if (!trimmed) return true;
+  if (trimmed.length > 500) return false;
+  if (/[\s\u0000-\u001f]/.test(trimmed)) return false;
+
+  const lower = trimmed.toLowerCase();
+  if (
+    lower.startsWith('javascript:') ||
+    lower.startsWith('data:') ||
+    lower.startsWith('http://') ||
+    lower.startsWith('vbscript:') ||
+    lower.includes(';base64,')
+  ) {
+    return false;
+  }
+
+  if (trimmed.startsWith('/assets/')) {
+    return trimmed.length > '/assets/'.length;
+  }
+
+  if (lower.startsWith('https://')) {
+    try {
+      const parsed = new URL(trimmed);
+      return (
+        parsed.protocol === 'https:' &&
+        Boolean(parsed.hostname) &&
+        parsed.hostname.includes('.')
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  return false;
+}
+
+/**
  * Normalizes leading /src/assets/images/ to /assets/images/ for production compatibility
  */
 export function normalizeImageUrl(url?: string | null): string {

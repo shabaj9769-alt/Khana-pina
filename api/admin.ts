@@ -11,6 +11,11 @@ import {
   PaymentRecord,
 } from '../src/types.ts';
 import {
+  isValidPhotoUrl,
+  normalizeImageUrl,
+  PHOTO_URL_ERROR_MESSAGE,
+} from '../src/utils/themeTokens.ts';
+import {
   createFirebaseCustomToken,
   getRtdb,
   uploadImageToCloudOrStorage,
@@ -73,6 +78,14 @@ const DeliverySlabSchema = z.object({
   fee: z.number().min(0).max(2000),
 });
 
+const photoUrlSchema = z
+  .string()
+  .trim()
+  .max(500, PHOTO_URL_ERROR_MESSAGE)
+  .refine((val) => isValidPhotoUrl(val), {
+    message: PHOTO_URL_ERROR_MESSAGE,
+  });
+
 const StorefrontThemeSchema = z.object({
   mode: z.enum(['light', 'dark', 'auto']),
   presetId: z.enum([
@@ -89,7 +102,7 @@ const StorefrontThemeSchema = z.object({
   accentColor: z.string().trim().max(32),
   fontPair: z.enum(['fraunces-jakarta', 'playfair-inter', 'poppins-only']),
   radiusScale: z.enum(['sharp', 'rounded', 'pill']),
-  logoUrl: z.string().trim().max(500000).optional().default(''),
+  logoUrl: photoUrlSchema.optional().default(''),
   pwaThemeColor: z.string().trim().max(32).optional().default('#E23744'),
 });
 
@@ -113,7 +126,7 @@ const AboutPageSchema = z
   .object({
     tagline: z.string().trim().max(200).optional().default(''),
     story: z.string().trim().max(5000).optional().default(''),
-    coverImage: z.string().trim().max(500000).optional().default(''),
+    coverImage: photoUrlSchema.optional().default(''),
     sections: z.array(AboutPageSectionCardSchema).max(30).optional().default([]),
     openingHours: z.string().trim().max(200).optional().default(''),
     address: z.string().trim().max(500).optional().default(''),
@@ -1308,6 +1321,7 @@ export default async function handler(req: Request, res: Response) {
           description: z.string().max(300).optional().default(''),
           sortOrder: z.number().int().optional(),
           isActive: z.boolean().optional(),
+          imageUrl: photoUrlSchema.optional(),
         })
         .safeParse(req.body);
 
@@ -1318,7 +1332,7 @@ export default async function handler(req: Request, res: Response) {
         return;
       }
 
-      const { id, name, slug, description, sortOrder, isActive } = parsed.data;
+      const { id, name, slug, description, sortOrder, isActive, imageUrl } = parsed.data;
       const existing = db.categories.find((c) => c.id === id);
       if (existing) {
         existing.name = name;
@@ -1326,6 +1340,9 @@ export default async function handler(req: Request, res: Response) {
         existing.description = description || '';
         existing.sortOrder = Number(sortOrder) || existing.sortOrder;
         existing.isActive = Boolean(isActive);
+        if (imageUrl !== undefined) {
+          existing.imageUrl = imageUrl.trim() ? normalizeImageUrl(imageUrl) : '';
+        }
         await rtdb.ref(`categories/${existing.id}`).set(existing);
       } else {
         const created = {
@@ -1335,6 +1352,7 @@ export default async function handler(req: Request, res: Response) {
           description: description || '',
           sortOrder: Number(sortOrder) || db.categories.length + 1,
           isActive: isActive !== false,
+          imageUrl: imageUrl?.trim() ? normalizeImageUrl(imageUrl) : '',
         };
         db.categories.push(created);
         await rtdb.ref(`categories/${created.id}`).set(created);
@@ -1440,18 +1458,32 @@ export default async function handler(req: Request, res: Response) {
           db.categories.some((c) => c.id === defaultCategoryId)
             ? defaultCategoryId
             : db.categories[0]?.id || 'cat_biryani';
+        for (const raw of importedItems) {
+          if (!raw || !raw.name) continue;
+          const imgCheck = photoUrlSchema.optional().safeParse(
+            raw.imageUrl === undefined || raw.imageUrl === null ? '' : String(raw.imageUrl)
+          );
+          if (!imgCheck.success) {
+            res.status(400).json({ error: PHOTO_URL_ERROR_MESSAGE });
+            return;
+          }
+        }
         let importedCount = 0;
         for (const raw of importedItems) {
           if (!raw || !raw.name) continue;
           const rawCatId = typeof raw.categoryId === 'string' ? raw.categoryId.trim() : '';
           const catId = rawCatId || validDefaultCat;
+          const cleanedImage =
+            typeof raw.imageUrl === 'string' && raw.imageUrl.trim()
+              ? normalizeImageUrl(raw.imageUrl)
+              : IMG_HERO;
           db.menuItems.push({
             id: `item_${Date.now()}_${importedCount}`,
             categoryId: String(catId),
             name: String(raw.name).trim(),
             description: String(raw.description || '').trim(),
             basePrice: Math.max(10, Number(raw.basePrice) || 249),
-            imageUrl: String(raw.imageUrl || IMG_HERO),
+            imageUrl: cleanedImage,
             isVeg: raw.isVeg !== false && raw.isVeg !== 'false',
             inStock: raw.inStock !== false && raw.inStock !== 'false',
             showOnHome: true,
@@ -1489,11 +1521,22 @@ export default async function handler(req: Request, res: Response) {
     if (method === 'POST' && subPath === '/menu-items') {
       const admin = await verifyAdminAuthorized(req, res);
       if (!admin) return;
-      const item = req.body as Partial<MenuItem>;
-      if (!item.name || !item.categoryId) {
-        res.status(400).json({ error: 'Item name and category are required' });
+      const parsedMenu = z
+        .object({
+          id: z.string().optional(),
+          name: z.string().trim().min(1, 'Item name and category are required'),
+          categoryId: z.string().trim().min(1, 'Item name and category are required'),
+          imageUrl: photoUrlSchema.optional(),
+        })
+        .passthrough()
+        .safeParse(req.body || {});
+      if (!parsedMenu.success) {
+        const msg = parsedMenu.error.issues[0]?.message || 'Item name and category are required';
+        res.status(400).json({ error: msg });
         return;
       }
+      const item = req.body as Partial<MenuItem>;
+      const validatedImageUrl = parsedMenu.data.imageUrl;
 
       const existingIdx = db.menuItems.findIndex((m) => m.id === item.id);
       const dishId = existingIdx >= 0 ? db.menuItems[existingIdx].id : `item_${Date.now()}`;
@@ -1525,13 +1568,19 @@ export default async function handler(req: Request, res: Response) {
 
       let savedItem: MenuItem;
       if (existingIdx >= 0) {
+        const nextImageUrl =
+          validatedImageUrl === undefined
+            ? db.menuItems[existingIdx].imageUrl
+            : validatedImageUrl.trim()
+            ? normalizeImageUrl(validatedImageUrl)
+            : IMG_HERO;
         savedItem = {
           ...db.menuItems[existingIdx],
-          name: String(item.name).trim(),
-          categoryId: String(item.categoryId),
+          name: parsedMenu.data.name,
+          categoryId: parsedMenu.data.categoryId,
           description: item.description ?? db.menuItems[existingIdx].description,
           basePrice: Number(item.basePrice) || db.menuItems[existingIdx].basePrice,
-          imageUrl: item.imageUrl || db.menuItems[existingIdx].imageUrl,
+          imageUrl: nextImageUrl,
           isVeg: item.isVeg !== undefined ? Boolean(item.isVeg) : db.menuItems[existingIdx].isVeg,
           inStock:
             item.inStock !== undefined ? Boolean(item.inStock) : db.menuItems[existingIdx].inStock,
@@ -1555,13 +1604,17 @@ export default async function handler(req: Request, res: Response) {
         db.menuItems[existingIdx] = savedItem;
         await rtdb.ref(`menuItems/${savedItem.id}`).set(savedItem);
       } else {
+        const createdImageUrl =
+          validatedImageUrl && validatedImageUrl.trim()
+            ? normalizeImageUrl(validatedImageUrl)
+            : IMG_HERO;
         savedItem = {
           id: dishId,
-          categoryId: item.categoryId,
-          name: String(item.name).trim(),
+          categoryId: parsedMenu.data.categoryId,
+          name: parsedMenu.data.name,
           description: item.description || '',
           basePrice: Number(item.basePrice) || 299,
-          imageUrl: item.imageUrl || IMG_HERO,
+          imageUrl: createdImageUrl,
           isVeg: item.isVeg !== false,
           inStock: item.inStock !== false,
           showOnHome: true,
@@ -1654,8 +1707,25 @@ export default async function handler(req: Request, res: Response) {
       const admin = await verifyAdminAuthorized(req, res);
       if (!admin) return;
       const { banners, homeSections } = req.body || {};
-      if (Array.isArray(banners)) {
-        db.banners = banners;
+      if (banners !== undefined) {
+        const parsedBanners = z
+          .array(
+            z
+              .object({
+                id: z.string().min(1),
+                imageUrl: photoUrlSchema.optional().default(''),
+              })
+              .passthrough()
+          )
+          .safeParse(banners);
+        if (!parsedBanners.success) {
+          res.status(400).json({ error: PHOTO_URL_ERROR_MESSAGE });
+          return;
+        }
+        db.banners = parsedBanners.data.map((b) => ({
+          ...(b as any),
+          imageUrl: b.imageUrl && b.imageUrl.trim() ? normalizeImageUrl(b.imageUrl) : IMG_HERO,
+        }));
       }
       if (Array.isArray(homeSections)) {
         db.homeSections = homeSections;
@@ -1721,8 +1791,12 @@ export default async function handler(req: Request, res: Response) {
         }
         const parsedSettings = ShopSettingsUpdateSchema.safeParse(settingsCopy);
         if (!parsedSettings.success) {
+          const issueMsg = parsedSettings.error.issues[0]?.message || 'Check inputs';
           res.status(400).json({
-            error: `Invalid settings field: ${parsedSettings.error.issues[0]?.message || 'Check inputs'}`,
+            error:
+              issueMsg === PHOTO_URL_ERROR_MESSAGE
+                ? PHOTO_URL_ERROR_MESSAGE
+                : `Invalid settings field: ${issueMsg}`,
           });
           return;
         }

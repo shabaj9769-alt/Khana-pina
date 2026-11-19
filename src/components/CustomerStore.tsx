@@ -555,6 +555,25 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
       const data = await res.json();
       if (res.ok) {
         setHomeData(data);
+        if (Array.isArray(data.allMenuItems)) {
+          setCart((prev) => {
+            let changed = false;
+            const next = prev.map((ci) => {
+              const live = (data.allMenuItems as MenuItem[]).find(
+                (m) => m.id === ci.menuItemId
+              );
+              if (live && live.imageUrl) {
+                const nextUrl = optimizeAssetUrl(live.imageUrl);
+                if (ci.imageUrl !== nextUrl) {
+                  changed = true;
+                  return { ...ci, imageUrl: nextUrl };
+                }
+              }
+              return ci;
+            });
+            return changed ? next : prev;
+          });
+        }
         if (data.onlinePaymentEnabled === false) {
           setPaymentMethod('COD');
         }
@@ -1639,6 +1658,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
               src={item.imageUrl}
               alt={item.name}
               className="w-full h-full object-cover object-center transition-transform duration-300 hover:scale-[1.03]"
+              containerClassName="w-full h-full"
             />
 
             {/* Top-left floating FSSAI Veg/Non-veg square dot */}
@@ -3180,6 +3200,8 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                             banner.title ||
                             'Slow-Cooked Awadhi Handis, Delivered Seal-Intact'
                           }
+                          loading={idx === 0 ? 'eager' : 'lazy'}
+                          fetchPriority={idx === 0 ? 'high' : undefined}
                           className="absolute inset-0 w-full h-full object-cover object-center"
                           containerClassName="absolute inset-0 w-full h-full object-cover object-center"
                         />
@@ -3445,7 +3467,10 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
 
                   {categories.map((cat) => {
                     const isActive = selectedCategory === cat.id;
-                    const thumb = CATEGORY_THUMBS[cat.id];
+                    const thumb =
+                      cat.imageUrl && cat.imageUrl.trim()
+                        ? cat.imageUrl.trim()
+                        : CATEGORY_THUMBS[cat.id];
                     return (
                       <button
                         key={cat.id}
@@ -4321,6 +4346,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   src={customizingItem.imageUrl}
                   alt={customizingItem.name}
                   className="w-full h-full object-cover object-center"
+                  containerClassName="w-full h-full"
                 />
               </div>
 

@@ -82,6 +82,8 @@ import {
   applyShopBrandingToDocument,
   cacheStorefrontTheme,
   getCachedShopName,
+  isValidPhotoUrl,
+  PHOTO_URL_ERROR_MESSAGE,
 } from '../utils/themeTokens';
 import { subscribeToAdminOrders } from '../utils/firebaseClient';
 import {
@@ -156,6 +158,82 @@ function formatIstDisplayDate(dateKey: string): string {
   if (!y || !m || !d) return dateKey;
   const utcNoon = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
   return istDisplayDateFormatter.format(utcNoon);
+}
+
+const PHOTO_LINK_HINT =
+  'Direct image link paste karein (.jpg / .png / .webp), jaise Imgur, ImgBB, Cloudinary ya Postimages ka direct link';
+
+interface PhotoLinkInputProps {
+  value: string;
+  onChange: (nextUrl: string) => void;
+  alt: string;
+  defaultPreviewUrl?: string;
+  previewClassName?: string;
+  allowClear?: boolean;
+  inputClassName?: string;
+}
+
+function PhotoLinkInput({
+  value,
+  onChange,
+  alt,
+  defaultPreviewUrl = '',
+  previewClassName = 'w-20 h-20 rounded-xl object-cover border border-border bg-bg shrink-0',
+  allowClear = false,
+  inputClassName = 'w-full min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs text-text',
+}: PhotoLinkInputProps) {
+  const [loadFailed, setLoadFailed] = useState(false);
+  const trimmed = (value || '').trim();
+
+  useEffect(() => {
+    setLoadFailed(false);
+  }, [trimmed]);
+
+  const formatInvalid = Boolean(trimmed) && !isValidPhotoUrl(trimmed);
+  const previewSrc = !trimmed ? defaultPreviewUrl : formatInvalid ? '' : trimmed;
+  const showBrokenError = formatInvalid || (Boolean(trimmed) && loadFailed);
+
+  return (
+    <div className="space-y-2 min-w-0">
+      <div className="flex items-center gap-2 min-w-0">
+        <input
+          type="text"
+          maxLength={500}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder="Photo link (direct image URL)"
+          aria-label="Photo link (direct image URL)"
+          className={`flex-1 min-w-0 ${inputClassName}`}
+        />
+        {allowClear && trimmed && (
+          <button
+            type="button"
+            onClick={() => onChange('')}
+            className="min-h-[40px] px-3 rounded-xl border border-red-500/30 text-red-600 text-xs font-semibold hover:bg-red-500/10 cursor-pointer shrink-0"
+          >
+            Remove
+          </button>
+        )}
+      </div>
+      <p className="text-[11px] text-muted leading-snug">{PHOTO_LINK_HINT}</p>
+      <div className="flex items-center gap-2.5 min-w-0">
+        <SafeImage
+          src={previewSrc}
+          alt={alt}
+          className={previewClassName}
+          containerClassName={previewClassName}
+          onImageError={() => {
+            if (trimmed) setLoadFailed(true);
+          }}
+        />
+        {showBrokenError && (
+          <p className="text-xs font-semibold text-red-600 break-words">
+            Yeh link photo nahi khol raha
+          </p>
+        )}
+      </div>
+    </div>
+  );
 }
 
 const ADMIN_USER_CACHE_KEY = 'aangan_admin_user_cache_v1';
@@ -341,8 +419,10 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   // Category Form State
   const [newCategoryName, setNewCategoryName] = useState('');
   const [newCategorySortOrder, setNewCategorySortOrder] = useState(10);
+  const [newCategoryImageUrl, setNewCategoryImageUrl] = useState('');
   const [editingCategoryId, setEditingCategoryId] = useState<string | null>(null);
   const [editingCategoryName, setEditingCategoryName] = useState('');
+  const [editingCategoryImageUrl, setEditingCategoryImageUrl] = useState('');
 
   // Rider Form State
   const [newRiderName, setNewRiderName] = useState('');
@@ -1161,7 +1241,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     nextSections?: HomeSection[],
     nextBanners?: Banner[],
     silentToast = false
-  ) => {
+  ): Promise<boolean> => {
     try {
       const res = await adminFetch('/api/admin/home-manager', {
         method: 'PUT',
@@ -1171,8 +1251,9 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         }),
       });
       if (!res.ok) {
-        if (!silentToast) showToast('Could not save');
-        return;
+        const err = await res.json().catch(() => ({}));
+        if (!silentToast) showToast(err.error || 'Could not save');
+        return false;
       }
       const data = await res.json();
       setHomeSections(data.homeSections || []);
@@ -1180,8 +1261,10 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       if (data.menuItems) setMenuItems(data.menuItems);
       triggerStoreRefresh();
       if (!silentToast) showToast('Saved');
+      return true;
     } catch {
       if (!silentToast) showToast('Could not save');
+      return false;
     }
   };
 
@@ -1354,6 +1437,10 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
   const handleSaveDish = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!isValidPhotoUrl(dishForm.imageUrl)) {
+      showToast(PHOTO_URL_ERROR_MESSAGE);
+      return;
+    }
     const targetItemId = editingDish?.id || '';
     const formattedVariants: ItemVariant[] = dishForm.variants
       .filter((v) => v.name.trim().length > 0)
@@ -1389,7 +1476,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       isTodaysSpecial: dishForm.isTodaysSpecial,
       spiceLevel: dishForm.spiceLevel,
       prepTimeMins: Number(dishForm.prepTimeMins),
-      imageUrl: dishForm.imageUrl,
+      imageUrl: dishForm.imageUrl.trim(),
       variants: formattedVariants,
       addons: formattedAddons,
     };
@@ -1399,7 +1486,11 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         method: 'POST',
         body: JSON.stringify(payload),
       });
-      if (!res.ok) throw new Error();
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        showToast(err.error || 'Could not save dish');
+        return;
+      }
       const data = await res.json();
       setMenuItems(data.menuItems || []);
       const savedId: string | undefined = data.item?.id || editingDish?.id;
@@ -3457,26 +3548,36 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 <div className="space-y-4">
                   <form
                     onSubmit={async (e) => {
-                        e.preventDefault();
-                        if (!newCategoryName.trim()) return;
-                        const res = await adminFetch('/api/admin/categories', {
-                          method: 'POST',
-                          body: JSON.stringify({
-                            name: newCategoryName.trim(),
-                            sortOrder: Number(newCategorySortOrder),
-                            isActive: true,
-                          }),
-                        });
-                        if (res.ok) {
-                          const data = await res.json();
-                          setCategories(data.categories || []);
-                          setNewCategoryName('');
-                          triggerStoreRefresh();
-                          showToast('Saved');
-                        }
-                      }}
-                      className="bg-surface rounded-2xl border border-border p-4 flex flex-col sm:flex-row gap-2"
-                    >
+                      e.preventDefault();
+                      if (!newCategoryName.trim()) return;
+                      if (!isValidPhotoUrl(newCategoryImageUrl)) {
+                        showToast(PHOTO_URL_ERROR_MESSAGE);
+                        return;
+                      }
+                      const res = await adminFetch('/api/admin/categories', {
+                        method: 'POST',
+                        body: JSON.stringify({
+                          name: newCategoryName.trim(),
+                          sortOrder: Number(newCategorySortOrder),
+                          isActive: true,
+                          imageUrl: newCategoryImageUrl.trim(),
+                        }),
+                      });
+                      if (res.ok) {
+                        const data = await res.json();
+                        setCategories(data.categories || []);
+                        setNewCategoryName('');
+                        setNewCategoryImageUrl('');
+                        triggerStoreRefresh();
+                        showToast('Saved');
+                      } else {
+                        const err = await res.json().catch(() => ({}));
+                        showToast(err.error || 'Could not save category');
+                      }
+                    }}
+                    className="bg-surface rounded-2xl border border-border p-4 space-y-3"
+                  >
+                    <div className="flex flex-col sm:flex-row gap-2">
                       <input
                         type="text"
                         required
@@ -3498,7 +3599,20 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       >
                         Add Category
                       </button>
-                    </form>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-text mb-1">
+                        Photo link (direct image URL)
+                      </label>
+                      <PhotoLinkInput
+                        value={newCategoryImageUrl}
+                        onChange={setNewCategoryImageUrl}
+                        alt={newCategoryName || 'Category preview'}
+                        previewClassName="w-12 h-12 rounded-xl object-cover border border-border bg-bg shrink-0"
+                        allowClear
+                      />
+                    </div>
+                  </form>
                   <div className="space-y-2">
                     {categories.map((cat) => (
                       <div
@@ -3506,42 +3620,70 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         className="bg-surface rounded-xl border border-border p-3.5 flex flex-wrap items-center justify-between gap-2 min-w-0"
                       >
                         {editingCategoryId === cat.id ? (
-                          <div className="flex flex-wrap items-center gap-2 flex-1 min-w-0">
-                            <input
-                              type="text"
-                              value={editingCategoryName}
-                              onChange={(e) => setEditingCategoryName(e.target.value)}
-                              className="flex-1 min-w-[140px] min-h-[36px] px-3 rounded-lg border border-border bg-bg text-xs"
+                          <div className="space-y-2 flex-1 min-w-0">
+                            <div className="flex flex-wrap items-center gap-2 min-w-0">
+                              <input
+                                type="text"
+                                value={editingCategoryName}
+                                onChange={(e) => setEditingCategoryName(e.target.value)}
+                                className="flex-1 min-w-[140px] min-h-[36px] px-3 rounded-lg border border-border bg-bg text-xs"
+                              />
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  if (!isValidPhotoUrl(editingCategoryImageUrl)) {
+                                    showToast(PHOTO_URL_ERROR_MESSAGE);
+                                    return;
+                                  }
+                                  const res = await adminFetch('/api/admin/categories', {
+                                    method: 'POST',
+                                    body: JSON.stringify({
+                                      id: cat.id,
+                                      name: editingCategoryName,
+                                      sortOrder: cat.sortOrder,
+                                      isActive: cat.isActive,
+                                      imageUrl: editingCategoryImageUrl.trim(),
+                                    }),
+                                  });
+                                  if (res.ok) {
+                                    const d = await res.json();
+                                    setCategories(d.categories || []);
+                                    setEditingCategoryId(null);
+                                    setEditingCategoryImageUrl('');
+                                    triggerStoreRefresh();
+                                    showToast('Saved');
+                                  } else {
+                                    const err = await res.json().catch(() => ({}));
+                                    showToast(err.error || 'Could not save category');
+                                  }
+                                }}
+                                className="px-3 py-1.5 rounded-lg bg-primary text-primary-contrast text-xs font-bold cursor-pointer shrink-0"
+                              >
+                                Save
+                              </button>
+                            </div>
+                            <PhotoLinkInput
+                              value={editingCategoryImageUrl}
+                              onChange={setEditingCategoryImageUrl}
+                              alt={editingCategoryName || 'Category preview'}
+                              previewClassName="w-12 h-12 rounded-xl object-cover border border-border bg-bg shrink-0"
+                              allowClear
                             />
-                            <button
-                              type="button"
-                              onClick={async () => {
-                                const res = await adminFetch('/api/admin/categories', {
-                                  method: 'POST',
-                                  body: JSON.stringify({
-                                    id: cat.id,
-                                    name: editingCategoryName,
-                                    sortOrder: cat.sortOrder,
-                                    isActive: cat.isActive,
-                                  }),
-                                });
-                                if (res.ok) {
-                                  const d = await res.json();
-                                  setCategories(d.categories || []);
-                                  setEditingCategoryId(null);
-                                  triggerStoreRefresh();
-                                  showToast('Saved');
-                                }
-                              }}
-                              className="px-3 py-1.5 rounded-lg bg-primary text-primary-contrast text-xs font-bold cursor-pointer shrink-0"
-                            >
-                              Save
-                            </button>
                           </div>
                         ) : (
-                          <div className="min-w-0 flex-1">
-                            <p className="font-bold text-sm text-text break-words">{cat.name}</p>
-                            <p className="text-xs text-muted">Sort Order: {cat.sortOrder}</p>
+                          <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                            {cat.imageUrl ? (
+                              <SafeImage
+                                src={cat.imageUrl}
+                                alt={cat.name}
+                                className="w-10 h-10 rounded-lg object-cover border border-border shrink-0 bg-bg"
+                                containerClassName="w-10 h-10 rounded-lg object-cover border border-border shrink-0 bg-bg"
+                              />
+                            ) : null}
+                            <div className="min-w-0 flex-1">
+                              <p className="font-bold text-sm text-text break-words">{cat.name}</p>
+                              <p className="text-xs text-muted">Sort Order: {cat.sortOrder}</p>
+                            </div>
                           </div>
                         )}
                         <div className="flex items-center gap-2 shrink-0">
@@ -3575,6 +3717,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                             onClick={() => {
                               setEditingCategoryId(cat.id);
                               setEditingCategoryName(cat.name);
+                              setEditingCategoryImageUrl(cat.imageUrl || '');
                             }}
                             className="p-1.5 rounded-lg border border-border text-muted hover:text-text cursor-pointer"
                             title="Edit Category"
@@ -3826,34 +3969,26 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       placeholder="Banner Subtitle"
                       className="min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs"
                     />
-                    <div className="flex flex-wrap items-center gap-2.5 min-w-0">
-                      {newBannerImageUrl ? (
-                        <SafeImage
-                          src={newBannerImageUrl}
-                          alt="Banner preview"
-                          className="w-14 h-10 rounded-lg object-cover border border-border shrink-0 bg-bg"
-                          containerClassName="w-14 h-10 rounded-lg object-cover border border-border shrink-0 bg-bg"
-                        />
-                      ) : null}
-                      <label className="flex-1 min-w-[140px] min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer hover:bg-surface">
-                        <Upload className="w-3.5 h-3.5" />
-                        {isUploadingImage ? 'Uploading...' : newBannerImageUrl ? 'Change Banner Photo' : 'Upload Banner Photo'}
-                        <input
-                          type="file"
-                          accept="image/*"
-                          className="hidden"
-                          onChange={async (e) => {
-                            const f = e.target.files?.[0];
-                            if (!f) return;
-                            const url = await uploadImageFile(f, 'banner');
-                            if (url) setNewBannerImageUrl(url);
-                          }}
-                        />
+                    <div className="sm:col-span-2">
+                      <label className="block text-xs font-semibold text-text mb-1">
+                        Photo link (direct image URL)
                       </label>
+                      <PhotoLinkInput
+                        value={newBannerImageUrl}
+                        onChange={setNewBannerImageUrl}
+                        alt="Banner preview"
+                        defaultPreviewUrl="/assets/images/hero_artisanal_feast_1793975537331.jpg"
+                        previewClassName="w-24 h-14 rounded-lg object-cover border border-border shrink-0 bg-bg"
+                        allowClear
+                      />
                     </div>
                     <button
-                      onClick={() => {
+                      onClick={async () => {
                         if (!newBannerTitle.trim()) return;
+                        if (!isValidPhotoUrl(newBannerImageUrl)) {
+                          showToast(PHOTO_URL_ERROR_MESSAGE);
+                          return;
+                        }
                         const nextSlide: Banner = {
                           id: `ban_${Date.now()}`,
                           title: newBannerTitle.trim(),
@@ -3869,12 +4004,14 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                           startDate: '2025-01-01',
                           endDate: '2027-12-31',
                         };
-                        handleUpdateHomeManager(undefined, [...banners, nextSlide]);
-                        setNewBannerTitle('');
-                        setNewBannerSubtitle('');
-                        setNewBannerImageUrl('');
+                        const ok = await handleUpdateHomeManager(undefined, [...banners, nextSlide]);
+                        if (ok) {
+                          setNewBannerTitle('');
+                          setNewBannerSubtitle('');
+                          setNewBannerImageUrl('');
+                        }
                       }}
-                      className="min-h-[40px] px-4 rounded-xl bg-primary text-primary-contrast text-xs font-bold cursor-pointer"
+                      className="min-h-[40px] px-4 rounded-xl bg-primary text-primary-contrast text-xs font-bold cursor-pointer sm:col-span-2"
                     >
                       + Add Banner
                     </button>
@@ -4162,57 +4299,36 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       </div>
                     </div>
 
-                    {/* 5. Store Logo Upload */}
+                    {/* 5. Store Logo Link */}
                     <div>
                       <label className="block text-xs font-bold text-text mb-1.5">
-                        Store Brand Logo (Optional)
+                        Store Brand Logo — Photo link (direct image URL)
                       </label>
-                      <div className="flex flex-wrap items-center gap-3 min-w-0">
-                        {themeDraft.logoUrl ? (
-                          <SafeImage
-                            src={themeDraft.logoUrl}
-                            alt="Store logo"
-                            className="w-12 h-12 rounded-xl object-cover border border-border bg-bg shrink-0"
-                            containerClassName="w-12 h-12 rounded-xl object-cover border border-border bg-bg shrink-0"
-                          />
-                        ) : null}
-                        <label className="flex-1 min-w-[140px] min-h-[42px] px-4 rounded-xl border border-border bg-bg text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer hover:bg-surface">
-                          <Upload className="w-3.5 h-3.5" />
-                          {isUploadingImage ? 'Uploading...' : themeDraft.logoUrl ? 'Change Logo' : 'Upload Logo'}
-                          <input
-                            type="file"
-                            accept="image/*"
-                            className="hidden"
-                            onChange={async (e) => {
-                              const f = e.target.files?.[0];
-                              if (!f) return;
-                              const url = await uploadImageFile(f, 'logo');
-                              if (url) setThemeDraft({ ...themeDraft, logoUrl: url });
-                            }}
-                          />
-                        </label>
-                        {themeDraft.logoUrl && (
-                          <button
-                            type="button"
-                            onClick={() => setThemeDraft({ ...themeDraft, logoUrl: '' })}
-                            className="min-h-[42px] px-3 rounded-xl border border-red-500/30 text-red-600 text-xs font-semibold hover:bg-red-500/10 cursor-pointer"
-                          >
-                            Remove
-                          </button>
-                        )}
-                      </div>
+                      <PhotoLinkInput
+                        value={themeDraft.logoUrl || ''}
+                        onChange={(val) => setThemeDraft({ ...themeDraft, logoUrl: val })}
+                        alt="Store logo"
+                        previewClassName="w-12 h-12 rounded-xl object-cover border border-border bg-bg shrink-0"
+                        allowClear
+                        inputClassName="w-full min-h-[42px] px-3 rounded-xl border border-border bg-bg text-xs text-text"
+                      />
                     </div>
 
                     <button
                       type="button"
-                      onClick={() =>
+                      onClick={() => {
+                        if (!isValidPhotoUrl(themeDraft.logoUrl)) {
+                          showToast(PHOTO_URL_ERROR_MESSAGE);
+                          return;
+                        }
                         handleUpdateShopSettings({
                           theme: {
                             ...themeDraft,
+                            logoUrl: (themeDraft.logoUrl || '').trim(),
                             pwaThemeColor: themeDraft.primaryColor || themeDraft.pwaThemeColor,
                           },
-                        })
-                      }
+                        });
+                      }}
                       className="w-full min-h-[44px] rounded-xl bg-primary text-primary-contrast font-bold text-xs cursor-pointer shadow-sm"
                     >
                       Save & Publish Storefront Theme
@@ -4405,48 +4521,16 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
                     <div className="space-y-2">
                       <label className="block text-xs font-bold text-text">
-                        Cover Image (Optional)
+                        Cover Image — Photo link (direct image URL)
                       </label>
-                      <div className="flex flex-wrap items-center gap-3 min-w-0">
-                        {aboutDraft.coverImage ? (
-                          <SafeImage
-                            src={aboutDraft.coverImage}
-                            alt="About cover preview"
-                            className="w-24 h-16 rounded-xl object-cover border border-border bg-bg shrink-0"
-                            containerClassName="w-24 h-16 rounded-xl object-cover border border-border bg-bg shrink-0"
-                          />
-                        ) : null}
-                        <label className="flex-1 min-w-[160px] min-h-[42px] px-4 rounded-xl border border-border bg-bg text-xs font-bold flex items-center justify-center gap-1.5 hover:bg-surface cursor-pointer">
-                          <Upload className="w-3.5 h-3.5 shrink-0" />
-                          <span>
-                            {isUploadingImage
-                              ? 'Uploading...'
-                              : aboutDraft.coverImage
-                              ? 'Change Photo'
-                              : 'Upload Photo'}
-                          </span>
-                          <input
-                            type="file"
-                            accept="image/*"
-                            className="hidden"
-                            onChange={async (e) => {
-                              const f = e.target.files?.[0];
-                              if (!f) return;
-                              const url = await uploadImageFile(f, 'about_cover');
-                              if (url) setAboutDraft((prev) => ({ ...prev, coverImage: url }));
-                            }}
-                          />
-                        </label>
-                        {aboutDraft.coverImage && (
-                          <button
-                            type="button"
-                            onClick={() => setAboutDraft((prev) => ({ ...prev, coverImage: '' }))}
-                            className="min-h-[42px] px-3 rounded-xl border border-red-500/30 text-red-600 text-xs font-semibold hover:bg-red-500/10 cursor-pointer"
-                          >
-                            Remove
-                          </button>
-                        )}
-                      </div>
+                      <PhotoLinkInput
+                        value={aboutDraft.coverImage || ''}
+                        onChange={(val) => setAboutDraft((prev) => ({ ...prev, coverImage: val }))}
+                        alt="About cover preview"
+                        previewClassName="w-24 h-16 rounded-xl object-cover border border-border bg-bg shrink-0"
+                        allowClear
+                        inputClassName="w-full min-h-[42px] px-3 rounded-xl border border-border bg-bg text-xs text-text"
+                      />
                     </div>
 
                     <div>
@@ -4870,6 +4954,11 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                             emoji,
                             sortOrder: cleanedCards.length + 1,
                           });
+                        }
+
+                        if (!isValidPhotoUrl(aboutDraft.coverImage)) {
+                          showToast(PHOTO_URL_ERROR_MESSAGE);
+                          return;
                         }
 
                         const payload: AboutPageConfig = {
@@ -6736,32 +6825,19 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
               </div>
             </div>
 
-            {/* Photo Upload + Preview (no URL typing box) */}
+            {/* Photo Link Input + Live Preview */}
             <div>
-              <label className="block text-xs font-semibold mb-1.5">Dish Photo</label>
-              <div className="flex items-center gap-3">
-                <SafeImage
-                  src={dishForm.imageUrl}
-                  alt={dishForm.name || 'Dish preview'}
-                  className="w-20 h-20 rounded-xl object-cover border border-border bg-bg shrink-0"
-                  containerClassName="w-20 h-20 rounded-xl object-cover border border-border bg-bg shrink-0"
-                />
-                <label className="flex-1 min-h-[48px] px-4 rounded-xl bg-primary/10 border border-primary/30 text-primary text-xs font-bold flex items-center justify-center gap-2 cursor-pointer hover:bg-primary/15 transition-colors">
-                  <Upload className="w-4 h-4 shrink-0" />
-                  <span>{isUploadingImage ? 'Uploading Photo...' : 'Upload Photo'}</span>
-                  <input
-                    type="file"
-                    accept="image/*"
-                    className="hidden"
-                    onChange={async (e) => {
-                      const f = e.target.files?.[0];
-                      if (!f) return;
-                      const url = await uploadImageFile(f, 'dish');
-                      if (url) setDishForm((prev) => ({ ...prev, imageUrl: url }));
-                    }}
-                  />
-                </label>
-              </div>
+              <label className="block text-xs font-semibold mb-1.5">
+                Dish Photo — Photo link (direct image URL)
+              </label>
+              <PhotoLinkInput
+                value={dishForm.imageUrl}
+                onChange={(val) => setDishForm((prev) => ({ ...prev, imageUrl: val }))}
+                alt={dishForm.name || 'Dish preview'}
+                defaultPreviewUrl="/assets/images/hero_artisanal_feast_1793975537331.webp"
+                previewClassName="w-20 h-20 rounded-xl object-cover border border-border bg-bg shrink-0"
+                allowClear
+              />
             </div>
 
             <div>
