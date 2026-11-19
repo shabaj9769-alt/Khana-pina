@@ -66,6 +66,7 @@ export default function App() {
     busyMode: false,
     opensAtText: '11:00 AM',
     logoUrl: '',
+    cityArea: '',
   }));
 
   const [headerAddressLabel, setHeaderAddressLabel] = useState<string>(() => {
@@ -143,6 +144,7 @@ export default function App() {
           shopName: status.shopName || prev.shopName,
           isOpen: status.isOpen,
           busyMode: status.busyMode,
+          cityArea: status.cityArea !== undefined ? status.cityArea : prev.cityArea,
         }));
         if (status.theme) {
           setStorefrontTheme(status.theme);
@@ -378,6 +380,11 @@ export default function App() {
                         : 'Open'
                       : `Closed · Opens at ${headerMeta.opensAtText || '11:00 AM'}`}
                   </span>
+                  {headerMeta.cityArea?.trim() ? (
+                    <span className="text-muted hidden sm:inline">
+                      · {headerMeta.cityArea.trim()}
+                    </span>
+                  ) : null}
                 </div>
               </div>
             </div>
@@ -706,6 +713,7 @@ export default function App() {
                 busyMode: meta.busyMode,
                 opensAtText: meta.opensAtText || '11:00 AM',
                 logoUrl: meta.theme?.logoUrl || '',
+                cityArea: meta.cityArea || '',
               });
               if (meta.theme) {
                 setStorefrontTheme(meta.theme);

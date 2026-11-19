@@ -148,6 +148,7 @@ const ShopSettingsUpdateSchema = z
     themeAccentColor: z.string().trim().max(32).optional(),
     themeSurfaceStyle: z.enum(['warm', 'clean', 'minimal']).optional(),
     theme: StorefrontThemeSchema.optional(),
+    cityArea: z.string().trim().max(80).optional(),
     aboutPage: AboutPageSchema.optional(),
   })
   .strict();

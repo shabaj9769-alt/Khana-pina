@@ -164,6 +164,10 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const [customers, setCustomers] = useState<CustomerRecord[]>([]);
   const [shopSettings, setShopSettings] = useState<ShopSettings | null>(null);
   const [deliveryZone, setDeliveryZone] = useState<DeliveryZone | null>(null);
+  const [manualLat, setManualLat] = useState<string>('');
+  const [manualLng, setManualLng] = useState<string>('');
+  const [reverseGeocodeNotice, setReverseGeocodeNotice] = useState<string | null>(null);
+  const [isReverseGeocoding, setIsReverseGeocoding] = useState<boolean>(false);
   const [homeSections, setHomeSections] = useState<HomeSection[]>([]);
   const [banners, setBanners] = useState<Banner[]>([]);
   const [payments, setPayments] = useState<PaymentRecord[]>([]);
@@ -393,6 +397,52 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     return null;
   };
 
+  const fetchAddressSuggestion = async (lat: number, lng: number) => {
+    setReverseGeocodeNotice(null);
+    setIsReverseGeocoding(true);
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 6000);
+      const res = await fetch(
+        `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}`,
+        {
+          headers: { 'Accept-Language': 'en' },
+          signal: controller.signal,
+        }
+      );
+      clearTimeout(timeoutId);
+      if (!res.ok) {
+        setReverseGeocodeNotice('Could not fetch the address, please type it');
+        return;
+      }
+      const data = await res.json().catch(() => null);
+      if (data && typeof data.display_name === 'string' && data.display_name.trim()) {
+        const fullAddr = data.display_name.trim();
+        setDeliveryZone((prev) => (prev ? { ...prev, shopAddress: fullAddr } : prev));
+        const cityCandidate =
+          data.address?.city ||
+          data.address?.town ||
+          data.address?.suburb ||
+          data.address?.state_district;
+        if (cityCandidate) {
+          setShopSettings((prev) => {
+            if (prev && (!prev.cityArea || !prev.cityArea.trim())) {
+              return { ...prev, cityArea: String(cityCandidate).trim() };
+            }
+            return prev;
+          });
+        }
+        setReverseGeocodeNotice(null);
+      } else {
+        setReverseGeocodeNotice('Could not fetch the address, please type it');
+      }
+    } catch {
+      setReverseGeocodeNotice('Could not fetch the address, please type it');
+    } finally {
+      setIsReverseGeocoding(false);
+    }
+  };
+
   const handleLocationLinkChange = async (val: string) => {
     setLocationInput(val);
     setLocationLinkError(null);
@@ -407,8 +457,11 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       setDeliveryZone((prev) =>
         prev ? { ...prev, shopLat: extracted.lat, shopLng: extracted.lng } : prev
       );
+      setManualLat(String(extracted.lat));
+      setManualLng(String(extracted.lng));
       setLocationDetectStatus('detected');
       setGpsErrorMessage(null);
+      fetchAddressSuggestion(extracted.lat, extracted.lng);
       return;
     }
 
@@ -421,11 +474,16 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         });
         const d = await res.json().catch(() => ({}));
         if (res.ok && typeof d.lat === 'number' && typeof d.lng === 'number') {
+          const lat = Number(d.lat.toFixed(6));
+          const lng = Number(d.lng.toFixed(6));
           setDeliveryZone((prev) =>
-            prev ? { ...prev, shopLat: d.lat, shopLng: d.lng } : prev
+            prev ? { ...prev, shopLat: lat, shopLng: lng } : prev
           );
+          setManualLat(String(lat));
+          setManualLng(String(lng));
           setLocationDetectStatus('detected');
           setGpsErrorMessage(null);
+          fetchAddressSuggestion(lat, lng);
         } else {
           setLocationDetectStatus('invalid');
           setLocationLinkError(
@@ -556,6 +614,18 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       setCustomers(data.customers || []);
       setShopSettings(data.settings || null);
       setDeliveryZone(data.deliveryZone || null);
+      if (data.deliveryZone) {
+        setManualLat(
+          typeof data.deliveryZone.shopLat === 'number'
+            ? String(data.deliveryZone.shopLat)
+            : ''
+        );
+        setManualLng(
+          typeof data.deliveryZone.shopLng === 'number'
+            ? String(data.deliveryZone.shopLng)
+            : ''
+        );
+      }
       if (Array.isArray(data.settings?.deliverySlabs) && data.settings.deliverySlabs.length > 0) {
         setDeliveryFeeInput(Number(data.settings.deliverySlabs[0].fee ?? 40));
       }
@@ -931,6 +1001,18 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       const data = await res.json();
       setShopSettings(data.settings);
       setDeliveryZone(data.deliveryZone);
+      if (data.deliveryZone) {
+        setManualLat(
+          typeof data.deliveryZone.shopLat === 'number'
+            ? String(data.deliveryZone.shopLat)
+            : ''
+        );
+        setManualLng(
+          typeof data.deliveryZone.shopLng === 'number'
+            ? String(data.deliveryZone.shopLng)
+            : ''
+        );
+      }
       if (data.settings?.shopName) {
         setPublicShopName(data.settings.shopName);
       }
@@ -1605,11 +1687,14 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         setDeliveryZone((prev) =>
           prev ? { ...prev, shopLat: lat, shopLng: lng } : prev
         );
+        setManualLat(String(lat));
+        setManualLng(String(lng));
         setLocationInput('');
         setLocationDetectStatus('idle');
         setLocationLinkError(null);
-        await handleUpdateShopSettings(undefined, { shopLat: lat, shopLng: lng });
         setIsGettingGps(false);
+        showToast('Current GPS coordinates detected. Fetching address suggestion...');
+        await fetchAddressSuggestion(lat, lng);
       },
       (err) => {
         setIsGettingGps(false);
@@ -4671,49 +4756,167 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                     )}
                   </div>
 
-                  {/* Saved Location Preview + Open in Maps Link */}
-                  <div className="p-3 rounded-xl border border-border bg-bg flex flex-wrap items-center justify-between gap-2 text-xs">
-                    <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                      <div className="w-8 h-8 rounded-lg bg-primary/15 text-primary flex items-center justify-center shrink-0">
-                        <MapPin className="w-4 h-4" />
+                  {/* Manual Coordinates Entry */}
+                  <div className="space-y-1.5">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-xs font-semibold text-muted mb-1">
+                          Latitude (-90 to 90)
+                        </label>
+                        <input
+                          type="number"
+                          step="any"
+                          value={manualLat}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setManualLat(val);
+                            const num = parseFloat(val);
+                            if (!isNaN(num) && num >= -90 && num <= 90) {
+                              setDeliveryZone((prev) =>
+                                prev ? { ...prev, shopLat: Number(num.toFixed(6)) } : prev
+                              );
+                            }
+                          }}
+                          placeholder="e.g. 19.0607"
+                          className="w-full min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs text-text tabular-nums"
+                        />
                       </div>
-                      <div className="min-w-0">
-                        <p className="font-bold text-text break-words">
-                          {deliveryZone.shopAddress || 'Shop location saved'}
-                        </p>
-                        <p className="text-[11px] text-muted">
-                          Delivery within {deliveryZone.radiusKm} km of this pin
-                        </p>
+                      <div>
+                        <label className="block text-xs font-semibold text-muted mb-1">
+                          Longitude (-180 to 180)
+                        </label>
+                        <input
+                          type="number"
+                          step="any"
+                          value={manualLng}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setManualLng(val);
+                            const num = parseFloat(val);
+                            if (!isNaN(num) && num >= -180 && num <= 180) {
+                              setDeliveryZone((prev) =>
+                                prev ? { ...prev, shopLng: Number(num.toFixed(6)) } : prev
+                              );
+                            }
+                          }}
+                          placeholder="e.g. 72.8362"
+                          className="w-full min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs text-text tabular-nums"
+                        />
                       </div>
                     </div>
-                    <a
-                      href={`https://www.google.com/maps/search/?api=1&query=${deliveryZone.shopLat},${deliveryZone.shopLng}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="px-3 py-1.5 rounded-lg bg-surface border border-border text-primary font-bold text-xs flex items-center gap-1.5 hover:bg-primary/10 shrink-0"
-                    >
-                      <span>Open in Maps</span>
-                      <ExternalLink className="w-3.5 h-3.5" />
-                    </a>
+                    <p className="text-[11px] text-muted">
+                      Tip: open Google Maps, long-press your shop and copy the numbers shown.
+                    </p>
+                    {(() => {
+                      const latN = parseFloat(manualLat);
+                      const lngN = parseFloat(manualLng);
+                      const latBad = manualLat.trim() !== '' && (isNaN(latN) || latN < -90 || latN > 90);
+                      const lngBad = manualLng.trim() !== '' && (isNaN(lngN) || lngN < -180 || lngN > 180);
+                      if (latBad) {
+                        return (
+                          <p className="text-[11px] font-semibold text-red-600">
+                            Latitude must be a valid number between -90 and 90.
+                          </p>
+                        );
+                      }
+                      if (lngBad) {
+                        return (
+                          <p className="text-[11px] font-semibold text-red-600">
+                            Longitude must be a valid number between -180 and 180.
+                          </p>
+                        );
+                      }
+                      return null;
+                    })()}
                   </div>
 
-                  {/* Shop Address Text Field */}
+                  {/* Reverse Geocoding Feedback */}
+                  {isReverseGeocoding && (
+                    <p className="text-[11px] font-semibold text-muted flex items-center gap-1.5">
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin text-primary shrink-0" />
+                      <span>Fetching address suggestion...</span>
+                    </p>
+                  )}
+                  {reverseGeocodeNotice && (
+                    <p className="text-[11px] font-medium text-amber-600">
+                      {reverseGeocodeNotice}
+                    </p>
+                  )}
+
+                  {/* City / Area Name */}
+                  <div>
+                    <label className="block text-xs font-semibold text-muted mb-1">
+                      City / Area name
+                    </label>
+                    <input
+                      type="text"
+                      value={shopSettings.cityArea || ''}
+                      onChange={(e) =>
+                        setShopSettings({
+                          ...shopSettings,
+                          cityArea: e.target.value,
+                        })
+                      }
+                      placeholder="e.g. Pune, Indiranagar, etc."
+                      className="w-full min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs text-text"
+                    />
+                  </div>
+
+                  {/* Shop Address Text Field (Multi-line, 3 lines, full width) */}
                   <div>
                     <label className="block text-xs font-semibold text-muted mb-1">
                       Shop Address
                     </label>
-                    <input
-                      type="text"
-                      value={deliveryZone.shopAddress}
+                    <textarea
+                      rows={3}
+                      value={deliveryZone.shopAddress || ''}
                       onChange={(e) =>
                         setDeliveryZone({
                           ...deliveryZone,
                           shopAddress: e.target.value,
                         })
                       }
-                      placeholder="Enter your shop address..."
-                      className="w-full min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs text-text"
+                      placeholder="Enter complete shop / kitchen address..."
+                      className="w-full min-h-[72px] px-3 py-2 rounded-xl border border-border bg-bg text-xs text-text resize-y"
                     />
+                  </div>
+
+                  {/* Saved Location Summary Card */}
+                  <div className="p-3.5 rounded-xl border border-border bg-bg space-y-2.5 text-xs">
+                    <div className="flex items-start gap-2.5 min-w-0">
+                      <div className="w-8 h-8 rounded-lg bg-primary/15 text-primary flex items-center justify-center shrink-0 mt-0.5">
+                        <MapPin className="w-4 h-4" />
+                      </div>
+                      <div className="min-w-0 flex-1 space-y-1">
+                        <p className="font-bold text-text break-words">
+                          {deliveryZone.shopAddress || 'Shop address not set'}
+                        </p>
+                        {shopSettings.cityArea?.trim() && (
+                          <p className="text-xs text-text font-semibold break-words">
+                            City / Area: {shopSettings.cityArea.trim()}
+                          </p>
+                        )}
+                        <p className="text-[11px] text-muted break-words">
+                          Coordinates: {deliveryZone.shopLat}, {deliveryZone.shopLng}
+                        </p>
+                        <p className="text-[11px] text-muted">
+                          Delivery within {deliveryZone.radiusKm} km of this pin
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* Open in Maps button on its own row */}
+                    <div className="pt-1 border-t border-border/60">
+                      <a
+                        href={`https://www.google.com/maps/search/?api=1&query=${deliveryZone.shopLat},${deliveryZone.shopLng}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="w-full sm:w-auto px-3.5 py-2 rounded-xl bg-surface border border-border text-primary font-bold text-xs inline-flex items-center justify-center gap-1.5 hover:bg-primary/10 transition-colors"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5 shrink-0" />
+                        <span>Open in Maps</span>
+                      </a>
+                    </div>
                   </div>
 
                   {/* Radius Slider 1 to 25 km (step 0.5) */}
@@ -4802,14 +5005,28 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   {canEditMenu && (
                     <button
                       type="button"
-                      onClick={() => {
-                        const trimmedAddress = deliveryZone.shopAddress.trim();
+                      onClick={async () => {
+                        const trimmedAddress = (deliveryZone.shopAddress || '').trim();
                         if (trimmedAddress.length < 2) {
                           showToast('Please enter your shop address');
                           return;
                         }
-                        handleUpdateShopSettings(
+                        const latNum = parseFloat(manualLat);
+                        const lngNum = parseFloat(manualLng);
+                        if (isNaN(latNum) || latNum < -90 || latNum > 90) {
+                          showToast('Latitude must be between -90 and 90');
+                          return;
+                        }
+                        if (isNaN(lngNum) || lngNum < -180 || lngNum > 180) {
+                          showToast('Longitude must be between -180 and 180');
+                          return;
+                        }
+                        const roundedLat = Number(latNum.toFixed(6));
+                        const roundedLng = Number(lngNum.toFixed(6));
+
+                        await handleUpdateShopSettings(
                           {
+                            cityArea: (shopSettings.cityArea || '').trim(),
                             minOrderAmount: Math.max(0, Number(shopSettings.minOrderAmount) || 0),
                             gstPercent: Math.max(0, Math.min(28, Number(shopSettings.gstPercent) || 0)),
                             deliverySlabs: [
@@ -4820,12 +5037,13 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                             ],
                           },
                           {
-                            shopLat: deliveryZone.shopLat,
-                            shopLng: deliveryZone.shopLng,
+                            shopLat: roundedLat,
+                            shopLng: roundedLng,
                             shopAddress: trimmedAddress,
                             radiusKm: deliveryZone.radiusKm,
                           }
                         );
+                        showToast('Saved');
                       }}
                       className="min-h-[42px] px-5 rounded-xl bg-primary text-primary-contrast text-xs font-bold cursor-pointer"
                     >

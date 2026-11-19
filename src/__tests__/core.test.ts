@@ -41,7 +41,7 @@ async function seedTestOrderAndPayment(overrides: {
     customerName: 'Test Guest',
     customerPhone: '9876543210',
     customerIp: '127.0.0.1',
-    deliveryAddress: 'Carter Road, Bandra West, Mumbai',
+    deliveryAddress: '123, Central Avenue, City',
     deliveryLat: 19.0655,
     deliveryLng: 72.8262,
     distanceKm: 1.2,

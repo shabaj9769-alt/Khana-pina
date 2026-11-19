@@ -86,6 +86,7 @@ interface CustomerStoreProps {
     busyMode: boolean;
     opensAtText?: string;
     theme?: StorefrontThemeConfig;
+    cityArea?: string;
     allMenuItems?: MenuItem[];
   }) => void;
 }
@@ -264,7 +265,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
   const [codOtpDemoHint, setCodOtpDemoHint] = useState<string | null>(null);
   const [codOtpBusy, setCodOtpBusy] = useState(false);
 
-  // Server-validated bill & Haversine preview
+  // Server-validated bill & delivery radius preview
   const [billPreview, setBillPreview] = useState<CheckoutPreviewResponse | null>(null);
   const [placingOrder, setPlacingOrder] = useState(false);
   const [checkoutError, setCheckoutError] = useState<string | null>(null);
@@ -561,6 +562,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
             busyMode: data.settings.busyMode,
             opensAtText: data.settings.opensAtText,
             theme: data.settings.theme,
+            cityArea: data.settings.cityArea,
             allMenuItems: data.allMenuItems,
           });
         }
@@ -594,7 +596,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
     }
   }, [guestName, guestPhone, guestAddress, guestLandmark, guestLat, guestLng, locationPinned]);
 
-  // Fetch server-side Haversine & bill preview whenever cart, location, coupon, or phone changes
+  // Fetch server-side delivery distance & bill preview whenever cart, location, coupon, or phone changes
   useEffect(() => {
     if (cart.length === 0 || !locationPinned || (guestLat === 0 && guestLng === 0)) {
       setBillPreview(null);
@@ -704,7 +706,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
     }
   }, [homeData?.turnstileSiteKey, cartDrawerOpen]);
 
-  // Live Haversine distance check
+  // Live delivery radius distance check
   const liveAddressDistance = useMemo(() => {
     if (!homeData || !locationPinned || (guestLat === 0 && guestLng === 0)) {
       return { km: 0, within: false, pinned: false };
@@ -833,17 +835,38 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
       setGuestLng(fallbackLng);
       setLocationPinned(true);
       if (!guestAddress.trim()) {
-        setGuestAddress('Pinned GPS Location');
+        setGuestAddress('Current location (GPS)');
       }
       return;
     }
     navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        setGuestLat(Number(pos.coords.latitude.toFixed(4)));
-        setGuestLng(Number(pos.coords.longitude.toFixed(4)));
+      async (pos) => {
+        const lat = Number(pos.coords.latitude.toFixed(4));
+        const lng = Number(pos.coords.longitude.toFixed(4));
+        setGuestLat(lat);
+        setGuestLng(lng);
         setLocationPinned(true);
         if (!guestAddress.trim()) {
-          setGuestAddress('Pinned GPS Location');
+          try {
+            const ctrl = new AbortController();
+            const tid = setTimeout(() => ctrl.abort(), 4000);
+            const res = await fetch(
+              `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}`,
+              {
+                headers: { 'Accept-Language': 'en' },
+                signal: ctrl.signal,
+              }
+            );
+            clearTimeout(tid);
+            const data = await res.json().catch(() => null);
+            if (data && typeof data.display_name === 'string' && data.display_name.trim()) {
+              setGuestAddress(data.display_name.trim());
+              return;
+            }
+          } catch {
+            // Fallback to Current location (GPS)
+          }
+          setGuestAddress('Current location (GPS)');
         }
       },
       () => {
@@ -851,7 +874,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
         setGuestLng(fallbackLng);
         setLocationPinned(true);
         if (!guestAddress.trim()) {
-          setGuestAddress('Pinned GPS Location');
+          setGuestAddress('Current location (GPS)');
         }
       }
     );
@@ -3878,7 +3901,12 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
               <p className="font-display text-[18px] font-extrabold text-text break-words">
                 {settings.shopName}
               </p>
-              <p className="text-[14px] text-muted break-words">{deliveryZone.shopAddress}</p>
+              <p className="text-[14px] text-muted break-words">
+                {deliveryZone.shopAddress}
+                {settings.cityArea?.trim() && !deliveryZone.shopAddress?.toLowerCase().includes(settings.cityArea.trim().toLowerCase())
+                  ? ` · ${settings.cityArea.trim()}`
+                  : ''}
+              </p>
               <p className="text-[13px] font-semibold tabular-nums text-muted break-words">
                 FSSAI Lic No. {settings.fssaiNumber} · GST {settings.gstPercent}%
               </p>

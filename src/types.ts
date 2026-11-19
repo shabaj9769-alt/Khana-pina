@@ -156,6 +156,7 @@ export interface ShopSettings {
   themeAccentColor?: string;
   themeSurfaceStyle?: 'warm' | 'clean' | 'minimal';
   theme?: StorefrontThemeConfig;
+  cityArea?: string;
   aboutPage?: AboutPageConfig;
 }
 
@@ -442,6 +443,7 @@ export interface PublicShopStatus {
   opensAtText: string;
   holidaysNote: string;
   allowPreOrdersWhenClosed: boolean;
+  cityArea?: string;
   theme?: StorefrontThemeConfig;
   updatedAt: string;
 }
