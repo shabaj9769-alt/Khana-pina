@@ -5,8 +5,10 @@
 
 import React, { useEffect, useState } from 'react';
 import {
+  Check,
   ChevronDown,
   Clock,
+  Copy,
   CreditCard,
   Flame,
   Home,
@@ -38,6 +40,7 @@ import {
 } from './utils/themeTokens.ts';
 import { SafeImage } from './components/SafeImage.tsx';
 import { subscribeToPublicShopStatus } from './utils/firebaseClient.ts';
+import { installServerTimeFetchSync } from './utils/formatOrderTime.ts';
 
 type AppView = 'customer' | 'tracking' | 'rider' | 'admin';
 
@@ -54,6 +57,8 @@ export default function App() {
   const [storefrontRefreshKey, setStorefrontRefreshKey] = useState(0);
   const [menuItemsCache, setMenuItemsCache] = useState<MenuItem[]>([]);
   const [reorderNotice, setReorderNotice] = useState<string | null>(null);
+  const [loadedTrackingOrder, setLoadedTrackingOrder] = useState<OrderRecord | null>(null);
+  const [copiedTrackingField, setCopiedTrackingField] = useState<'orderId' | 'link' | null>(null);
 
   const [storefrontTheme, setStorefrontTheme] = useState<StorefrontThemeConfig>(DEFAULT_STOREFRONT_THEME);
   const [guestThemeMode, setGuestThemeMode] = useState<ThemeMode | null>(() =>
@@ -157,6 +162,44 @@ export default function App() {
     });
     return () => unsub();
   }, []);
+
+  useEffect(() => {
+    return installServerTimeFetchSync();
+  }, []);
+
+  const copyTrackingText = async (text: string, field: 'orderId' | 'link') => {
+    let copied = false;
+    try {
+      if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        copied = true;
+      }
+    } catch {
+      copied = false;
+    }
+    if (!copied && typeof document !== 'undefined') {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        copied = document.execCommand('copy');
+        document.body.removeChild(ta);
+      } catch {
+        copied = false;
+      }
+    }
+    if (copied) {
+      setCopiedTrackingField(field);
+      setTimeout(() => {
+        setCopiedTrackingField((curr) => (curr === field ? null : curr));
+      }, 2000);
+    }
+  };
 
   // Persist guest cart in localStorage
   useEffect(() => {
@@ -730,43 +773,111 @@ export default function App() {
           />
         )}
 
-        {activeView === 'tracking' && (
-          <div className="w-full max-w-full min-w-0">
-            <div className="w-full max-w-[480px] md:max-w-[1000px] mx-auto px-3.5 sm:px-4 pt-4">
-              <div
-                role="status"
-                className="rounded-2xl border border-accent/40 bg-accent/10 p-4 flex items-center gap-3"
-              >
-                <span className="w-9 h-9 rounded-full bg-accent text-white flex items-center justify-center shrink-0 font-bold">
-                  ✓
-                </span>
-                <div className="min-w-0 flex-1">
-                  <p className="font-display text-lg font-extrabold text-accent">
-                    Order placed!
-                  </p>
-                  <p className="text-sm text-text mt-0.5">
-                    Your order is confirmed and live kitchen tracking is active below.
+        {activeView === 'tracking' && (() => {
+          const matchingOrder =
+            initialTrackingOrder?.trackingToken === trackingToken
+              ? initialTrackingOrder
+              : loadedTrackingOrder?.trackingToken === trackingToken
+              ? loadedTrackingOrder
+              : null;
+          const trackingShareUrl =
+            typeof window !== 'undefined'
+              ? `${window.location.origin}/#/order/${trackingToken}`
+              : `/#/order/${trackingToken}`;
+          const goToStoreSubTab = (tab: 'home' | 'menu') => {
+            setCartDrawerOpen(false);
+            setInitialTrackingOrder(null);
+            setLoadedTrackingOrder(null);
+            setCustomerSubTab(tab);
+            navigateView('customer', '/#/');
+          };
+          return (
+            <div className="w-full max-w-full min-w-0">
+              <div className="w-full max-w-[480px] md:max-w-[1000px] mx-auto px-3.5 sm:px-4 pt-4 print:hidden">
+                <div
+                  role="status"
+                  className="rounded-2xl border border-accent/40 bg-accent/10 p-4 space-y-3"
+                >
+                  <div className="flex items-center gap-3">
+                    <span className="w-9 h-9 rounded-full bg-accent text-white flex items-center justify-center shrink-0 font-bold">
+                      ✓
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="font-display text-lg font-extrabold text-accent">
+                        Order placed!
+                      </p>
+                      <p className="text-sm text-text mt-0.5">
+                        Your order is confirmed and live kitchen tracking is active below.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 print:hidden">
+                    <button
+                      type="button"
+                      onClick={() => goToStoreSubTab('home')}
+                      className="min-h-[44px] px-3.5 rounded-xl border border-border bg-surface text-[13px] font-semibold text-text whitespace-nowrap inline-flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <Home className="w-4 h-4 shrink-0" />
+                      <span>Home</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => goToStoreSubTab('menu')}
+                      className="min-h-[44px] px-3.5 rounded-xl border border-border bg-surface text-[13px] font-semibold text-text whitespace-nowrap inline-flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <UtensilsCrossed className="w-4 h-4 shrink-0" />
+                      <span>Menu</span>
+                    </button>
+                    {matchingOrder?.orderNumber && (
+                      <button
+                        type="button"
+                        onClick={() => copyTrackingText(matchingOrder.orderNumber, 'orderId')}
+                        className="min-h-[44px] px-3.5 rounded-xl border border-border bg-surface text-[13px] font-semibold text-text whitespace-nowrap inline-flex items-center gap-1.5 cursor-pointer"
+                      >
+                        {copiedTrackingField === 'orderId' ? (
+                          <Check className="w-4 h-4 text-accent shrink-0" />
+                        ) : (
+                          <Copy className="w-4 h-4 shrink-0" />
+                        )}
+                        <span>
+                          {copiedTrackingField === 'orderId' ? 'Copied ✓' : 'Copy Order ID'}
+                        </span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => copyTrackingText(trackingShareUrl, 'link')}
+                      className="min-h-[44px] px-3.5 rounded-xl border border-border bg-surface text-[13px] font-semibold text-text whitespace-nowrap inline-flex items-center gap-1.5 cursor-pointer"
+                    >
+                      {copiedTrackingField === 'link' ? (
+                        <Check className="w-4 h-4 text-accent shrink-0" />
+                      ) : (
+                        <Copy className="w-4 h-4 shrink-0" />
+                      )}
+                      <span>
+                        {copiedTrackingField === 'link' ? 'Copied ✓' : 'Copy tracking link'}
+                      </span>
+                    </button>
+                  </div>
+                  <p className="text-[12px] text-muted break-words print:hidden">
+                    Order ID ya link save kar lo, OTP wapas dekhne ke kaam aayega.
                   </p>
                 </div>
               </div>
+              <OrderTrackingView
+                trackingToken={trackingToken}
+                initialOrder={
+                  initialTrackingOrder?.trackingToken === trackingToken
+                    ? initialTrackingOrder
+                    : null
+                }
+                onOrderLoaded={(ord) => setLoadedTrackingOrder(ord)}
+                onBackToStore={() => goToStoreSubTab('home')}
+                onReorder={(ord) => handleReorder(ord, menuItemsCache)}
+              />
             </div>
-            <OrderTrackingView
-              trackingToken={trackingToken}
-              initialOrder={
-                initialTrackingOrder?.trackingToken === trackingToken
-                  ? initialTrackingOrder
-                  : null
-              }
-              onBackToStore={() => {
-                setCartDrawerOpen(false);
-                setInitialTrackingOrder(null);
-                setCustomerSubTab('home');
-                navigateView('customer', '/#/');
-              }}
-              onReorder={(ord) => handleReorder(ord, menuItemsCache)}
-            />
-          </div>
-        )}
+          );
+        })()}
       </main>
 
       <OfflineIndicator />

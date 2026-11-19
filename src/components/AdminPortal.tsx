@@ -84,6 +84,12 @@ import {
   getCachedShopName,
 } from '../utils/themeTokens';
 import { subscribeToAdminOrders } from '../utils/firebaseClient';
+import {
+  formatOrderPlacedAt,
+  formatOrderScheduledAt,
+  formatOrderTime,
+  syncServerTimeFromResponse,
+} from '../utils/formatOrderTime.ts';
 
 interface AdminPortalProps {
   onRefreshStore?: () => void;
@@ -660,6 +666,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       headers,
       credentials: 'include',
     });
+    syncServerTimeFromResponse(res);
     if (res.status === 401) {
       setAdminUser(null);
       writeCachedAdminUser(null);
@@ -2136,15 +2143,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
   const formatScheduledDateTime = (scheduledFor?: string | null) => {
     if (!scheduledFor) return '';
-    const d = new Date(scheduledFor);
-    if (Number.isNaN(d.getTime())) return scheduledFor;
-    return d.toLocaleString([], {
-      weekday: 'short',
-      day: 'numeric',
-      month: 'short',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
+    return formatOrderScheduledAt(scheduledFor) || scheduledFor;
   };
 
   const isAdvanceOrderDueSoon = (scheduledFor?: string | null) => {
@@ -2341,12 +2340,9 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
           {/* Row 2: Time + Payment chip + Distance chip */}
           <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted">
-            <span>
-              {new Date(order.placedAt).toLocaleTimeString([], {
-                hour: '2-digit',
-                minute: '2-digit',
-              })}
-            </span>
+            {formatOrderPlacedAt(order.placedAt) && (
+              <span className="tabular-nums">Ordered {formatOrderPlacedAt(order.placedAt)}</span>
+            )}
             <span className="px-2 py-0.5 rounded bg-bg font-semibold text-text">
               {order.paymentMethod === 'COD' ? 'COD' : `Online (${order.paymentStatus})`}
             </span>
@@ -2554,12 +2550,12 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             <span className="px-2 py-0.5 rounded bg-bg font-semibold text-text">
               {order.paymentMethod === 'COD' ? 'COD' : 'Online'}
             </span>
-            <span>
-              {new Date(displayTimestamp).toLocaleTimeString([], {
-                hour: '2-digit',
-                minute: '2-digit',
-              })}
-            </span>
+            {formatOrderTime(displayTimestamp) && (
+              <span className="tabular-nums">{formatOrderTime(displayTimestamp)}</span>
+            )}
+            {formatOrderPlacedAt(order.placedAt) && (
+              <span className="tabular-nums">· Ordered {formatOrderPlacedAt(order.placedAt)}</span>
+            )}
           </div>
           <span className="text-sm font-bold text-text shrink-0">₹{order.grandTotal}</span>
         </div>
@@ -6466,8 +6462,10 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                     {selectedOrderDetails.status.replace(/_/g, ' ')}
                   </span>
                 </div>
-                <p className="text-xs text-muted mt-0.5">
-                  Placed {new Date(selectedOrderDetails.placedAt).toLocaleString()}
+                <p className="text-xs text-muted mt-0.5 tabular-nums">
+                  {formatOrderPlacedAt(selectedOrderDetails.placedAt)
+                    ? `Ordered ${formatOrderPlacedAt(selectedOrderDetails.placedAt)}`
+                    : ''}
                 </p>
               </div>
               <button
@@ -7397,7 +7395,11 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             <div className="text-center border-b border-dashed border-border pb-3">
               <p className="font-bold text-sm">KITCHEN ORDER TICKET (KOT)</p>
               <p className="font-bold text-base mt-1">{kotOrder.orderNumber}</p>
-              <p>{new Date(kotOrder.placedAt).toLocaleString()}</p>
+              <p>
+                {formatOrderPlacedAt(kotOrder.placedAt)
+                  ? `Ordered ${formatOrderPlacedAt(kotOrder.placedAt)}`
+                  : ''}
+              </p>
             </div>
             <div className="space-y-1.5">
               {kotOrder.items.map((it, i) => (

@@ -48,6 +48,7 @@ import { guestAuthLayer } from '../auth/guestAuthLayer.ts';
 import { calculateHaversineKm } from '../utils/haversine.ts';
 import { getCachedShopName, optimizeAssetUrl, normalizeImageUrl } from '../utils/themeTokens.ts';
 import { SafeImage } from './SafeImage.tsx';
+import { formatOrderPlacedAt, syncServerTimeFromResponse } from '../utils/formatOrderTime.ts';
 
 interface ResolvedHomeSection extends HomeSection {
   items: MenuItem[];
@@ -543,6 +544,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
       setLoading(true);
       setLoadError(null);
       const res = await fetch('/api/home', { cache: 'no-store' });
+      syncServerTimeFromResponse(res);
       const data = await res.json();
       if (res.ok) {
         setHomeData(data);
@@ -622,6 +624,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
             customerPhone: guestPhone,
           }),
         });
+        syncServerTimeFromResponse(res);
         const data = await res.json();
         if (res.ok) {
           setBillPreview(data);
@@ -663,6 +666,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ tokens: mergedTokens }),
       });
+      syncServerTimeFromResponse(res);
       const data = await res.json();
       if (res.ok) {
         setRecentOrders(data.orders || []);
@@ -910,6 +914,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
           phone: cleanPhone,
         }),
       });
+      syncServerTimeFromResponse(res);
       const data = await res.json();
       if (!res.ok || !data.order) {
         setLookupError(data.error || 'Order not found. Please check your Order ID and phone number.');
@@ -1168,6 +1173,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
           })),
         }),
       });
+      syncServerTimeFromResponse(res);
 
       const data = await res.json();
       if (!res.ok) {
@@ -3627,6 +3633,11 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                           <span className="text-xs font-semibold text-muted tabular-nums">
                             #{recentOrders[0].orderNumber} · ₹{recentOrders[0].grandTotal}
                           </span>
+                          {formatOrderPlacedAt(recentOrders[0].placedAt) && (
+                            <span className="text-xs text-muted tabular-nums">
+                              · Ordered {formatOrderPlacedAt(recentOrders[0].placedAt)}
+                            </span>
+                          )}
                         </div>
                         <p className="text-sm text-muted line-clamp-2 break-words mt-0.5">
                           {recentOrders[0].items
@@ -3851,6 +3862,11 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                       <p className="text-[14px] text-muted tabular-nums break-words">
                         {ord.orderNumber} · <strong className="text-primary">{ord.status}</strong> · OTP: {ord.deliveryOtp}
                       </p>
+                      {formatOrderPlacedAt(ord.placedAt) && (
+                        <p className="text-[12px] text-muted tabular-nums break-words mt-0.5">
+                          Ordered {formatOrderPlacedAt(ord.placedAt)}
+                        </p>
+                      )}
                       <p className="mt-1 text-[16px] font-bold text-text line-clamp-2 break-words">
                         {ord.items.map((i) => `${i.quantity}x ${i.itemName}`).join(', ')}
                       </p>

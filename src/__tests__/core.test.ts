@@ -23,6 +23,15 @@ import {
 } from '../../server';
 import { getRtdb } from '../../api/_lib/firebaseAdmin';
 import riderHandler from '../../api/rider';
+import {
+  formatOrderDate,
+  formatOrderPlacedAt,
+  formatOrderScheduledAt,
+  formatOrderTime,
+  getServerNow,
+  resetServerTimeOffset,
+  syncServerTimeFromHeaders,
+} from '../utils/formatOrderTime';
 import { OrderRecord, PaymentRecord } from '../types';
 
 async function seedTestOrderAndPayment(overrides: {
@@ -525,5 +534,37 @@ describe('Aangan Kitchen Core & Bypass-Proof Razorpay Suite', () => {
     expect(blocked.jsonBody).toEqual({ error: 'Too many incorrect OTP attempts' });
     expect(lockedOrder.status).toBe('OUT_FOR_DELIVERY');
     expect(lockedOrder.paymentStatus).toBe('PENDING');
+  });
+
+  it('12. formatOrderTime formats fixed Asia/Kolkata IST regardless of TZ, handles invalid input, and syncs server Date offset', () => {
+    const sampleIso = '2026-11-19T10:56:00.000Z'; // 16:26 IST on 19 Nov 2026
+    expect(formatOrderTime(sampleIso)).toBe('16:26');
+    expect(formatOrderDate(sampleIso)).toBe('19 Nov 2026');
+    expect(formatOrderPlacedAt(sampleIso)).toBe('16:26 · 19 Nov');
+    expect(formatOrderScheduledAt(sampleIso)).toContain('16:26');
+
+    // Midnight IST edge case: 18:35 UTC = 00:05 IST next day (never "24:05")
+    expect(formatOrderTime('2026-11-18T18:35:00.000Z')).toBe('00:05');
+
+    // Invalid / missing inputs return empty string
+    expect(formatOrderTime(null)).toBe('');
+    expect(formatOrderTime(undefined)).toBe('');
+    expect(formatOrderTime('')).toBe('');
+    expect(formatOrderTime('not-a-date')).toBe('');
+    expect(formatOrderDate('invalid')).toBe('');
+    expect(formatOrderPlacedAt('invalid')).toBe('');
+
+    // Server Date header offset & fallback
+    resetServerTimeOffset();
+    const beforeFallback = Date.now();
+    const fallbackNow = getServerNow();
+    expect(Math.abs(fallbackNow - beforeFallback)).toBeLessThan(100);
+
+    const futureServerMs = Date.now() + 10 * 60 * 1000;
+    const fakeHeaders = new Headers({ Date: new Date(futureServerMs).toUTCString() });
+    syncServerTimeFromHeaders(fakeHeaders);
+    const adjustedNow = getServerNow();
+    expect(adjustedNow - Date.now()).toBeGreaterThan(9 * 60 * 1000);
+    resetServerTimeOffset();
   });
 });

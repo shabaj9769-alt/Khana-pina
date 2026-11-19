@@ -19,6 +19,11 @@ import {
   getCachedShopName,
 } from '../utils/themeTokens.ts';
 import { subscribeToRiderOrders } from '../utils/firebaseClient.ts';
+import {
+  formatOrderPlacedAt,
+  formatOrderTime,
+  syncServerTimeFromResponse,
+} from '../utils/formatOrderTime.ts';
 
 interface DeliveryPartnerViewProps {
   initialToken?: string;
@@ -95,6 +100,7 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
       setLoading(true);
       setAuthError(null);
       const res = await fetch(`/api/rider/${encodeURIComponent(token)}`);
+      syncServerTimeFromResponse(res);
       const data = await res.json();
       if (res.ok && data.rider) {
         if (data.shopName) {
@@ -199,6 +205,7 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ orderId, otp }),
     });
+    syncServerTimeFromResponse(res);
     const data = await res.json();
     if (!res.ok) {
       setFeedback((prev) => ({
@@ -415,13 +422,20 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
                     >
                       {/* Top Row: Order ID + Amount + Payment Chip */}
                       <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-border min-w-0">
-                        <div className="flex items-center gap-2 min-w-0">
-                          <span className="text-[16px] font-semibold text-text whitespace-nowrap tabular-nums">
-                            {order.orderNumber}
-                          </span>
-                          <span className="text-[16px] font-bold text-text whitespace-nowrap tabular-nums">
-                            · ₹{order.grandTotal}
-                          </span>
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2 min-w-0 flex-wrap">
+                            <span className="text-[16px] font-semibold text-text whitespace-nowrap tabular-nums">
+                              {order.orderNumber}
+                            </span>
+                            <span className="text-[16px] font-bold text-text whitespace-nowrap tabular-nums">
+                              · ₹{order.grandTotal}
+                            </span>
+                          </div>
+                          {formatOrderPlacedAt(order.placedAt) && (
+                            <p className="text-[12px] text-muted tabular-nums break-words mt-0.5">
+                              Ordered {formatOrderPlacedAt(order.placedAt)}
+                            </p>
+                          )}
                         </div>
 
                         {isCodCollect ? (
@@ -568,12 +582,12 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
                         <p className="text-[14px] font-semibold text-text tabular-nums truncate">
                           {order.orderNumber} · {order.customerName}
                         </p>
-                        <p className="text-[12px] text-muted tabular-nums truncate">
-                          {new Date(order.deliveredAt || order.placedAt).toLocaleTimeString([], {
-                            hour: '2-digit',
-                            minute: '2-digit',
-                          })}{' '}
+                        <p className="text-[12px] text-muted tabular-nums break-words">
+                          {formatOrderTime(order.deliveredAt || order.placedAt)}{' '}
                           · {order.paymentMethod === 'COD' ? 'Cash collected' : 'Prepaid'}
+                          {formatOrderPlacedAt(order.placedAt)
+                            ? ` · Ordered ${formatOrderPlacedAt(order.placedAt)}`
+                            : ''}
                         </p>
                       </div>
                     </div>

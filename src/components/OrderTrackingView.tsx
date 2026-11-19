@@ -24,11 +24,19 @@ import {
   ReviewRecord,
 } from '../types.ts';
 import { subscribeToCustomerTracking } from '../utils/firebaseClient.ts';
+import {
+  formatOrderDate,
+  formatOrderPlacedAt,
+  formatOrderTime,
+  getServerNow,
+  syncServerTimeFromResponse,
+} from '../utils/formatOrderTime.ts';
 import { applyShopBrandingToDocument, getCachedShopName } from '../utils/themeTokens.ts';
 
 interface OrderTrackingViewProps {
   trackingToken: string;
   initialOrder?: OrderRecord | null;
+  onOrderLoaded?: (order: OrderRecord) => void;
   onBackToStore: () => void;
   onReorder: (order: OrderRecord) => void;
 }
@@ -89,6 +97,7 @@ const STATUS_STEPS: {
 export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
   trackingToken,
   initialOrder,
+  onOrderLoaded,
   onBackToStore,
   onReorder,
 }) => {
@@ -125,6 +134,7 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
         setLoading(true);
       }
       const res = await fetch(`/api/track/${encodeURIComponent(trackingToken)}`);
+      syncServerTimeFromResponse(res);
       const data = await res.json();
       if (!res.ok) {
         if (!silent) {
@@ -133,6 +143,9 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
         return;
       }
       setOrder(data.order);
+      if (data.order) {
+        onOrderLoaded?.(data.order);
+      }
       prevStatusRef.current = data.order?.status || null;
       if (data.trackingProjection) {
         setLiveProjection(data.trackingProjection);
@@ -331,10 +344,10 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
   const currentStepIndex = STATUS_STEPS.findIndex((s) => s.key === order.status);
   const isCancelledOrRejected = order.status === 'CANCELLED' || order.status === 'REJECTED';
 
-  const elapsedMins = Math.max(
-    0,
-    Math.floor((Date.now() - new Date(order.placedAt).getTime()) / 60000)
-  );
+  const placedAtMs = new Date(order.placedAt).getTime();
+  const elapsedMins = Number.isFinite(placedAtMs)
+    ? Math.max(0, Math.floor((getServerNow() - placedAtMs) / 60000))
+    : 0;
   const baseEta = Math.round(28 + order.distanceKm * 2.5);
   const remainingEtaMins =
     liveProjection?.etaMins !== undefined
@@ -362,15 +375,7 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
         : key === 'DELIVERED'
         ? order.deliveredAt
         : undefined;
-    if (!rawIso) return null;
-    try {
-      return new Date(rawIso).toLocaleTimeString([], {
-        hour: '2-digit',
-        minute: '2-digit',
-      });
-    } catch {
-      return null;
-    }
+    return formatOrderTime(rawIso) || null;
   };
 
   return (
@@ -429,16 +434,12 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-border">
           <div className="min-w-0 flex-1 space-y-1">
             <p className="text-[13px] text-muted tabular-nums break-words">
-              Order #{order.orderNumber} ·{' '}
-              {new Date(order.placedAt).toLocaleTimeString([], {
-                hour: '2-digit',
-                minute: '2-digit',
-              })}
-              {order.scheduledFor
-                ? ` · Scheduled: ${new Date(order.scheduledFor).toLocaleTimeString([], {
-                    hour: '2-digit',
-                    minute: '2-digit',
-                  })}`
+              Order #{order.orderNumber}
+              {formatOrderPlacedAt(order.placedAt)
+                ? ` · Ordered ${formatOrderPlacedAt(order.placedAt)}`
+                : ''}
+              {order.scheduledFor && formatOrderTime(order.scheduledFor)
+                ? ` · Scheduled: ${formatOrderTime(order.scheduledFor)}`
                 : ''}
             </p>
             <h1 className="font-display text-xl sm:text-2xl font-bold text-text">
@@ -587,7 +588,7 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
             </div>
             <div className="text-right tabular-nums text-[13px] text-muted shrink-0">
               <p className="font-bold text-text">#{order.orderNumber}</p>
-              <p>{new Date(order.placedAt).toLocaleDateString()}</p>
+              <p>{formatOrderDate(order.placedAt)}</p>
             </div>
           </div>
 
@@ -696,6 +697,17 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
             </button>
           </form>
         </div>
+      </div>
+
+      <div className="pt-1 print:hidden">
+        <button
+          type="button"
+          onClick={onBackToStore}
+          className="w-full min-h-[44px] px-4 rounded-xl border border-border bg-surface text-sm font-semibold text-text inline-flex items-center justify-center gap-2 hover:bg-bg whitespace-nowrap cursor-pointer"
+        >
+          <ArrowLeft className="w-4 h-4 shrink-0" />
+          <span>Back to menu</span>
+        </button>
       </div>
     </div>
   );
