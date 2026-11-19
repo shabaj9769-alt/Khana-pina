@@ -36,6 +36,9 @@ import {
   RotateCcw,
   FileSpreadsheet,
   Smartphone,
+  LocateFixed,
+  ExternalLink,
+  Mail,
 } from 'lucide-react';
 import { SafeImage } from './SafeImage.tsx';
 import {
@@ -126,7 +129,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     'homepage'
   );
   const [marketingSubTab, setMarketingSubTab] = useState<'coupons' | 'broadcast'>('coupons');
-  const [deliverySubTab, setDeliverySubTab] = useState<'riders' | 'zone'>('riders');
   const [financeSubTab, setFinanceSubTab] = useState<'payments' | 'reports'>('payments');
   const [settingsSubTab, setSettingsSubTab] = useState<'shop' | 'users'>('shop');
 
@@ -285,6 +287,64 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const [resetPassModalUser, setResetPassModalUser] = useState<AdminUserPublic | null>(null);
   const [resetPassNewVal, setResetPassNewVal] = useState('');
 
+  const [emailModalOpen, setEmailModalOpen] = useState(false);
+  const [newEmailInput, setNewEmailInput] = useState('');
+  const [emailCurrentPasswordInput, setEmailCurrentPasswordInput] = useState('');
+  const [isUpdatingEmail, setIsUpdatingEmail] = useState(false);
+  const [loginSuccessNotice, setLoginSuccessNotice] = useState<string | null>(null);
+
+  const [editStaffModalUser, setEditStaffModalUser] = useState<AdminUserPublic | null>(null);
+  const [editStaffNameVal, setEditStaffNameVal] = useState('');
+  const [editStaffEmailVal, setEditStaffEmailVal] = useState('');
+
+  // Delivery Location & Fee State
+  const [locationInput, setLocationInput] = useState('');
+  const [locationDetectStatus, setLocationDetectStatus] = useState<'idle' | 'detected' | 'invalid'>('idle');
+  const [isGettingGps, setIsGettingGps] = useState(false);
+  const [deliveryFeeInput, setDeliveryFeeInput] = useState<number>(40);
+
+  const extractCoordsFromLocationInput = (raw: string): { lat: number; lng: number } | null => {
+    const text = raw.trim();
+    if (!text) return null;
+
+    let decoded = text;
+    try {
+      decoded = decodeURIComponent(text);
+    } catch {
+      decoded = text;
+    }
+
+    const patterns: RegExp[] = [
+      /@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/,
+      /!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)/,
+      /[?&](?:q|query|ll|center)=(-?\d+(?:\.\d+)?)\s*[, ]\s*(-?\d+(?:\.\d+)?)/i,
+      /geo:(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/i,
+      /^\s*(-?\d+(?:\.\d+)?)\s*[,;\s]\s*(-?\d+(?:\.\d+)?)\s*$/,
+    ];
+
+    for (const re of patterns) {
+      const m = decoded.match(re);
+      if (m) {
+        const lat = Number(m[1]);
+        const lng = Number(m[2]);
+        if (
+          Number.isFinite(lat) &&
+          Number.isFinite(lng) &&
+          lat >= -90 &&
+          lat <= 90 &&
+          lng >= -180 &&
+          lng <= 180
+        ) {
+          return {
+            lat: Number(lat.toFixed(6)),
+            lng: Number(lng.toFixed(6)),
+          };
+        }
+      }
+    }
+    return null;
+  };
+
   const formatRoleLabel = (role: AdminRole) =>
     role === 'owner' ? 'Owner' : role === 'manager' ? 'Manager' : 'Staff';
 
@@ -390,6 +450,9 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       setCustomers(data.customers || []);
       setShopSettings(data.settings || null);
       setDeliveryZone(data.deliveryZone || null);
+      if (Array.isArray(data.settings?.deliverySlabs) && data.settings.deliverySlabs.length > 0) {
+        setDeliveryFeeInput(Number(data.settings.deliverySlabs[0].fee ?? 40));
+      }
       setHomeSections(data.homeSections || []);
       setBanners(data.banners || []);
       setPayments(data.payments || []);
@@ -579,6 +642,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoginError(null);
+    setLoginSuccessNotice(null);
     setIsLoggingIn(true);
     try {
       const res = await fetch('/api/admin/login', {
@@ -842,7 +906,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         }
         await syncDishHomePlacement(editingDish.id, nextFlags);
         triggerStoreRefresh();
-        showToast('Updated');
+        showToast('Saved');
       } catch {
         showToast('Could not update');
       }
@@ -1184,6 +1248,10 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   // Change Own Password Handler
   const handleChangeMyPassword = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (newPasswordInput.length < 8) {
+      showToast('New password must be at least 8 characters');
+      return;
+    }
     if (newPasswordInput !== confirmPasswordInput) {
       showToast('New passwords do not match');
       return;
@@ -1205,6 +1273,66 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     setNewPasswordInput('');
     setConfirmPasswordInput('');
     showToast('Password updated');
+  };
+
+  // Change Owner Email Handler
+  const handleChangeMyEmail = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newEmailInput.trim() || !emailCurrentPasswordInput) return;
+    setIsUpdatingEmail(true);
+    try {
+      const res = await adminFetch('/api/admin/change-email', {
+        method: 'PUT',
+        body: JSON.stringify({
+          newEmail: newEmailInput.trim(),
+          currentPassword: emailCurrentPasswordInput,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showToast(data.error || 'Could not change email');
+        return;
+      }
+      setEmailModalOpen(false);
+      setNewEmailInput('');
+      setEmailCurrentPasswordInput('');
+      setLoginEmail('');
+      setLoginPassword('');
+      setAdminUser(null);
+      setLoginSuccessNotice('Email changed. Please log in again');
+      showToast('Email changed. Please log in again');
+    } catch {
+      showToast('Could not change email');
+    } finally {
+      setIsUpdatingEmail(false);
+    }
+  };
+
+  // Use Current GPS Location Handler
+  const handleUseCurrentLocation = () => {
+    if (!navigator.geolocation) {
+      showToast('Location is not supported on this browser');
+      return;
+    }
+    setIsGettingGps(true);
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        const lat = Number(pos.coords.latitude.toFixed(6));
+        const lng = Number(pos.coords.longitude.toFixed(6));
+        setDeliveryZone((prev) =>
+          prev ? { ...prev, shopLat: lat, shopLng: lng } : prev
+        );
+        setLocationInput('');
+        setLocationDetectStatus('idle');
+        await handleUpdateShopSettings(undefined, { shopLat: lat, shopLng: lng });
+        setIsGettingGps(false);
+      },
+      () => {
+        setIsGettingGps(false);
+        showToast('Could not read your current location');
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
   };
 
   if (authChecking) {
@@ -1234,6 +1362,13 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
               <p className="text-xs text-muted">Authorized Staff & Management Portal</p>
             </div>
           </div>
+
+          {loginSuccessNotice && (
+            <div className="mb-4 p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-700 dark:text-emerald-400 text-xs font-medium flex items-center gap-2">
+              <Check className="w-4 h-4 shrink-0" />
+              <span className="break-words min-w-0">{loginSuccessNotice}</span>
+            </div>
+          )}
 
           {loginError && (
             <div className="mb-4 p-3 rounded-xl bg-red-500/10 border border-red-500/30 text-red-600 text-xs font-medium flex items-center gap-2">
@@ -1448,8 +1583,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       ======================================================================== */}
       <div className="flex-1 flex flex-col min-w-0 pb-20 lg:pb-6">
         {/* TOP HEADER BAR */}
-        <header className="sticky top-0 z-30 bg-surface border-b border-border px-2.5 sm:px-6 py-2.5 flex items-center justify-between gap-1.5 sm:gap-2 min-w-0">
-          <div className="flex items-center gap-2 min-w-0">
+        <header className="sticky top-0 z-30 bg-surface border-b border-border px-2.5 sm:px-6 py-2.5 flex flex-wrap items-center justify-between gap-2 min-w-0">
+          <div className="flex items-center gap-2 min-w-0 flex-1">
             <div className="lg:hidden w-8 h-8 rounded-lg bg-primary text-primary-contrast flex items-center justify-center font-bold text-sm shrink-0">
               A
             </div>
@@ -1464,31 +1599,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
           </div>
 
           <div className="flex items-center gap-1 sm:gap-2 shrink-0">
-            {/* Open / Closed Quick Toggle */}
-            {shopSettings && (
-              <button
-                onClick={() =>
-                  canEditMenu &&
-                  handleUpdateShopSettings({
-                    isOpen: !shopSettings.isOpen,
-                  })
-                }
-                disabled={!canEditMenu}
-                className={`min-h-[34px] sm:min-h-[36px] px-2.5 sm:px-3 rounded-full text-[11px] sm:text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer ${
-                  shopSettings.isOpen
-                    ? 'bg-emerald-500/15 text-emerald-600 border border-emerald-500/30'
-                    : 'bg-red-500/15 text-red-600 border border-red-500/30'
-                }`}
-              >
-                <span
-                  className={`w-2 h-2 rounded-full ${
-                    shopSettings.isOpen ? 'bg-emerald-500' : 'bg-red-500'
-                  }`}
-                />
-                {shopSettings.isOpen ? 'OPEN' : 'CLOSED'}
-              </button>
-            )}
-
             {/* Sound Toggle */}
             <button
               onClick={() => setSoundEnabled(!soundEnabled)}
@@ -1542,6 +1652,44 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
               <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
             </button>
           </div>
+
+          {/* Shop-wide Accepting Orders / Open-Closed One-Tap Switch */}
+          {shopSettings && (
+            <button
+              type="button"
+              role="switch"
+              aria-checked={shopSettings.isOpen}
+              aria-label="Accepting orders"
+              onClick={() =>
+                canEditMenu &&
+                handleUpdateShopSettings({
+                  isOpen: !shopSettings.isOpen,
+                })
+              }
+              disabled={!canEditMenu}
+              className={`w-full sm:w-auto sm:order-none min-h-[36px] px-3 rounded-full border text-xs font-bold flex items-center justify-between sm:justify-start gap-2.5 transition-colors cursor-pointer disabled:opacity-60 ${
+                shopSettings.isOpen
+                  ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border-emerald-500/30'
+                  : 'bg-red-500/15 text-red-600 border-red-500/30'
+              }`}
+            >
+              <span className="whitespace-nowrap">Accepting orders</span>
+              <span className="flex items-center gap-1.5 shrink-0">
+                <span
+                  className={`relative inline-flex h-4 w-7 items-center rounded-full transition-colors ${
+                    shopSettings.isOpen ? 'bg-emerald-500' : 'bg-red-500/60'
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${
+                      shopSettings.isOpen ? 'translate-x-3.5' : 'translate-x-0.5'
+                    }`}
+                  />
+                </span>
+                <span>{shopSettings.isOpen ? 'OPEN' : 'CLOSED'}</span>
+              </span>
+            </button>
+          )}
         </header>
 
         {/* NOTIFICATION DRAWER */}
@@ -2140,6 +2288,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                                     prev.map((m) => (m.id === item.id ? d.item : m))
                                   );
                                   triggerStoreRefresh();
+                                  showToast('Saved');
                                 }
                               }}
                               className={`px-2.5 py-1 rounded-lg text-[11px] font-bold cursor-pointer ${
@@ -2284,6 +2433,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                                 const d = await res.json();
                                 setCategories(d.categories || []);
                                 triggerStoreRefresh();
+                                showToast('Saved');
                               }
                             }}
                             className={`px-3 py-1 rounded-lg text-xs font-bold cursor-pointer ${
@@ -2600,9 +2750,9 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                     {banners.map((b) => (
                       <div
                         key={b.id}
-                        className="p-3 rounded-xl border border-border flex items-center justify-between gap-3"
+                        className="p-3 rounded-xl border border-border flex items-center justify-between gap-2.5 min-w-0"
                       >
-                        <div className="flex items-center gap-3 min-w-0">
+                        <div className="flex items-center gap-3 min-w-0 flex-1">
                           <SafeImage
                             src={b.imageUrl}
                             alt={b.title}
@@ -2614,15 +2764,36 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                             <p className="text-[11px] text-muted truncate">{b.subtitle}</p>
                           </div>
                         </div>
-                        <button
-                          onClick={() => {
-                            const updated = banners.filter((s) => s.id !== b.id);
-                            handleUpdateHomeManager(undefined, updated);
-                          }}
-                          className="p-1.5 text-red-600 hover:bg-red-500/10 rounded-lg cursor-pointer"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            role="switch"
+                            aria-checked={b.isVisible}
+                            onClick={() => {
+                              const updated = banners.map((s) =>
+                                s.id === b.id ? { ...s, isVisible: !s.isVisible } : s
+                              );
+                              handleUpdateHomeManager(undefined, updated);
+                            }}
+                            className={`px-2.5 py-1 rounded-lg text-xs font-bold cursor-pointer ${
+                              b.isVisible
+                                ? 'bg-emerald-500/15 text-emerald-600'
+                                : 'bg-bg text-muted border border-border'
+                            }`}
+                          >
+                            {b.isVisible ? 'On' : 'Off'}
+                          </button>
+                          <button
+                            onClick={() => {
+                              const updated = banners.filter((s) => s.id !== b.id);
+                              handleUpdateHomeManager(undefined, updated);
+                            }}
+                            className="p-1.5 text-red-600 hover:bg-red-500/10 rounded-lg cursor-pointer"
+                            title="Delete Banner"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -3211,6 +3382,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                                 const d = await res.json();
                                 setCoupons(d.coupons || []);
                                 triggerStoreRefresh();
+                                showToast('Saved');
                               }
                             }}
                             className={`px-3 py-1 rounded-lg text-xs font-bold cursor-pointer ${
@@ -3219,7 +3391,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                                 : 'bg-bg text-muted'
                             }`}
                           >
-                            {cp.isActive ? 'Active' : 'Disabled'}
+                            {cp.isActive ? 'On' : 'Off'}
                           </button>
                           {canEditMenu && (
                             <button
@@ -3294,295 +3466,375 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
           )}
 
           {/* ====================================================================
-              6. DELIVERY SECTION (Riders + Token Security + Zone)
+              6. DELIVERY SECTION (Shop Location & Radius + Delivery Riders)
           ==================================================================== */}
           {activeSection === 'delivery' && (
-            <div className="space-y-4">
-              <div className="flex gap-2">
-                <button
-                  onClick={() => setDeliverySubTab('riders')}
-                  className={`min-h-[40px] px-4 rounded-xl text-xs font-bold cursor-pointer ${
-                    deliverySubTab === 'riders'
-                      ? 'bg-primary text-primary-contrast'
-                      : 'bg-surface border border-border text-text'
-                  }`}
-                >
-                  Delivery Riders ({deliveryBoys.length})
-                </button>
-                <button
-                  onClick={() => setDeliverySubTab('zone')}
-                  className={`min-h-[40px] px-4 rounded-xl text-xs font-bold cursor-pointer ${
-                    deliverySubTab === 'zone'
-                      ? 'bg-primary text-primary-contrast'
-                      : 'bg-surface border border-border text-text'
-                  }`}
-                >
-                  Delivery Radius & Fees
-                </button>
-              </div>
+            <div className="space-y-5">
+              {/* Top Card: Shop Location & Delivery Radius */}
+              {shopSettings && deliveryZone && (
+                <div className="bg-surface rounded-2xl border border-border p-4 space-y-4">
+                  <div>
+                    <h2 className="text-sm sm:text-base font-bold text-text">
+                      Shop Location &amp; Delivery Radius
+                    </h2>
+                    <p className="text-xs text-muted">
+                      Set your kitchen location, delivery distance, minimum order, and delivery fee
+                    </p>
+                  </div>
 
-              {deliverySubTab === 'riders' ? (
-                <div className="space-y-4">
-                  {canEditMenu && (
-                    <form
-                      onSubmit={async (e) => {
-                        e.preventDefault();
-                        if (!newRiderName.trim() || !newRiderPhone.trim()) return;
-                        const res = await adminFetch('/api/admin/delivery-boys', {
-                          method: 'POST',
-                          body: JSON.stringify({
-                            name: newRiderName.trim(),
-                            phone: newRiderPhone.trim(),
-                          }),
-                        });
-                        if (res.ok) {
-                          const d = await res.json();
-                          setDeliveryBoys(d.deliveryBoys || []);
-                          setNewRiderName('');
-                          setNewRiderPhone('');
-                          showToast('Saved');
+                  {/* Use Current GPS Location Button */}
+                  <button
+                    type="button"
+                    disabled={!canEditMenu || isGettingGps}
+                    onClick={handleUseCurrentLocation}
+                    className="w-full min-h-[44px] px-4 rounded-xl bg-primary/10 border border-primary/30 text-primary text-xs sm:text-sm font-bold flex items-center justify-center gap-2 hover:bg-primary/15 transition-colors cursor-pointer disabled:opacity-60"
+                  >
+                    <LocateFixed className={`w-4 h-4 shrink-0 ${isGettingGps ? 'animate-spin' : ''}`} />
+                    <span>{isGettingGps ? 'Getting current location...' : 'Use my current location'}</span>
+                  </button>
+
+                  {/* Paste Google Maps Link or Location */}
+                  <div>
+                    <label className="block text-xs font-semibold text-muted mb-1">
+                      Paste a Google Maps link
+                    </label>
+                    <input
+                      type="text"
+                      value={locationInput}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setLocationInput(val);
+                        if (!val.trim()) {
+                          setLocationDetectStatus('idle');
+                          return;
+                        }
+                        const extracted = extractCoordsFromLocationInput(val);
+                        if (extracted) {
+                          setDeliveryZone((prev) =>
+                            prev ? { ...prev, shopLat: extracted.lat, shopLng: extracted.lng } : prev
+                          );
+                          setLocationDetectStatus('detected');
+                        } else {
+                          setLocationDetectStatus('invalid');
                         }
                       }}
-                      className="bg-surface rounded-2xl border border-border p-4 grid grid-cols-1 sm:grid-cols-3 gap-2"
+                      placeholder="Paste Google Maps link here..."
+                      className="w-full min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs text-text"
+                    />
+                    {locationDetectStatus === 'detected' && (
+                      <p className="mt-1 text-[11px] font-semibold text-emerald-600 flex items-center gap-1">
+                        <Check className="w-3.5 h-3.5 shrink-0" />
+                        Location updated from link. Tap Save to apply.
+                      </p>
+                    )}
+                    {locationDetectStatus === 'invalid' && (
+                      <p className="mt-1 text-[11px] text-amber-600">
+                        Paste a full Google Maps link with a pinned place so we can read the location.
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Saved Location Preview + Open in Maps Link */}
+                  <div className="p-3 rounded-xl border border-border bg-bg flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                      <div className="w-8 h-8 rounded-lg bg-primary/15 text-primary flex items-center justify-center shrink-0">
+                        <MapPin className="w-4 h-4" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="font-bold text-text truncate">
+                          {deliveryZone.shopAddress || 'Kitchen location saved'}
+                        </p>
+                        <p className="text-[11px] text-muted">
+                          Delivery within {deliveryZone.radiusKm} km of this pin
+                        </p>
+                      </div>
+                    </div>
+                    <a
+                      href={`https://www.google.com/maps/search/?api=1&query=${deliveryZone.shopLat},${deliveryZone.shopLng}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="px-3 py-1.5 rounded-lg bg-surface border border-border text-primary font-bold text-xs flex items-center gap-1.5 hover:bg-primary/10 shrink-0"
                     >
+                      <span>Open in Maps</span>
+                      <ExternalLink className="w-3.5 h-3.5" />
+                    </a>
+                  </div>
+
+                  {/* Radius Slider 1 to 25 km (step 0.5) */}
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <label htmlFor="delivery-radius-slider" className="text-xs font-semibold text-muted">
+                        Delivery Radius
+                      </label>
+                      <span className="px-2.5 py-0.5 rounded-lg bg-primary/10 text-primary text-xs font-bold">
+                        {deliveryZone.radiusKm} km
+                      </span>
+                    </div>
+                    <input
+                      id="delivery-radius-slider"
+                      type="range"
+                      min={1}
+                      max={25}
+                      step={0.5}
+                      value={deliveryZone.radiusKm}
+                      onChange={(e) =>
+                        setDeliveryZone({
+                          ...deliveryZone,
+                          radiusKm: Number(e.target.value),
+                        })
+                      }
+                      className="w-full accent-primary cursor-pointer"
+                    />
+                    <div className="flex justify-between text-[10px] text-muted">
+                      <span>1 km</span>
+                      <span>25 km</span>
+                    </div>
+                  </div>
+
+                  {/* Minimum Order & Delivery Fee */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-semibold text-muted mb-1">
+                        Minimum Order (₹)
+                      </label>
                       <input
-                        type="text"
-                        required
-                        value={newRiderName}
-                        onChange={(e) => setNewRiderName(e.target.value)}
-                        placeholder="Rider Full Name"
-                        className="min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs"
+                        type="number"
+                        min={0}
+                        value={shopSettings.minOrderAmount}
+                        onChange={(e) =>
+                          setShopSettings({
+                            ...shopSettings,
+                            minOrderAmount: Number(e.target.value),
+                          })
+                        }
+                        className="w-full min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs"
                       />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-muted mb-1">
+                        Delivery Fee (₹)
+                      </label>
                       <input
-                        type="tel"
-                        required
-                        value={newRiderPhone}
-                        onChange={(e) => setNewRiderPhone(e.target.value)}
-                        placeholder="Phone Number (10 digits)"
-                        className="min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs"
+                        type="number"
+                        min={0}
+                        value={deliveryFeeInput}
+                        onChange={(e) => setDeliveryFeeInput(Number(e.target.value))}
+                        className="w-full min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs"
                       />
-                      <button
-                        type="submit"
-                        className="min-h-[40px] px-4 rounded-xl bg-primary text-primary-contrast text-xs font-bold cursor-pointer"
-                      >
-                        + Add Rider
-                      </button>
-                    </form>
+                    </div>
+                  </div>
+
+                  {canEditMenu && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleUpdateShopSettings(
+                          {
+                            minOrderAmount: Math.max(0, Number(shopSettings.minOrderAmount) || 0),
+                            deliverySlabs: [
+                              {
+                                maxKm: Math.max(1, Number(deliveryZone.radiusKm) || 1),
+                                fee: Math.max(0, Number(deliveryFeeInput) || 0),
+                              },
+                            ],
+                          },
+                          {
+                            shopLat: deliveryZone.shopLat,
+                            shopLng: deliveryZone.shopLng,
+                            radiusKm: deliveryZone.radiusKm,
+                          }
+                        )
+                      }
+                      className="min-h-[40px] px-5 rounded-xl bg-primary text-primary-contrast text-xs font-bold cursor-pointer"
+                    >
+                      Save
+                    </button>
                   )}
+                </div>
+              )}
 
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    {deliveryBoys.map((rider) => {
-                      const riderUrl = `${window.location.origin}/rider/${rider.accessToken || ''}`;
-                      const isRevoked =
-                        !rider.isActive ||
-                        Boolean(
-                          rider.tokenExpiresAt &&
-                            new Date(rider.tokenExpiresAt).getTime() < Date.now()
-                        );
-                      return (
-                        <div
-                          key={rider.id}
-                          className="bg-surface rounded-2xl border border-border p-4 space-y-3"
-                        >
-                          <div className="flex items-start justify-between gap-2">
-                            <div>
-                              <h3 className="font-bold text-sm text-text">{rider.name}</h3>
-                              <p className="text-xs text-muted">
-                                {rider.phone} • {rider.activeOrders} active runs
-                              </p>
-                            </div>
-                            <div className="flex items-center gap-1.5 shrink-0">
-                              <span
-                                className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold ${
-                                  isRevoked
-                                    ? 'bg-red-500/15 text-red-600'
-                                    : 'bg-emerald-500/15 text-emerald-600'
-                                }`}
-                              >
-                                {isRevoked ? 'DISABLED' : 'ACTIVE'}
-                              </span>
-                              {canEditMenu && (
-                                <button
-                                  onClick={async () => {
-                                    const res = await adminFetch(
-                                      `/api/admin/delivery-boys/${rider.id}`,
-                                      { method: 'DELETE' }
-                                    );
-                                    if (res.ok) {
-                                      const d = await res.json();
-                                      setDeliveryBoys(d.deliveryBoys || []);
-                                      showToast('Removed');
-                                    }
-                                  }}
-                                  className="p-1.5 rounded-lg border border-red-500/30 text-red-600 hover:bg-red-500/10 cursor-pointer"
-                                  title="Delete Rider"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </button>
-                              )}
-                            </div>
+              {/* Delivery Riders Card */}
+              <div className="space-y-4">
+                <div className="flex items-center justify-between gap-2">
+                  <h3 className="text-sm font-bold text-text">
+                    Delivery Riders ({deliveryBoys.length})
+                  </h3>
+                </div>
+
+                {canEditMenu && (
+                  <form
+                    onSubmit={async (e) => {
+                      e.preventDefault();
+                      if (!newRiderName.trim() || !newRiderPhone.trim()) return;
+                      const res = await adminFetch('/api/admin/delivery-boys', {
+                        method: 'POST',
+                        body: JSON.stringify({
+                          name: newRiderName.trim(),
+                          phone: newRiderPhone.trim(),
+                        }),
+                      });
+                      if (res.ok) {
+                        const d = await res.json();
+                        setDeliveryBoys(d.deliveryBoys || []);
+                        setNewRiderName('');
+                        setNewRiderPhone('');
+                        showToast('Saved');
+                      }
+                    }}
+                    className="bg-surface rounded-2xl border border-border p-4 grid grid-cols-1 sm:grid-cols-3 gap-2"
+                  >
+                    <input
+                      type="text"
+                      required
+                      value={newRiderName}
+                      onChange={(e) => setNewRiderName(e.target.value)}
+                      placeholder="Rider Full Name"
+                      className="min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs"
+                    />
+                    <input
+                      type="tel"
+                      required
+                      value={newRiderPhone}
+                      onChange={(e) => setNewRiderPhone(e.target.value)}
+                      placeholder="Phone Number (10 digits)"
+                      className="min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs"
+                    />
+                    <button
+                      type="submit"
+                      className="min-h-[40px] px-4 rounded-xl bg-primary text-primary-contrast text-xs font-bold cursor-pointer"
+                    >
+                      + Add Rider
+                    </button>
+                  </form>
+                )}
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {deliveryBoys.map((rider) => {
+                    const riderUrl = `${window.location.origin}/rider/${rider.accessToken || ''}`;
+                    const isRiderActive =
+                      rider.isActive &&
+                      !(
+                        rider.tokenExpiresAt &&
+                        new Date(rider.tokenExpiresAt).getTime() < Date.now()
+                      );
+                    return (
+                      <div
+                        key={rider.id}
+                        className="bg-surface rounded-2xl border border-border p-4 space-y-3 min-w-0"
+                      >
+                        <div className="flex items-start justify-between gap-2 min-w-0">
+                          <div className="min-w-0">
+                            <h3 className="font-bold text-sm text-text break-words">{rider.name}</h3>
+                            <p className="text-xs text-muted">
+                              {rider.phone} • {rider.activeOrders} active runs
+                            </p>
                           </div>
-
-                          <div className="p-2.5 rounded-xl bg-bg border border-border text-xs space-y-1">
-                            <div className="flex items-center justify-between">
-                              <span className="text-muted">Daily Shift PIN:</span>
-                              <span className="font-mono font-bold text-text">
-                                {rider.dailyPin || '----'}
-                              </span>
-                            </div>
-                            <div className="flex items-center justify-between">
-                              <span className="text-muted">Expires:</span>
-                              <span className="text-[11px] text-muted">
-                                {rider.tokenExpiresAt
-                                  ? new Date(rider.tokenExpiresAt).toLocaleDateString()
-                                  : '30d'}
-                              </span>
-                            </div>
-                          </div>
-
-                          <div className="flex flex-wrap gap-2">
-                            {!isRevoked && rider.accessToken && (
-                              <button
-                                onClick={() => {
-                                  navigator.clipboard.writeText(riderUrl);
-                                  setCopiedRiderId(rider.id);
-                                  setTimeout(() => setCopiedRiderId(null), 2000);
-                                }}
-                                className="flex-1 min-h-[38px] px-3 rounded-xl bg-bg hover:bg-border text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer"
-                              >
-                                {copiedRiderId === rider.id ? (
-                                  <>
-                                    <Check className="w-3.5 h-3.5 text-emerald-600" />
-                                    Copied Link
-                                  </>
-                                ) : (
-                                  <>
-                                    <Copy className="w-3.5 h-3.5" />
-                                    Copy Rider Link
-                                  </>
-                                )}
-                              </button>
-                            )}
+                          <div className="flex items-center gap-1.5 shrink-0">
                             <button
+                              type="button"
+                              role="switch"
+                              aria-checked={isRiderActive}
                               onClick={async () => {
                                 const res = await adminFetch(
-                                  `/api/admin/delivery-boys/${rider.id}/regenerate-token`,
+                                  `/api/admin/delivery-boys/${rider.id}`,
                                   {
-                                    method: 'POST',
+                                    method: 'PATCH',
+                                    body: JSON.stringify({ isActive: !isRiderActive }),
                                   }
                                 );
                                 if (res.ok) {
                                   const d = await res.json();
                                   setDeliveryBoys(d.deliveryBoys || []);
-                                  showToast('Updated');
+                                  triggerStoreRefresh();
+                                  showToast('Saved');
                                 }
                               }}
-                              className="min-h-[38px] px-3 rounded-xl border border-border text-xs font-semibold hover:bg-bg cursor-pointer"
+                              className={`px-2.5 py-1 rounded-full text-[11px] font-bold cursor-pointer ${
+                                isRiderActive
+                                  ? 'bg-emerald-500/15 text-emerald-600'
+                                  : 'bg-red-500/15 text-red-600'
+                              }`}
                             >
-                              New Link & PIN
+                              {isRiderActive ? 'Active' : 'Inactive'}
                             </button>
-                            {!isRevoked && (
+                            {canEditMenu && (
                               <button
                                 onClick={async () => {
                                   const res = await adminFetch(
-                                    `/api/admin/delivery-boys/${rider.id}/revoke-token`,
-                                    {
-                                      method: 'POST',
-                                    }
+                                    `/api/admin/delivery-boys/${rider.id}`,
+                                    { method: 'DELETE' }
                                   );
                                   if (res.ok) {
                                     const d = await res.json();
                                     setDeliveryBoys(d.deliveryBoys || []);
-                                    showToast('Updated');
+                                    showToast('Removed');
                                   }
                                 }}
-                                className="min-h-[38px] px-3 rounded-xl border border-red-500/30 text-red-600 text-xs font-semibold hover:bg-red-500/10 cursor-pointer"
+                                className="p-1.5 rounded-lg border border-red-500/30 text-red-600 hover:bg-red-500/10 cursor-pointer"
+                                title="Delete Rider"
                               >
-                                Disable
+                                <Trash2 className="w-3.5 h-3.5" />
                               </button>
                             )}
                           </div>
                         </div>
-                      );
-                    })}
-                  </div>
+
+                        <div className="p-2.5 rounded-xl bg-bg border border-border text-xs space-y-1">
+                          <div className="flex items-center justify-between">
+                            <span className="text-muted">Daily Shift PIN:</span>
+                            <span className="font-mono font-bold text-text">
+                              {rider.dailyPin || '----'}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="flex flex-wrap gap-2">
+                          {isRiderActive && rider.accessToken && (
+                            <button
+                              onClick={() => {
+                                navigator.clipboard.writeText(riderUrl);
+                                setCopiedRiderId(rider.id);
+                                setTimeout(() => setCopiedRiderId(null), 2000);
+                              }}
+                              className="flex-1 min-h-[38px] px-3 rounded-xl bg-bg hover:bg-border text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer"
+                            >
+                              {copiedRiderId === rider.id ? (
+                                <>
+                                  <Check className="w-3.5 h-3.5 text-emerald-600" />
+                                  Copied Link
+                                </>
+                              ) : (
+                                <>
+                                  <Copy className="w-3.5 h-3.5" />
+                                  Copy Rider Link
+                                </>
+                              )}
+                            </button>
+                          )}
+                          <button
+                            onClick={async () => {
+                              const res = await adminFetch(
+                                `/api/admin/delivery-boys/${rider.id}/regenerate-token`,
+                                {
+                                  method: 'POST',
+                                }
+                              );
+                              if (res.ok) {
+                                const d = await res.json();
+                                setDeliveryBoys(d.deliveryBoys || []);
+                                showToast('Saved');
+                              }
+                            }}
+                            className="min-h-[38px] px-3 rounded-xl border border-border text-xs font-semibold hover:bg-bg cursor-pointer"
+                          >
+                            New Link &amp; PIN
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
-              ) : (
-                shopSettings &&
-                deliveryZone && (
-                  <div className="bg-surface rounded-2xl border border-border p-4 space-y-4">
-                    <h3 className="text-sm font-bold text-text">
-                      Delivery Area & Minimum Order
-                    </h3>
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                      <div>
-                        <label className="block text-xs font-semibold text-muted mb-1">
-                          Max Radius (km)
-                        </label>
-                        <input
-                          type="number"
-                          value={deliveryZone.radiusKm}
-                          onChange={(e) =>
-                            setDeliveryZone({
-                              ...deliveryZone,
-                              radiusKm: Number(e.target.value),
-                            })
-                          }
-                          className="w-full min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-xs font-semibold text-muted mb-1">
-                          Minimum Order Amount (₹)
-                        </label>
-                        <input
-                          type="number"
-                          value={shopSettings.minOrderAmount}
-                          onChange={(e) =>
-                            setShopSettings({
-                              ...shopSettings,
-                              minOrderAmount: Number(e.target.value),
-                            })
-                          }
-                          className="w-full min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-xs font-semibold text-muted mb-1">
-                          GST Percentage (%)
-                        </label>
-                        <input
-                          type="number"
-                          value={shopSettings.gstPercent}
-                          onChange={(e) =>
-                            setShopSettings({
-                              ...shopSettings,
-                              gstPercent: Number(e.target.value),
-                            })
-                          }
-                          className="w-full min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs"
-                        />
-                      </div>
-                    </div>
-                    <button
-                      onClick={() =>
-                        handleUpdateShopSettings(
-                          {
-                            minOrderAmount: shopSettings.minOrderAmount,
-                            gstPercent: shopSettings.gstPercent,
-                          },
-                          {
-                            radiusKm: deliveryZone.radiusKm,
-                          }
-                        )
-                      }
-                      className="min-h-[40px] px-4 rounded-xl bg-primary text-primary-contrast text-xs font-bold cursor-pointer"
-                    >
-                      Save Delivery Area
-                    </button>
-                  </div>
-                )
-              )}
+              </div>
             </div>
           )}
 
@@ -3880,36 +4132,83 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
           )}
 
           {/* ====================================================================
-              8. SETTINGS SECTION (Shop Info + Staff Accounts)
+              8. SETTINGS SECTION (My Account + Shop Info + Staff Accounts)
           ==================================================================== */}
           {activeSection === 'settings' && (
             <div className="space-y-4">
-              <div className="flex flex-wrap gap-2">
-                <button
-                  onClick={() => setSettingsSubTab('shop')}
-                  className={`min-h-[40px] px-4 rounded-xl text-xs font-bold cursor-pointer ${
-                    settingsSubTab === 'shop'
-                      ? 'bg-primary text-primary-contrast'
-                      : 'bg-surface border border-border text-text'
-                  }`}
-                >
-                  Shop Info
-                </button>
-                {canEditSettings && (
+              {/* My Account Card (visible to all logged-in users) */}
+              <div className="bg-surface rounded-2xl border border-border p-4 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2 min-w-0">
+                  <div className="min-w-0">
+                    <h3 className="text-sm font-bold text-text">My Account</h3>
+                    <div className="flex flex-wrap items-center gap-2 mt-1">
+                      <span className="text-xs font-bold text-text break-words">{adminUser.name}</span>
+                      <span className="px-2 py-0.5 rounded-full bg-bg border border-border text-[11px] font-semibold text-text">
+                        {formatRoleLabel(adminUser.role)}
+                      </span>
+                    </div>
+                    <p className="text-xs text-muted break-all mt-0.5">{adminUser.email}</p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    {canEditSettings && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setNewEmailInput('');
+                          setEmailCurrentPasswordInput('');
+                          setEmailModalOpen(true);
+                        }}
+                        className="min-h-[38px] px-3.5 rounded-xl border border-border text-xs font-semibold hover:bg-bg flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <Mail className="w-3.5 h-3.5 text-muted" />
+                        Change Email
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCurrentPasswordInput('');
+                        setNewPasswordInput('');
+                        setConfirmPasswordInput('');
+                        setPasswordModalOpen(true);
+                      }}
+                      className="min-h-[38px] px-3.5 rounded-xl border border-border text-xs font-semibold hover:bg-bg flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <KeyRound className="w-3.5 h-3.5 text-muted" />
+                      Change Password
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {canEditMenu && (
+                <div className="flex flex-wrap gap-2">
                   <button
-                    onClick={() => setSettingsSubTab('users')}
+                    onClick={() => setSettingsSubTab('shop')}
                     className={`min-h-[40px] px-4 rounded-xl text-xs font-bold cursor-pointer ${
-                      settingsSubTab === 'users'
+                      settingsSubTab === 'shop'
                         ? 'bg-primary text-primary-contrast'
                         : 'bg-surface border border-border text-text'
                     }`}
                   >
-                    Staff Accounts
+                    Shop Info
                   </button>
-                )}
-              </div>
+                  {canEditSettings && (
+                    <button
+                      onClick={() => setSettingsSubTab('users')}
+                      className={`min-h-[40px] px-4 rounded-xl text-xs font-bold cursor-pointer ${
+                        settingsSubTab === 'users'
+                          ? 'bg-primary text-primary-contrast'
+                          : 'bg-surface border border-border text-text'
+                      }`}
+                    >
+                      Staff Accounts
+                    </button>
+                  )}
+                </div>
+              )}
 
-              {settingsSubTab === 'shop' && shopSettings && (
+              {canEditMenu && settingsSubTab === 'shop' && shopSettings && (
                 <div className="bg-surface rounded-2xl border border-border p-4 space-y-4">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <h3 className="text-sm font-bold text-text">
@@ -3958,7 +4257,25 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         className="w-full min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs"
                       />
                     </div>
-                    <div className="flex items-center gap-2 pt-2 sm:pt-5">
+                    <div>
+                      <label className="block text-xs font-semibold text-muted mb-1">
+                        GST Percentage (%)
+                      </label>
+                      <input
+                        type="number"
+                        min={0}
+                        max={28}
+                        value={shopSettings.gstPercent}
+                        onChange={(e) =>
+                          setShopSettings({
+                            ...shopSettings,
+                            gstPercent: Number(e.target.value),
+                          })
+                        }
+                        className="w-full min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs"
+                      />
+                    </div>
+                    <div className="flex items-center gap-2 sm:col-span-2 pt-1">
                       <input
                         type="checkbox"
                         id="allowPreOrdersWhenClosed"
@@ -3984,6 +4301,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         shopName: shopSettings.shopName,
                         supportPhone: shopSettings.supportPhone,
                         opensAtText: shopSettings.opensAtText,
+                        gstPercent: shopSettings.gstPercent,
                         allowPreOrdersWhenClosed: shopSettings.allowPreOrdersWhenClosed,
                       })
                     }
@@ -4126,25 +4444,37 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                           </div>
                           <div className="flex flex-wrap items-center gap-2 shrink-0">
                             {u.id !== adminUser.id && (
-                              <button
-                                onClick={async () => {
-                                  const res = await adminFetch(`/api/admin/users/${u.id}`, {
-                                    method: 'PATCH',
-                                    body: JSON.stringify({ isActive: !u.isActive }),
-                                  });
-                                  if (res.ok) {
-                                    await fetchBootstrap();
-                                    showToast('Updated');
-                                  }
-                                }}
-                                className={`px-2.5 py-1.5 rounded-lg font-bold cursor-pointer ${
-                                  !u.isActive
-                                    ? 'bg-red-500/15 text-red-600'
-                                    : 'bg-emerald-500/15 text-emerald-600'
-                                }`}
-                              >
-                                {!u.isActive ? 'Blocked' : 'Active'}
-                              </button>
+                              <>
+                                <button
+                                  onClick={async () => {
+                                    const res = await adminFetch(`/api/admin/users/${u.id}`, {
+                                      method: 'PATCH',
+                                      body: JSON.stringify({ isActive: !u.isActive }),
+                                    });
+                                    if (res.ok) {
+                                      await fetchBootstrap();
+                                      showToast('Saved');
+                                    }
+                                  }}
+                                  className={`px-2.5 py-1.5 rounded-lg font-bold cursor-pointer ${
+                                    !u.isActive
+                                      ? 'bg-red-500/15 text-red-600'
+                                      : 'bg-emerald-500/15 text-emerald-600'
+                                  }`}
+                                >
+                                  {!u.isActive ? 'Blocked' : 'Active'}
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setEditStaffModalUser(u);
+                                    setEditStaffNameVal(u.name);
+                                    setEditStaffEmailVal(u.email);
+                                  }}
+                                  className="px-2.5 py-1.5 rounded-lg border border-border font-semibold hover:bg-bg cursor-pointer"
+                                >
+                                  Edit
+                                </button>
+                              </>
                             )}
                             <button
                               onClick={() => {
@@ -4895,6 +5225,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             <input
               type="password"
               required
+              minLength={8}
               value={newPasswordInput}
               onChange={(e) => setNewPasswordInput(e.target.value)}
               placeholder="New password (min 8 chars)"
@@ -4903,6 +5234,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             <input
               type="password"
               required
+              minLength={8}
               value={confirmPasswordInput}
               onChange={(e) => setConfirmPasswordInput(e.target.value)}
               placeholder="Confirm new password"
@@ -4921,6 +5253,140 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 className="px-4 py-2 rounded-xl bg-primary text-primary-contrast text-xs font-bold cursor-pointer"
               >
                 Update Password
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* ========================================================================
+          CHANGE EMAIL MODAL (Owner only)
+      ======================================================================== */}
+      {emailModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-2.5 sm:p-4">
+          <form
+            onSubmit={handleChangeMyEmail}
+            className="w-full max-w-md bg-surface rounded-2xl border border-border p-4 sm:p-5 space-y-3.5 text-text"
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="text-base font-bold text-text">Change Email</h3>
+              <button
+                type="button"
+                onClick={() => setEmailModalOpen(false)}
+                className="p-1 text-muted cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <p className="text-xs text-muted">
+              Changing your login email will sign you out so you can log in with the new email.
+            </p>
+            <input
+              type="email"
+              required
+              value={newEmailInput}
+              onChange={(e) => setNewEmailInput(e.target.value)}
+              placeholder="New email address"
+              className="w-full min-h-[42px] px-3 rounded-xl border border-border bg-bg text-xs"
+            />
+            <input
+              type="password"
+              required
+              value={emailCurrentPasswordInput}
+              onChange={(e) => setEmailCurrentPasswordInput(e.target.value)}
+              placeholder="Current password"
+              className="w-full min-h-[42px] px-3 rounded-xl border border-border bg-bg text-xs"
+            />
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setEmailModalOpen(false)}
+                className="px-4 py-2 rounded-xl border border-border text-xs font-semibold cursor-pointer"
+              >
+                Close
+              </button>
+              <button
+                type="submit"
+                disabled={isUpdatingEmail}
+                className="px-4 py-2 rounded-xl bg-primary text-primary-contrast text-xs font-bold cursor-pointer disabled:opacity-60"
+              >
+                {isUpdatingEmail ? 'Saving...' : 'Update Email'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Owner Edit Staff Name & Email Modal */}
+      {editStaffModalUser && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-2.5 sm:p-4">
+          <form
+            onSubmit={async (e) => {
+              e.preventDefault();
+              if (!editStaffNameVal.trim() || !editStaffEmailVal.trim()) return;
+              const res = await adminFetch(`/api/admin/users/${editStaffModalUser.id}`, {
+                method: 'PATCH',
+                body: JSON.stringify({
+                  name: editStaffNameVal.trim(),
+                  email: editStaffEmailVal.trim(),
+                }),
+              });
+              const d = await res.json();
+              if (!res.ok) {
+                showToast(d.error || 'Could not update account');
+                return;
+              }
+              setEditStaffModalUser(null);
+              await fetchBootstrap();
+              showToast('Saved');
+            }}
+            className="w-full max-w-md bg-surface rounded-2xl border border-border p-4 sm:p-5 space-y-3.5 text-text"
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="text-base font-bold text-text">
+                Edit {formatRoleLabel(editStaffModalUser.role)} Account
+              </h3>
+              <button
+                type="button"
+                onClick={() => setEditStaffModalUser(null)}
+                className="p-1 text-muted cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-muted mb-1">Full Name</label>
+              <input
+                type="text"
+                required
+                value={editStaffNameVal}
+                onChange={(e) => setEditStaffNameVal(e.target.value)}
+                className="w-full min-h-[42px] px-3 rounded-xl border border-border bg-bg text-xs"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-muted mb-1">Email</label>
+              <input
+                type="email"
+                required
+                value={editStaffEmailVal}
+                onChange={(e) => setEditStaffEmailVal(e.target.value)}
+                className="w-full min-h-[42px] px-3 rounded-xl border border-border bg-bg text-xs"
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setEditStaffModalUser(null)}
+                className="px-4 py-2 rounded-xl border border-border text-xs font-semibold cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="px-4 py-2 rounded-xl bg-primary text-primary-contrast text-xs font-bold cursor-pointer"
+              >
+                Save
               </button>
             </div>
           </form>
@@ -4955,6 +5421,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             <input
               type="password"
               required
+              minLength={8}
               value={resetPassNewVal}
               onChange={(e) => setResetPassNewVal(e.target.value)}
               placeholder="New temporary password (min 8 chars)"

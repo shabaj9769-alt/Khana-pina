@@ -531,6 +531,66 @@ export default async function handler(req: Request, res: Response) {
       return;
     }
 
+    // 7b. PUT /api/admin/change-email (Owner-only: requires current password, checks uniqueness, revokes all sessions)
+    if (method === 'PUT' && subPath === '/change-email') {
+      const admin = await verifyAdminAuthorized(req, res, ['owner']);
+      if (!admin) return;
+      const parsed = z
+        .object({
+          newEmail: z.string().trim().email('Please enter a valid email address'),
+          currentPassword: z.string().min(1, 'Current password is required'),
+        })
+        .safeParse(req.body);
+
+      if (!parsed.success) {
+        res.status(400).json({ error: parsed.error.issues[0]?.message || 'Invalid email input' });
+        return;
+      }
+
+      const user = db.adminUsers.find((u) => u.id === admin.userId);
+      if (!user || !verifyPasswordScrypt(parsed.data.currentPassword, user.passwordHash)) {
+        res.status(400).json({ error: 'Current password is incorrect' });
+        return;
+      }
+
+      const cleanNewEmail = parsed.data.newEmail.toLowerCase();
+      if (cleanNewEmail === user.email.toLowerCase()) {
+        res.status(400).json({ error: 'New email must be different from your current email' });
+        return;
+      }
+
+      if (db.adminUsers.some((u) => u.id !== user.id && u.email.toLowerCase() === cleanNewEmail)) {
+        res.status(400).json({ error: 'This email is already used by another account' });
+        return;
+      }
+
+      const previousEmail = user.email;
+      user.email = cleanNewEmail;
+      user.tokenVersion += 1;
+
+      for (const s of db.adminSessions) {
+        if (s.userId === user.id) {
+          s.revoked = true;
+        }
+      }
+
+      await persistFullStateToFirebase();
+      clearAdminAuthCookies(res);
+      await logAudit(
+        cleanNewEmail,
+        user.role,
+        'ADMIN_EMAIL_CHANGED',
+        `Changed owner email from ${previousEmail} to ${cleanNewEmail} and logged out all sessions`,
+        clientIp
+      );
+
+      res.json({
+        ok: true,
+        message: 'Email changed. Please log in again',
+      });
+      return;
+    }
+
     // 8. POST /api/admin/users
     if (method === 'POST' && subPath === '/users') {
       const admin = await verifyAdminAuthorized(req, res, ['owner']);
@@ -630,6 +690,7 @@ export default async function handler(req: Request, res: Response) {
           role: z.enum(['owner', 'manager', 'staff']).optional(),
           isActive: z.boolean().optional(),
           name: z.string().trim().min(2).max(120).optional(),
+          email: z.string().trim().email('Please enter a valid email address').optional(),
           resetPassword: z.string().min(8).optional(),
         })
         .safeParse(req.body);
@@ -642,6 +703,23 @@ export default async function handler(req: Request, res: Response) {
       if (target.id === admin.userId && parsed.data.isActive === false) {
         res.status(400).json({ error: 'You cannot disable your own active Owner account' });
         return;
+      }
+
+      if (parsed.data.email) {
+        const cleanEmail = parsed.data.email.toLowerCase();
+        if (db.adminUsers.some((u) => u.id !== target.id && u.email.toLowerCase() === cleanEmail)) {
+          res.status(400).json({ error: 'An admin user with this email already exists' });
+          return;
+        }
+        if (cleanEmail !== target.email.toLowerCase()) {
+          target.email = cleanEmail;
+          if (target.id !== admin.userId) {
+            target.tokenVersion += 1;
+            for (const s of db.adminSessions) {
+              if (s.userId === target.id) s.revoked = true;
+            }
+          }
+        }
       }
 
       if (parsed.data.role) target.role = parsed.data.role;
@@ -1467,10 +1545,19 @@ export default async function handler(req: Request, res: Response) {
     if (method === 'PUT' && subPath === '/settings') {
       const admin = await verifyAdminAuthorized(req, res, ['owner', 'manager']);
       if (!admin) return;
-      const { settings, deliveryZone } = req.body || {};
+      const body = req.body || {};
+      const { settings, deliveryZone } = body;
 
-      if (settings !== undefined) {
-        const parsedSettings = ShopSettingsUpdateSchema.safeParse(settings);
+      let zonePayload = deliveryZone && typeof deliveryZone === 'object' ? { ...deliveryZone } : undefined;
+      if (settings && typeof settings === 'object') {
+        const settingsCopy = { ...settings } as Record<string, unknown>;
+        for (const k of ['shopLat', 'shopLng', 'radiusKm'] as const) {
+          if (settingsCopy[k] !== undefined) {
+            zonePayload = { ...(zonePayload || {}), [k]: settingsCopy[k] };
+            delete settingsCopy[k];
+          }
+        }
+        const parsedSettings = ShopSettingsUpdateSchema.safeParse(settingsCopy);
         if (!parsedSettings.success) {
           res.status(400).json({
             error: `Invalid settings field: ${parsedSettings.error.issues[0]?.message || 'Check inputs'}`,
@@ -1480,8 +1567,14 @@ export default async function handler(req: Request, res: Response) {
         db.settings = { ...db.settings, ...parsedSettings.data };
       }
 
-      if (deliveryZone !== undefined) {
-        const parsedZone = DeliveryZoneUpdateSchema.safeParse(deliveryZone);
+      for (const k of ['shopLat', 'shopLng', 'radiusKm'] as const) {
+        if (body[k] !== undefined) {
+          zonePayload = { ...(zonePayload || {}), [k]: body[k] };
+        }
+      }
+
+      if (zonePayload !== undefined) {
+        const parsedZone = DeliveryZoneUpdateSchema.safeParse(zonePayload);
         if (!parsedZone.success) {
           res.status(400).json({
             error: `Invalid delivery zone field: ${parsedZone.error.issues[0]?.message || 'Check inputs'}`,
@@ -1680,7 +1773,15 @@ export default async function handler(req: Request, res: Response) {
         const clean = String(phone).replace(/\D/g, '');
         if (/^[6-9]\d{9}$/.test(clean)) rider.phone = clean;
       }
-      if (isActive !== undefined) rider.isActive = Boolean(isActive);
+      if (isActive !== undefined) {
+        rider.isActive = Boolean(isActive);
+        if (
+          rider.isActive &&
+          (!rider.tokenExpiresAt || new Date(rider.tokenExpiresAt).getTime() < Date.now())
+        ) {
+          rider.tokenExpiresAt = new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString();
+        }
+      }
       await rtdb.ref(`deliveryBoys/${rider.id}`).set(rider);
       await logAudit(
         admin.email,
