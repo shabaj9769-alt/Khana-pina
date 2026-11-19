@@ -43,6 +43,7 @@ import {
   LocateFixed,
   ExternalLink,
   Mail,
+  ChevronUp,
   ArrowUp,
   ArrowDown,
   Info,
@@ -483,6 +484,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   // Refund State
   const [refundAmountInput, setRefundAmountInput] = useState<Record<string, string>>({});
   const [refundReasonInput, setRefundReasonInput] = useState<Record<string, string>>({});
+  const [refundBusyId, setRefundBusyId] = useState<string | null>(null);
+  const [paymentHistoryOpen, setPaymentHistoryOpen] = useState(false);
 
   // Reports Filter State
   const [reportRange, setReportRange] = useState<'ALL' | 'TODAY' | '7D' | '30D' | 'CUSTOM'>('ALL');
@@ -1955,7 +1958,9 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       return true;
     });
 
-    const delivered = filtered.filter((o) => o.status === 'DELIVERED');
+    const delivered = filtered.filter(
+      (o) => o.status === 'DELIVERED' && o.paymentStatus !== 'REFUNDED'
+    );
     const cancelled = filtered.filter((o) => o.status === 'CANCELLED' || o.status === 'REJECTED');
     const grossRevenue = delivered.reduce((s, o) => s + (Number(o.grandTotal) || 0), 0);
     const totalGst = delivered.reduce((s, o) => s + (Number(o.gstAmount) || 0), 0);
@@ -5891,122 +5896,372 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 </button>
               </div>
 
-              {financeSubTab === 'payments' ? (
-                <div className="bg-surface rounded-2xl border border-border p-4 space-y-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <h3 className="text-sm font-bold text-text">
-                      Payment Ledger & Partial/Full Refunds
-                    </h3>
-                    <span
-                      className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${
-                        razorpayConfigured
-                          ? 'bg-emerald-500/15 text-emerald-600'
-                          : 'bg-amber-500/15 text-amber-600'
-                      }`}
-                    >
-                      {razorpayConfigured ? 'Online Payments Active' : 'Cash on Delivery Only'}
-                    </span>
-                  </div>
+              {financeSubTab === 'payments' ? (() => {
+                const getOrderForPayment = (payment: PaymentRecord) =>
+                  orders.find(
+                    (o) => o.id === payment.orderId || o.orderNumber === payment.orderNumber
+                  );
 
-                  {!razorpayConfigured && (
-                    <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-700 dark:text-amber-400">
-                      <p className="font-bold">Online payments are not set up yet</p>
-                      <p className="text-[11px] opacity-90 mt-0.5">
-                        Your storefront currently accepts Cash on Delivery (COD) orders.
-                      </p>
-                    </div>
-                  )}
+                const getRefundedTotalForPayment = (paymentId: string) =>
+                  refunds
+                    .filter((r) => r.paymentId === paymentId && r.status === 'PROCESSED')
+                    .reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
 
-                  <div className="space-y-2.5">
-                    {payments.length === 0 ? (
-                      <div className="p-6 rounded-xl border border-border bg-bg text-center text-xs text-muted">
-                        No payment records yet.
+                const isRefundEligible = (payment: PaymentRecord) => {
+                  if (payment.gateway !== 'RAZORPAY') return false;
+                  const statusStr = String(payment.status);
+                  const isPaidOrCaptured =
+                    statusStr === 'VERIFIED' || statusStr === 'CAPTURED' || statusStr === 'PAID';
+                  if (!isPaidOrCaptured) return false;
+                  const remaining = Math.max(
+                    0,
+                    payment.amount - getRefundedTotalForPayment(payment.id)
+                  );
+                  if (remaining <= 0) return false;
+                  const order = getOrderForPayment(payment);
+                  return Boolean(
+                    order && (order.status === 'CANCELLED' || order.status === 'REJECTED')
+                  );
+                };
+
+                const getPaymentSortTs = (payment: PaymentRecord, order?: OrderRecord) =>
+                  getSafeTimestampMs(order?.cancelledAt || payment.updatedAt || payment.createdAt);
+
+                const pendingRefundPayments = payments
+                  .filter((p) => isRefundEligible(p))
+                  .sort((a, b) => {
+                    const ordA = getOrderForPayment(a);
+                    const ordB = getOrderForPayment(b);
+                    const pendDiff =
+                      Number(Boolean(ordB?.refundPending)) - Number(Boolean(ordA?.refundPending));
+                    if (pendDiff !== 0) return pendDiff;
+                    return getPaymentSortTs(b, ordB) - getPaymentSortTs(a, ordA);
+                  });
+
+                const refundHistoryPayments = payments
+                  .filter(
+                    (p) => p.status === 'REFUNDED' || getRefundedTotalForPayment(p.id) > 0
+                  )
+                  .sort((a, b) => {
+                    const ordA = getOrderForPayment(a);
+                    const ordB = getOrderForPayment(b);
+                    return getPaymentSortTs(b, ordB) - getPaymentSortTs(a, ordA);
+                  });
+
+                const pendingSet = new Set(pendingRefundPayments.map((p) => p.id));
+                const refundedSet = new Set(refundHistoryPayments.map((p) => p.id));
+                const otherHistoryPayments = payments.filter(
+                  (p) => !pendingSet.has(p.id) && !refundedSet.has(p.id)
+                );
+
+                return (
+                <div className="space-y-4">
+                  <div className="bg-surface rounded-2xl border border-border p-4 space-y-4">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <h3 className="text-sm font-bold text-text">
+                          Payment Ledger & Partial/Full Refunds
+                        </h3>
+                        <p className="text-[11px] text-muted mt-0.5">
+                          Only paid online orders that were cancelled or rejected are eligible for refunds.
+                        </p>
                       </div>
-                    ) : (
-                      payments.slice(0, 25).map((p) => {
-                        const existingRefund = refunds.find((r) => r.paymentId === p.id);
-                        return (
-                        <div
-                          key={p.id}
-                          className="p-3 rounded-xl border border-border flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs min-w-0"
-                        >
-                          <div className="min-w-0 flex-1">
-                            <p className="font-bold text-text break-words">
-                              {p.orderNumber} • ₹{p.amount} ({p.gateway === 'COD' ? 'COD' : 'Online'})
-                            </p>
-                            <p className="text-muted break-words">
-                              Status: {p.status}{' '}
-                              {existingRefund ? `• Refunded ₹${existingRefund.amount}` : ''}
-                            </p>
-                          </div>
-                          {p.status !== 'REFUNDED' && (
-                            p.gateway === 'RAZORPAY' && !razorpayConfigured ? (
-                              <span className="text-muted italic text-[11px]">
-                                Online refunds unavailable
-                              </span>
-                            ) : (
-                            <div className="flex flex-wrap items-center gap-2">
-                              <input
-                                type="number"
-                                placeholder={`Max ₹${p.amount}`}
-                                value={refundAmountInput[p.id] || ''}
-                                onChange={(e) =>
-                                  setRefundAmountInput({
-                                    ...refundAmountInput,
-                                    [p.id]: e.target.value,
-                                  })
-                                }
-                                className="w-24 min-h-[34px] px-2 rounded-lg border border-border bg-bg text-xs"
-                              />
-                              <input
-                                type="text"
-                                placeholder="Reason..."
-                                value={refundReasonInput[p.id] || ''}
-                                onChange={(e) =>
-                                  setRefundReasonInput({
-                                    ...refundReasonInput,
-                                    [p.id]: e.target.value,
-                                  })
-                                }
-                                className="w-32 min-h-[34px] px-2 rounded-lg border border-border bg-bg text-xs"
-                              />
-                              <button
-                                onClick={async () => {
-                                  const amt = Number(refundAmountInput[p.id]) || p.amount;
-                                  const reason =
-                                    refundReasonInput[p.id]?.trim() || 'Admin initiated refund';
-                                  const res = await adminFetch(
-                                    `/api/admin/payments/${p.id}/refund`,
-                                    {
-                                      method: 'POST',
-                                      body: JSON.stringify({
-                                        amount: amt,
-                                        reason,
-                                      }),
-                                    }
-                                  );
-                                  if (res.ok) {
-                                    await fetchBootstrap();
-                                    showToast('Saved');
-                                  } else {
-                                    const err = await res.json();
-                                    showToast(err.error || 'Refund failed');
-                                  }
-                                }}
-                                className="px-3 py-1.5 rounded-lg border border-red-500/30 text-red-600 font-semibold hover:bg-red-500/10 cursor-pointer"
-                                >
-                                  Issue Refund
-                                </button>
+                      <span
+                        className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${
+                          razorpayConfigured
+                            ? 'bg-emerald-500/15 text-emerald-600'
+                            : 'bg-amber-500/15 text-amber-600'
+                        }`}
+                      >
+                        {razorpayConfigured ? 'Online Payments Active' : 'Cash on Delivery Only'}
+                      </span>
+                    </div>
+
+                    {!razorpayConfigured && (
+                      <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-700 dark:text-amber-400">
+                        <p className="font-bold">Online payments are not set up yet</p>
+                        <p className="text-[11px] opacity-90 mt-0.5">
+                          Your storefront currently accepts Cash on Delivery (COD) orders.
+                        </p>
+                      </div>
+                    )}
+
+                    {/* 1. Pending Refunds */}
+                    <div className="space-y-2.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <h4 className="text-xs font-bold uppercase tracking-wider text-muted">
+                          Pending Refunds ({pendingRefundPayments.length})
+                        </h4>
+                      </div>
+
+                      {pendingRefundPayments.length === 0 ? (
+                        <div className="p-5 rounded-xl border border-border bg-bg text-center text-xs text-muted">
+                          No orders are waiting for a refund.
+                        </div>
+                      ) : (
+                        pendingRefundPayments.map((p) => {
+                          const order = getOrderForPayment(p);
+                          const alreadyRefunded = getRefundedTotalForPayment(p.id);
+                          const remainingMax = Math.max(0, p.amount - alreadyRefunded);
+                          const cancelledByLabel =
+                            order?.cancelledBy === 'customer'
+                              ? 'Customer'
+                              : order?.cancelledBy === 'kitchen'
+                              ? 'Kitchen'
+                              : order?.cancelledBy === 'payment_failed'
+                              ? 'Payment failed'
+                              : order?.cancelledBy === 'auto_expired'
+                              ? 'Auto-expired'
+                              : null;
+
+                          return (
+                            <div
+                              key={p.id}
+                              className="p-3.5 rounded-xl border border-border bg-bg/40 flex flex-col gap-3 text-xs min-w-0"
+                            >
+                              <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+                                <div className="min-w-0 flex-1 space-y-1.5">
+                                  <div className="flex flex-wrap items-center gap-1.5">
+                                    <span className="px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-700 dark:text-amber-300 font-bold text-[11px]">
+                                      {p.orderNumber} • ₹{p.amount}
+                                    </span>
+                                    {order?.status && (
+                                      <span className="px-2 py-0.5 rounded-md bg-red-500/15 text-red-600 font-bold text-[11px]">
+                                        {order.status}
+                                      </span>
+                                    )}
+                                    {order?.refundPending && (
+                                      <span className="px-2 py-0.5 rounded-md bg-primary/15 text-primary font-bold text-[11px]">
+                                        Refund Pending
+                                      </span>
+                                    )}
+                                    {cancelledByLabel && (
+                                      <span className="px-2 py-0.5 rounded-md bg-surface border border-border text-muted font-medium text-[11px]">
+                                        Cancelled by: {cancelledByLabel}
+                                      </span>
+                                    )}
+                                  </div>
+                                  {order?.cancelReason && (
+                                    <p className="text-muted break-words">
+                                      Reason: <span className="text-text font-medium">{order.cancelReason}</span>
+                                    </p>
+                                  )}
+                                  <p className="text-muted break-words">
+                                    Payment status: {p.status}
+                                    {alreadyRefunded > 0
+                                      ? ` • Already refunded ₹${alreadyRefunded} • Remaining ₹${remainingMax}`
+                                      : ''}
+                                  </p>
+                                </div>
+
+                                {!razorpayConfigured ? (
+                                  <span className="text-muted italic text-[11px] shrink-0">
+                                    Online refunds unavailable
+                                  </span>
+                                ) : (
+                                  <div className="flex flex-wrap items-center gap-2 shrink-0">
+                                    <input
+                                      type="number"
+                                      min={1}
+                                      max={remainingMax}
+                                      placeholder={`Max ₹${remainingMax}`}
+                                      value={refundAmountInput[p.id] || ''}
+                                      onChange={(e) =>
+                                        setRefundAmountInput({
+                                          ...refundAmountInput,
+                                          [p.id]: e.target.value,
+                                        })
+                                      }
+                                      className="w-24 min-h-[34px] px-2 rounded-lg border border-border bg-bg text-xs"
+                                    />
+                                    <input
+                                      type="text"
+                                      placeholder="Reason..."
+                                      value={refundReasonInput[p.id] || ''}
+                                      onChange={(e) =>
+                                        setRefundReasonInput({
+                                          ...refundReasonInput,
+                                          [p.id]: e.target.value,
+                                        })
+                                      }
+                                      className="w-32 min-h-[34px] px-2 rounded-lg border border-border bg-bg text-xs"
+                                    />
+                                    <button
+                                      type="button"
+                                      disabled={refundBusyId === p.id}
+                                      onClick={async () => {
+                                        const rawAmt = refundAmountInput[p.id]?.trim();
+                                        const amt = rawAmt ? Number(rawAmt) : remainingMax;
+                                        if (!Number.isFinite(amt) || amt < 1 || amt > remainingMax) {
+                                          showToast(
+                                            `Enter a valid refund amount between ₹1 and ₹${remainingMax}`
+                                          );
+                                          return;
+                                        }
+                                        const reason =
+                                          refundReasonInput[p.id]?.trim() || 'Admin initiated refund';
+                                        setRefundBusyId(p.id);
+                                        try {
+                                          const res = await adminFetch(
+                                            `/api/admin/payments/${p.id}/refund`,
+                                            {
+                                              method: 'POST',
+                                              body: JSON.stringify({
+                                                amount: amt,
+                                                reason,
+                                              }),
+                                            }
+                                          );
+                                          if (res.ok) {
+                                            setRefundAmountInput((prev) => {
+                                              const next = { ...prev };
+                                              delete next[p.id];
+                                              return next;
+                                            });
+                                            setRefundReasonInput((prev) => {
+                                              const next = { ...prev };
+                                              delete next[p.id];
+                                              return next;
+                                            });
+                                            await fetchBootstrap();
+                                            showToast('Refund processed');
+                                          } else {
+                                            const err = await res.json().catch(() => ({}));
+                                            const errMsg =
+                                              typeof err.error === 'string' && err.error.trim()
+                                                ? err.error
+                                                : 'Refund failed';
+                                            if (
+                                              errMsg
+                                                .toLowerCase()
+                                                .includes('does not have enough balance')
+                                            ) {
+                                              showToast(
+                                                'Razorpay account balance is too low for this refund. Add funds in the Razorpay dashboard or wait for new payments, then try again.'
+                                              );
+                                            } else {
+                                              showToast(errMsg);
+                                            }
+                                          }
+                                        } catch {
+                                          showToast('Network error while processing refund');
+                                        } finally {
+                                          setRefundBusyId(null);
+                                        }
+                                      }}
+                                      className="px-3 py-1.5 rounded-lg border border-red-500/30 text-red-600 font-semibold hover:bg-red-500/10 cursor-pointer disabled:opacity-50"
+                                    >
+                                      {refundBusyId === p.id ? 'Processing...' : 'Issue Refund'}
+                                    </button>
+                                  </div>
+                                )}
                               </div>
-                            )
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+
+                    {/* 2. Refund History (read-only) */}
+                    <div className="pt-3 border-t border-border space-y-2.5">
+                      <h4 className="text-xs font-bold uppercase tracking-wider text-muted">
+                        Refund History ({refundHistoryPayments.length})
+                      </h4>
+                      {refundHistoryPayments.length === 0 ? (
+                        <div className="p-4 rounded-xl border border-border bg-bg text-center text-xs text-muted">
+                          No refunds issued yet.
+                        </div>
+                      ) : (
+                        refundHistoryPayments.map((p) => {
+                          const totalRefunded = getRefundedTotalForPayment(p.id);
+                          const paymentRefunds = refunds.filter((r) => r.paymentId === p.id);
+                          const order = getOrderForPayment(p);
+                          const isPartial = totalRefunded > 0 && totalRefunded < p.amount;
+                          return (
+                            <div
+                              key={p.id}
+                              className="p-3 rounded-xl border border-border flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs min-w-0"
+                            >
+                              <div className="min-w-0 flex-1 space-y-0.5">
+                                <p className="font-bold text-text break-words">
+                                  {p.orderNumber} • Paid ₹{p.amount} • Refunded ₹
+                                  {totalRefunded || p.amount}
+                                  {isPartial ? ' (Partial)' : ''}
+                                </p>
+                                <p className="text-muted break-words">
+                                  Order: {order?.status || 'UNKNOWN'} • Payment: {p.status}
+                                  {paymentRefunds[0]?.reason
+                                    ? ` • ${paymentRefunds[0].reason}`
+                                    : ''}
+                                </p>
+                              </div>
+                              <span className="px-2.5 py-1 rounded-full bg-emerald-500/15 text-emerald-600 font-bold text-[11px] shrink-0 self-start sm:self-center">
+                                {isPartial ? 'Partially Refunded' : 'Refunded'}
+                              </span>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+
+                    {/* 3. Payment History (collapsed read-only ledger for delivered, active, and COD payments) */}
+                    <div className="pt-3 border-t border-border space-y-2.5">
+                      <button
+                        type="button"
+                        onClick={() => setPaymentHistoryOpen((prev) => !prev)}
+                        className="w-full flex items-center justify-between gap-2 text-left py-1 cursor-pointer"
+                      >
+                        <span className="text-xs font-bold uppercase tracking-wider text-muted">
+                          Payment History ({otherHistoryPayments.length})
+                        </span>
+                        <span className="inline-flex items-center gap-1 text-xs font-semibold text-primary">
+                          <span>{paymentHistoryOpen ? 'Hide' : 'Show'}</span>
+                          {paymentHistoryOpen ? (
+                            <ChevronUp className="w-4 h-4" />
+                          ) : (
+                            <ChevronDown className="w-4 h-4" />
+                          )}
+                        </span>
+                      </button>
+
+                      {paymentHistoryOpen && (
+                        <div className="space-y-2">
+                          {otherHistoryPayments.length === 0 ? (
+                            <div className="p-4 rounded-xl border border-border bg-bg text-center text-xs text-muted">
+                              No other payment records.
+                            </div>
+                          ) : (
+                            otherHistoryPayments.map((p) => {
+                              const order = getOrderForPayment(p);
+                              return (
+                                <div
+                                  key={p.id}
+                                  className="p-3 rounded-xl border border-border flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs min-w-0"
+                                >
+                                  <div className="min-w-0 flex-1">
+                                    <p className="font-bold text-text break-words">
+                                      {p.orderNumber} • ₹{p.amount} (
+                                      {p.gateway === 'COD' ? 'COD' : 'Online'})
+                                    </p>
+                                    <p className="text-muted break-words">
+                                      Payment: {p.status}
+                                      {order ? ` • Order: ${order.status.replace(/_/g, ' ')}` : ''}
+                                    </p>
+                                  </div>
+                                  <span className="text-[11px] text-muted font-medium shrink-0">
+                                    Read-only
+                                  </span>
+                                </div>
+                              );
+                            })
                           )}
                         </div>
-                      );
-                      })
-                    )}
+                      )}
+                    </div>
                   </div>
                 </div>
-              ) : (
+                );
+              })() : (
                 /* Reports Sub-tab: Date Range, GST Summary, Payment Split, Peak Hours, Repeat Rate */
                 <div className="space-y-4">
                   <div className="bg-surface rounded-2xl border border-border p-4 flex flex-wrap items-center justify-between gap-3">

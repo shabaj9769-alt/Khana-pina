@@ -2299,7 +2299,7 @@ export default async function handler(req: Request, res: Response) {
       return;
     }
 
-    // 24. POST /api/admin/payments/:paymentId/refund (Requirement 8: Owner-only, Real Razorpay Refund API, capped at captured amount)
+    // 24. POST /api/admin/payments/:paymentId/refund (Requirement 7 & 8: Owner-only, cancelled/rejected Razorpay orders only, capped at remaining refundable amount)
     if (method === 'POST' && /^\/payments\/[^/]+\/refund$/.test(subPath)) {
       const admin = await verifyAdminAuthorized(req, res);
       if (!admin) return;
@@ -2309,11 +2309,49 @@ export default async function handler(req: Request, res: Response) {
         res.status(404).json({ error: 'Payment record not found' });
         return;
       }
-      if (payment.status === 'REFUNDED') {
-        res.status(400).json({ error: 'Payment has already been refunded' });
+
+      const targetOrder = db.orders.find(
+        (o) => o.id === payment.orderId || o.orderNumber === payment.orderNumber
+      );
+      if (!targetOrder || (targetOrder.status !== 'CANCELLED' && targetOrder.status !== 'REJECTED')) {
+        res.status(400).json({
+          error:
+            'Refund not allowed: only cancelled or rejected orders can be refunded. Delivered orders are not refundable here.',
+        });
         return;
       }
-      if (payment.gateway === 'RAZORPAY' && !isRazorpayConfigured()) {
+
+      if (payment.gateway !== 'RAZORPAY') {
+        res.status(400).json({
+          error:
+            'Only online Razorpay payments can be refunded here. COD orders are not refundable.',
+        });
+        return;
+      }
+
+      if (payment.status === 'REFUNDED') {
+        res.status(400).json({ error: 'Payment has already been fully refunded.' });
+        return;
+      }
+
+      if (!['VERIFIED', 'CAPTURED', 'PAID'].includes(String(payment.status))) {
+        res.status(400).json({
+          error: 'Only verified/captured online payments can be refunded.',
+        });
+        return;
+      }
+
+      const alreadyRefunded = db.refunds
+        .filter((r) => r.paymentId === payment.id && r.status === 'PROCESSED')
+        .reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
+      const remainingRefundable = Math.max(0, payment.amount - alreadyRefunded);
+
+      if (remainingRefundable <= 0) {
+        res.status(400).json({ error: 'Payment has already been fully refunded.' });
+        return;
+      }
+
+      if (!isRazorpayConfigured()) {
         res.status(400).json({
           error: 'Razorpay payment gateway is not configured. Online refunds are unavailable.',
         });
@@ -2322,7 +2360,7 @@ export default async function handler(req: Request, res: Response) {
 
       const parsed = z
         .object({
-          amount: z.number().min(1).max(payment.amount).optional(),
+          amount: z.number().min(1).max(remainingRefundable).optional(),
           reason: z
             .string()
             .trim()
@@ -2335,28 +2373,60 @@ export default async function handler(req: Request, res: Response) {
 
       if (!parsed.success) {
         res.status(400).json({
-          error: `Invalid refund amount or reason (cannot exceed captured amount ₹${payment.amount})`,
+          error: `Invalid refund amount or reason (cannot exceed remaining refundable amount ₹${remainingRefundable})`,
         });
         return;
       }
 
-      const { refund, order, payment: updatedPayment } = await processRazorpayRefundAuthoritative({
-        payment,
-        requestedAmountRupees: parsed.data.amount,
-        reason: parsed.data.reason,
-        adminEmail: admin.email,
-      });
+      try {
+        const { refund, order, payment: updatedPayment } = await processRazorpayRefundAuthoritative({
+          payment,
+          requestedAmountRupees: parsed.data.amount,
+          reason: parsed.data.reason,
+          adminEmail: admin.email,
+        });
 
-      await logAudit(
-        admin.email,
-        admin.role,
-        'PAYMENT_REFUNDED',
-        `Refunded ₹${refund.amount} for order ${payment.orderNumber} (${refund.razorpayRefundId})`,
-        clientIp
-      );
+        await logAudit(
+          admin.email,
+          admin.role,
+          'PAYMENT_REFUNDED',
+          `Refunded ₹${refund.amount} for order ${payment.orderNumber} (${refund.razorpayRefundId})`,
+          clientIp
+        );
 
-      res.json({ payment: updatedPayment, refund, order });
-      return;
+        res.json({ payment: updatedPayment, refund, order });
+        return;
+      } catch (refundErr) {
+        console.error('[Admin Refund Error]', refundErr);
+        const rawMsg = refundErr instanceof Error ? refundErr.message : '';
+        const lower = rawMsg.toLowerCase();
+        if (
+          lower.includes('does not have enough balance') ||
+          lower.includes('account balance is too low')
+        ) {
+          res.status(400).json({
+            error:
+              'Razorpay account balance is too low for this refund. Add funds in the Razorpay dashboard or wait for new payments, then try again.',
+          });
+          return;
+        }
+        if (
+          lower.includes('refund not allowed') ||
+          lower.includes('cannot exceed') ||
+          lower.includes('already been fully refunded') ||
+          lower.includes('only verified/captured') ||
+          lower.includes('only online razorpay') ||
+          lower.includes('missing razorpaypaymentid') ||
+          lower.includes('must be at least')
+        ) {
+          res.status(400).json({ error: rawMsg });
+          return;
+        }
+        res.status(502).json({
+          error: 'Refund failed at Razorpay. Please try again or check your Razorpay dashboard.',
+        });
+        return;
+      }
     }
 
     // 25. PATCH /api/admin/reviews/:id

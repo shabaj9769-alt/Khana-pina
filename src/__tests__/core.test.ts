@@ -21,9 +21,10 @@ import {
   processRazorpayWebhookAuthoritative,
   syncOrderRealtimePaths,
 } from '../../server';
-import { hashPasswordScrypt } from '../../api/_lib/security';
+import { ACCESS_TTL_SEC, hashPasswordScrypt, signJwt } from '../../api/_lib/security';
 import { getRtdb } from '../../api/_lib/firebaseAdmin';
 import { buildPublicTrackingProjection, getInitialDatabaseState } from '../../api/_lib/store';
+import adminHandler from '../../api/admin';
 import paymentsHandler from '../../api/payments';
 import riderHandler from '../../api/rider';
 import {
@@ -767,6 +768,309 @@ describe('Khana Pina Core & Bypass-Proof Razorpay Suite', () => {
     expect(acceptedProj.etaMins).toBeLessThanOrEqual(36);
     expect(acceptedProj.gstApplied).toBe(false);
     expect(acceptedProj.gstPercent).toBe(0);
+  });
+
+  async function setupAdminRefundRequest(paymentId: string, body: Record<string, unknown>) {
+    await ensureFirebaseSeeded();
+    const owner = db.adminUsers.find((u) => u.role === 'owner')!;
+    const sid = `sess_refund_test_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const session = {
+      id: sid,
+      userId: owner.id,
+      email: owner.email,
+      role: owner.role,
+      userAgent: 'vitest',
+      ipAddress: '127.0.0.1',
+      createdAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+      expiresAt: Date.now() + 60 * 60 * 1000,
+      revoked: false,
+    };
+    db.adminSessions.unshift(session);
+    await getRtdb().ref(`adminSessions/${sid}`).set(session);
+
+    const token = signJwt(
+      {
+        sub: owner.id,
+        email: owner.email,
+        name: owner.name,
+        role: owner.role,
+        sid,
+        tv: owner.tokenVersion,
+        type: 'access',
+      },
+      ACCESS_TTL_SEC
+    );
+
+    let statusCode = 200;
+    let jsonBody: any = null;
+    const req = {
+      method: 'POST',
+      originalUrl: `/api/admin/payments/${paymentId}/refund`,
+      url: `/api/admin/payments/${paymentId}/refund`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'x-forwarded-for': '127.0.0.1',
+      },
+      body,
+      socket: { remoteAddress: '127.0.0.1' },
+    } as any;
+    const res = {
+      setHeader: () => res,
+      status: (code: number) => {
+        statusCode = code;
+        return res;
+      },
+      json: (payload: any) => {
+        jsonBody = payload;
+        return res;
+      },
+      end: () => res,
+    } as any;
+
+    await adminHandler(req, res);
+    return { statusCode, jsonBody };
+  }
+
+  it('17. Refund endpoint rejects DELIVERED + paid orders with 400 and makes zero Razorpay calls', async () => {
+    const orderId = `ord_deliv_noref_${Date.now()}`;
+    const paymentId = `pay_deliv_noref_${Date.now()}`;
+    const { order, payment } = await seedTestOrderAndPayment({
+      orderId,
+      orderNumber: 'AAN-9501',
+      razorpayOrderId: `rzp_${orderId}`,
+      grandTotal: 450,
+      status: 'DELIVERED',
+      paymentStatus: 'PAID',
+    });
+    payment.id = paymentId;
+    payment.status = 'VERIFIED';
+    payment.razorpayPaymentId = `pay_rzp_${Date.now()}`;
+    db.payments = [payment, ...db.payments.filter((p) => p.orderId !== order.id)];
+    await getRtdb().ref(`payments/${payment.id}`).set(payment);
+
+    let fetchCalls = 0;
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      fetchCalls += 1;
+      return { ok: true, json: async () => ({ id: 'rfnd_should_not_run' }) } as any;
+    }) as any;
+
+    try {
+      const res = await setupAdminRefundRequest(payment.id, {
+        amount: 450,
+        reason: 'Attempt refund on delivered order',
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.jsonBody.error).toMatch(/cancelled or rejected/i);
+      expect(fetchCalls).toBe(0);
+      expect(payment.status).toBe('VERIFIED');
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it('18. Refund succeeds for CANCELLED + paid order, sets payment REFUNDED, and clears order.refundPending', async () => {
+    const orderId = `ord_cancel_ref_${Date.now()}`;
+    const paymentId = `pay_cancel_ref_${Date.now()}`;
+    const { order, payment } = await seedTestOrderAndPayment({
+      orderId,
+      orderNumber: 'AAN-9502',
+      razorpayOrderId: `rzp_${orderId}`,
+      grandTotal: 520,
+      status: 'CANCELLED',
+      paymentStatus: 'PAID',
+    });
+    order.refundPending = true;
+    order.cancelReason = 'Customer requested cancellation';
+    order.cancelledBy = 'customer';
+    await syncOrderRealtimePaths(order);
+
+    payment.id = paymentId;
+    payment.status = 'VERIFIED';
+    payment.razorpayPaymentId = `pay_rzp_${Date.now()}`;
+    db.payments = [payment, ...db.payments.filter((p) => p.orderId !== order.id)];
+    await getRtdb().ref(`payments/${payment.id}`).set(payment);
+
+    let fetchCalls = 0;
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      fetchCalls += 1;
+      return {
+        ok: true,
+        json: async () => ({ id: 'rfnd_mock_cancelled_ok' }),
+      } as any;
+    }) as any;
+
+    try {
+      const res = await setupAdminRefundRequest(payment.id, {
+        amount: 520,
+        reason: 'Cancelled by customer',
+      });
+      expect(res.statusCode).toBe(200);
+      expect(fetchCalls).toBe(1);
+      expect(res.jsonBody.payment.status).toBe('REFUNDED');
+      expect(res.jsonBody.order.paymentStatus).toBe('REFUNDED');
+      expect(res.jsonBody.order.refundPending).toBe(false);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it('19. REJECTED + paid order allows partial refund and caps total refunds at paid amount', async () => {
+    const orderId = `ord_reject_part_${Date.now()}`;
+    const paymentId = `pay_reject_part_${Date.now()}`;
+    const { order, payment } = await seedTestOrderAndPayment({
+      orderId,
+      orderNumber: 'AAN-9503',
+      razorpayOrderId: `rzp_${orderId}`,
+      grandTotal: 500,
+      status: 'REJECTED',
+      paymentStatus: 'PAID',
+    });
+    order.refundPending = true;
+    order.cancelReason = 'Item Out of Stock';
+    order.cancelledBy = 'kitchen';
+    await syncOrderRealtimePaths(order);
+
+    payment.id = paymentId;
+    payment.status = 'CAPTURED';
+    payment.razorpayPaymentId = `pay_rzp_${Date.now()}`;
+    db.payments = [payment, ...db.payments.filter((p) => p.orderId !== order.id)];
+    await getRtdb().ref(`payments/${payment.id}`).set(payment);
+
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      ({
+        ok: true,
+        json: async () => ({ id: `rfnd_part_${Date.now()}` }),
+      }) as any) as any;
+
+    try {
+      // Partial refund of ₹200 succeeds
+      const firstPartial = await setupAdminRefundRequest(payment.id, {
+        amount: 200,
+        reason: 'Partial refund',
+      });
+      expect(firstPartial.statusCode).toBe(200);
+      expect(firstPartial.jsonBody.refund.amount).toBe(200);
+      expect(firstPartial.jsonBody.order.refundPending).toBe(false);
+
+      // Attempting ₹400 (> remaining ₹300) must fail with 400
+      const overCap = await setupAdminRefundRequest(payment.id, {
+        amount: 400,
+        reason: 'Exceeds paid amount',
+      });
+      expect(overCap.statusCode).toBe(400);
+      expect(overCap.jsonBody.error).toMatch(/cannot exceed/i);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it('20. COD order is NOT refundable through the refund endpoint', async () => {
+    const orderId = `ord_cod_noref_${Date.now()}`;
+    const paymentId = `pay_cod_noref_${Date.now()}`;
+    const { order } = await seedTestOrderAndPayment({
+      orderId,
+      orderNumber: 'AAN-9504',
+      razorpayOrderId: '',
+      grandTotal: 300,
+      status: 'CANCELLED',
+      paymentStatus: 'PENDING',
+    });
+    order.paymentMethod = 'COD';
+    await syncOrderRealtimePaths(order);
+
+    const codPayment: PaymentRecord = {
+      id: paymentId,
+      orderId: order.id,
+      orderNumber: order.orderNumber,
+      customerPhone: order.customerPhone,
+      gateway: 'COD',
+      amount: 300,
+      currency: 'INR',
+      status: 'PENDING',
+      serverHmacVerified: true,
+      webhookVerified: false,
+      apiAmountMatched: true,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    db.payments = [codPayment, ...db.payments.filter((p) => p.orderId !== order.id)];
+    await getRtdb().ref(`payments/${codPayment.id}`).set(codPayment);
+
+    let fetchCalls = 0;
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      fetchCalls += 1;
+      return { ok: true, json: async () => ({}) } as any;
+    }) as any;
+
+    try {
+      const res = await setupAdminRefundRequest(codPayment.id, {
+        amount: 300,
+        reason: 'Try COD refund',
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.jsonBody.error).toMatch(/COD orders are not refundable/i);
+      expect(fetchCalls).toBe(0);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it('21. Razorpay insufficient balance error shows friendly message and keeps payment unrefunded & refundPending true', async () => {
+    const orderId = `ord_lowbal_${Date.now()}`;
+    const paymentId = `pay_lowbal_${Date.now()}`;
+    const { order, payment } = await seedTestOrderAndPayment({
+      orderId,
+      orderNumber: 'AAN-9505',
+      razorpayOrderId: `rzp_${orderId}`,
+      grandTotal: 650,
+      status: 'CANCELLED',
+      paymentStatus: 'PAID',
+    });
+    order.refundPending = true;
+    await syncOrderRealtimePaths(order);
+
+    payment.id = paymentId;
+    payment.status = 'VERIFIED';
+    payment.razorpayPaymentId = `pay_rzp_${Date.now()}`;
+    db.payments = [payment, ...db.payments.filter((p) => p.orderId !== order.id)];
+    await getRtdb().ref(`payments/${payment.id}`).set(payment);
+
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      ({
+        ok: false,
+        status: 400,
+        text: async () =>
+          JSON.stringify({
+            error: {
+              code: 'BAD_REQUEST_ERROR',
+              description:
+                'Your account does not have enough balance to carry out the refund operation.',
+            },
+          }),
+      }) as any) as any;
+
+    try {
+      const res = await setupAdminRefundRequest(payment.id, {
+        amount: 650,
+        reason: 'Retry after low balance',
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.jsonBody.error).toBe(
+        'Razorpay account balance is too low for this refund. Add funds in the Razorpay dashboard or wait for new payments, then try again.'
+      );
+      expect(res.jsonBody.error).not.toContain('BAD_REQUEST_ERROR');
+      expect(payment.status).toBe('VERIFIED');
+      expect(order.paymentStatus).toBe('PAID');
+      expect(order.refundPending).toBe(true);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
   });
 });
 

@@ -736,17 +736,56 @@ export async function processRazorpayRefundAuthoritative(params: {
   customFetch?: typeof fetch;
 }): Promise<{ refund: RefundRecord; order?: OrderRecord; payment: PaymentRecord }> {
   const { payment, requestedAmountRupees, reason, adminEmail, customFetch = fetch } = params;
-  const maxCapturableRupees = payment.amount;
-  const refundAmountRupees =
-    requestedAmountRupees !== undefined
-      ? Math.min(maxCapturableRupees, Math.max(1, requestedAmountRupees))
-      : maxCapturableRupees;
 
-  if (requestedAmountRupees !== undefined && requestedAmountRupees > maxCapturableRupees) {
-    throw new Error(`Refund amount cannot exceed captured amount (₹${maxCapturableRupees})`);
+  const order = db.orders.find(
+    (o) => o.id === payment.orderId || o.orderNumber === payment.orderNumber
+  );
+  if (!order || (order.status !== 'CANCELLED' && order.status !== 'REJECTED')) {
+    throw new Error(
+      'Refund not allowed: only cancelled or rejected orders can be refunded. Delivered orders are not refundable here.'
+    );
   }
 
-  if (payment.gateway === 'RAZORPAY' && !isRazorpayConfigured()) {
+  if (payment.gateway !== 'RAZORPAY') {
+    throw new Error(
+      'Only online Razorpay payments can be refunded here. COD orders are not refundable.'
+    );
+  }
+
+  if (payment.status === 'REFUNDED') {
+    throw new Error('Payment has already been fully refunded.');
+  }
+
+  if (!['VERIFIED', 'CAPTURED', 'PAID'].includes(String(payment.status))) {
+    throw new Error('Only verified/captured online payments can be refunded.');
+  }
+
+  const alreadyRefundedRupees = db.refunds
+    .filter((r) => r.paymentId === payment.id && r.status === 'PROCESSED')
+    .reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
+  const remainingRefundableRupees = Math.max(0, payment.amount - alreadyRefundedRupees);
+
+  if (remainingRefundableRupees <= 0) {
+    throw new Error('Payment has already been fully refunded.');
+  }
+
+  if (requestedAmountRupees !== undefined) {
+    if (!Number.isFinite(requestedAmountRupees) || requestedAmountRupees < 1) {
+      throw new Error('Refund amount must be at least ₹1.');
+    }
+    if (requestedAmountRupees > remainingRefundableRupees) {
+      throw new Error(
+        `Refund amount cannot exceed remaining refundable amount (₹${remainingRefundableRupees}).`
+      );
+    }
+  }
+
+  const refundAmountRupees =
+    requestedAmountRupees !== undefined
+      ? Math.min(remainingRefundableRupees, Math.max(1, requestedAmountRupees))
+      : remainingRefundableRupees;
+
+  if (!isRazorpayConfigured()) {
     throw new Error('Razorpay payment gateway is not configured. Online refunds are unavailable.');
   }
 
@@ -756,10 +795,7 @@ export async function processRazorpayRefundAuthoritative(params: {
 
   let razorpayRefundId = `rfnd_rzp_${crypto.randomBytes(6).toString('hex')}`;
 
-  if (
-    payment.gateway === 'RAZORPAY' &&
-    (cfg.mode === 'live' || isStrictProductionOrLiveMode() || hasRealCredentials)
-  ) {
+  if (cfg.mode === 'live' || isStrictProductionOrLiveMode() || hasRealCredentials) {
     if (!payment.razorpayPaymentId) {
       throw new Error('Cannot refund: Missing razorpayPaymentId on captured payment');
     }
@@ -783,14 +819,25 @@ export async function processRazorpayRefundAuthoritative(params: {
     );
     if (!resp.ok) {
       const errText = await resp.text().catch(() => 'Razorpay refund API error');
-      throw new Error(`Razorpay Refund API failed (${resp.status}): ${errText}`);
+      console.error(
+        `[Razorpay Refund Error] status=${resp.status} paymentId=${payment.id} order=${payment.orderNumber}`,
+        errText
+      );
+      if (errText.toLowerCase().includes('does not have enough balance')) {
+        throw new Error(
+          'Razorpay account balance is too low for this refund. Add funds in the Razorpay dashboard or wait for new payments, then try again.'
+        );
+      }
+      throw new Error(
+        `Razorpay refund failed (HTTP ${resp.status}). Please check your Razorpay dashboard and try again.`
+      );
     }
     const data = (await resp.json()) as { id?: string };
     if (data.id) razorpayRefundId = data.id;
   }
 
   const refund: RefundRecord = {
-    id: `ref_${Date.now()}`,
+    id: `ref_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
     paymentId: payment.id,
     orderId: payment.orderId,
     orderNumber: payment.orderNumber,
@@ -802,15 +849,16 @@ export async function processRazorpayRefundAuthoritative(params: {
     createdAt: new Date().toISOString(),
   };
 
-  payment.status = 'REFUNDED';
-  payment.updatedAt = new Date().toISOString();
+  const newTotalRefunded = alreadyRefundedRupees + refundAmountRupees;
+  const isFullyRefunded = newTotalRefunded >= payment.amount;
 
-  const order = db.orders.find((o) => o.id === payment.orderId);
-  if (order) {
+  if (isFullyRefunded) {
+    payment.status = 'REFUNDED';
     order.paymentStatus = 'REFUNDED';
-    order.refundPending = false;
-    await syncOrderRealtimePaths(order);
   }
+  order.refundPending = false;
+  payment.updatedAt = new Date().toISOString();
+  await syncOrderRealtimePaths(order);
 
   db.refunds.unshift(refund);
   const rtdb = getRtdb();
