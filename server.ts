@@ -1,3 +1,4 @@
+import http from 'http';
 import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
@@ -75,6 +76,7 @@ async function startServer() {
   await ensureFirebaseSeeded();
 
   const app = express();
+  const httpServer = http.createServer(app);
   app.set('trust proxy', process.env.TRUST_PROXY ? Number(process.env.TRUST_PROXY) || 1 : 1);
 
   // Preserve raw body stream for /api/payments/webhook (matches Vercel bodyParser: false)
@@ -101,7 +103,11 @@ async function startServer() {
 
   if (!IS_PROD) {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        ws: { server: httpServer },
+        ...(process.env.DISABLE_HMR === 'true' ? { hmr: false } : {}),
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -113,7 +119,7 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  httpServer.listen(PORT, '0.0.0.0', () => {
     const rzpCfg = getRazorpayConfig();
     console.log(
       `${db.settings.shopName} Server (Vercel Serverless + Firebase RTDB) running on http://0.0.0.0:${PORT} (RAZORPAY_MODE=${rzpCfg.mode}, DEMO_MODE=${isDemoModeEnabled()})`
