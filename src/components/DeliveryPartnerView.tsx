@@ -3,6 +3,7 @@ import {
   Banknote,
   Check,
   CheckCircle2,
+  Lock,
   MapPin,
   Moon,
   Navigation,
@@ -11,6 +12,7 @@ import {
   ShieldCheck,
   Sun,
   Truck,
+  LogOut,
 } from 'lucide-react';
 import { OrderRecord, ThemeMode } from '../types.ts';
 import {
@@ -25,17 +27,28 @@ import {
   syncServerTimeFromResponse,
 } from '../utils/formatOrderTime.ts';
 
-interface DeliveryPartnerViewProps {
-  initialToken?: string;
-}
-
-// Only enabled if explicitly passed ?dev_otp=1 in URL query string
 const DEV_MODE_SHOW_OTP =
   typeof window !== 'undefined' &&
   new URLSearchParams(window.location.search).get('dev_otp') === '1';
 
-export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initialToken }) => {
-  const [activeToken, setActiveToken] = useState(initialToken || '');
+interface DeliveryPartnerViewProps {
+  initialToken?: string;
+}
+
+export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = () => {
+  const [sessionToken, setSessionToken] = useState<string>(() => {
+    try {
+      return sessionStorage.getItem('rider_session_v1') || '';
+    } catch {
+      return '';
+    }
+  });
+
+  const [loginPhone, setLoginPhone] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [loginError, setLoginError] = useState<string | null>(null);
+  const [loggingIn, setLoggingIn] = useState(false);
+
   const [riderId, setRiderId] = useState<string>('');
   const [riderCustomToken, setRiderCustomToken] = useState<string | null>(null);
   const [firebaseClientConfig, setFirebaseClientConfig] = useState<Record<string, string> | null>(
@@ -44,12 +57,11 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
   const [shopName, setShopName] = useState<string>(() => getCachedShopName() || 'Food Ordering');
   const [riderName, setRiderName] = useState('');
   const [riderPhone, setRiderPhone] = useState('');
-  const [dailyPin, setDailyPin] = useState<string | undefined>(undefined);
   const [authError, setAuthError] = useState<string | null>(null);
   const [isOnline, setIsOnline] = useState(true);
   const [riderTab, setRiderTab] = useState<'active' | 'completed'>('active');
   const [orders, setOrders] = useState<OrderRecord[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [otpDigits, setOtpDigits] = useState<Record<string, [string, string, string, string]>>({});
   const [feedback, setFeedback] = useState<Record<string, { type: 'ok' | 'err'; msg: string }>>({});
   const [toastMsg, setToastMsg] = useState<string | null>(null);
@@ -76,7 +88,7 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
 
   useEffect(() => {
     applyShopBrandingToDocument(shopName, {
-      title: `${shopName} — Rider`,
+      title: `${shopName} — Rider Portal`,
     });
   }, [shopName]);
 
@@ -85,32 +97,87 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
     setTimeout(() => setToastMsg(null), 3000);
   };
 
-  const fetchRiderOrders = async (token: string) => {
-    if (!token) {
-      setAuthError('Rider link missing. Apne admin se naya rider link maango.');
-      setLoading(false);
-      return;
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!loginPhone.trim() || !loginPassword.trim()) return;
+    try {
+      setLoggingIn(true);
+      setLoginError(null);
+      const res = await fetch('/api/rider/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          phone: loginPhone.replace(/\D/g, ''),
+          password: loginPassword,
+        }),
+      });
+      syncServerTimeFromResponse(res);
+      const data = await res.json();
+      if (!res.ok) {
+        setLoginError(data.error || 'Invalid phone number or password');
+        return;
+      }
+      if (data.token) {
+        sessionStorage.setItem('rider_session_v1', data.token);
+        setSessionToken(data.token);
+        if (data.shopName) setShopName(data.shopName);
+        if (data.rider) {
+          setRiderId(data.rider.id);
+          setRiderName(data.rider.name);
+          setRiderPhone(data.rider.phone);
+        }
+        setOrders(data.orders || []);
+        setRiderCustomToken(data.firebaseCustomToken || null);
+        setFirebaseClientConfig(data.firebaseClientConfig || null);
+        showToast('Logged in successfully');
+      }
+    } catch {
+      setLoginError('Network error during login');
+    } finally {
+      setLoggingIn(false);
     }
+  };
+
+  const handleLogout = () => {
+    try {
+      sessionStorage.removeItem('rider_session_v1');
+    } catch {
+      // ignore
+    }
+    setSessionToken('');
+    setRiderId('');
+    setRiderName('');
+    setRiderPhone('');
+    setOrders([]);
+    showToast('Logged out');
+  };
+
+  const fetchRiderData = async (token: string) => {
+    if (!token) return;
     try {
       setLoading(true);
       setAuthError(null);
-      const res = await fetch(`/api/rider/${encodeURIComponent(token)}`);
+      const res = await fetch('/api/rider/me', {
+        headers: { 'X-Rider-Session': token },
+      });
       syncServerTimeFromResponse(res);
+      if (res.status === 401) {
+        handleLogout();
+        setAuthError('Session expired. Please log in again.');
+        return;
+      }
       const data = await res.json();
       if (res.ok && data.rider) {
-        if (data.shopName) {
-          setShopName(data.shopName);
-        }
+        if (data.shopName) setShopName(data.shopName);
         setRiderId(data.rider.id);
         setRiderName(data.rider.name);
         setRiderPhone(data.rider.phone);
-        setDailyPin(data.rider.dailyPin);
         setOrders(data.orders || []);
         setRiderCustomToken(data.firebaseCustomToken || null);
         setFirebaseClientConfig(data.firebaseClientConfig || null);
       } else {
-        setAuthError(data.error || 'Invalid, revoked, or expired rider link.');
-        setOrders([]);
+        setAuthError(data.error || 'Failed to authenticate rider session.');
+        handleLogout();
       }
     } finally {
       setLoading(false);
@@ -118,29 +185,28 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
   };
 
   useEffect(() => {
-    if (initialToken) {
-      setActiveToken(initialToken);
+    if (sessionToken) {
+      fetchRiderData(sessionToken);
     }
-  }, [initialToken]);
-
-  useEffect(() => {
-    fetchRiderOrders(activeToken);
-  }, [activeToken]);
+  }, [sessionToken]);
 
   // Listen to Firebase RTDB riderOrders/{riderId} using rider custom token
   useEffect(() => {
-    if (!riderId) return;
+    if (!riderId || !sessionToken) return;
     const unsub = subscribeToRiderOrders({
       riderId,
-      accessToken: activeToken,
+      sessionToken,
       customToken: riderCustomToken,
       firebaseConfig: firebaseClientConfig as { databaseURL: string; apiKey?: string; projectId?: string } | null,
       onOrdersUpdate: (liveOrders) => {
         setOrders(liveOrders);
       },
+      onUnauthorized: () => {
+        handleLogout();
+      },
     });
     return () => unsub();
-  }, [riderId, activeToken, riderCustomToken, firebaseClientConfig]);
+  }, [riderId, sessionToken, riderCustomToken, firebaseClientConfig]);
 
   const getOrderDigits = (orderId: string): [string, string, string, string] => {
     return otpDigits[orderId] || ['', '', '', ''];
@@ -195,12 +261,19 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
       return;
     }
 
-    const res = await fetch(`/api/rider/${encodeURIComponent(activeToken)}/deliver`, {
+    const res = await fetch('/api/rider/deliver', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Rider-Session': sessionToken,
+      },
       body: JSON.stringify({ orderId, otp }),
     });
     syncServerTimeFromResponse(res);
+    if (res.status === 401) {
+      handleLogout();
+      return;
+    }
     const data = await res.json();
     if (!res.ok) {
       setFeedback((prev) => ({
@@ -215,8 +288,84 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
       [orderId]: { type: 'ok', msg: 'OTP verified! Order marked Delivered.' },
     }));
     showToast('Delivery completed & verified!');
-    fetchRiderOrders(activeToken);
+    fetchRiderData(sessionToken);
   };
+
+  if (!sessionToken) {
+    return (
+      <div className="min-h-[100dvh] w-full bg-bg text-text flex items-center justify-center p-4">
+        <div className="w-full max-w-md bg-surface border border-border rounded-2xl p-6 sm:p-8 shadow-lg space-y-6">
+          <div className="text-center space-y-2">
+            <div className="w-14 h-14 rounded-2xl bg-primary/15 text-primary flex items-center justify-center mx-auto">
+              <Truck className="w-7 h-7" />
+            </div>
+            <h1 className="text-2xl font-bold text-text">Rider Portal</h1>
+            <p className="text-sm text-muted">Log in with your phone number and password set by Admin</p>
+          </div>
+
+          <form onSubmit={handleLogin} className="space-y-4">
+            {loginError && (
+              <div className="bg-red-500/10 border border-red-500/30 text-red-600 rounded-xl p-3 text-xs font-semibold">
+                {loginError}
+              </div>
+            )}
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-text">Phone Number</label>
+              <div className="relative flex items-center">
+                <span className="absolute left-3 text-xs font-semibold text-muted">+91</span>
+                <input
+                  type="tel"
+                  required
+                  value={loginPhone}
+                  onChange={(e) => setLoginPhone(e.target.value)}
+                  placeholder="9876543210"
+                  maxLength={10}
+                  className="w-full min-h-[46px] pl-11 pr-3 rounded-xl border border-border bg-bg text-sm text-text focus:outline-none focus:border-primary"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-text">Password</label>
+              <div className="relative flex items-center">
+                <span className="absolute left-3 text-muted">
+                  <Lock className="w-4 h-4" />
+                </span>
+                <input
+                  type="password"
+                  required
+                  value={loginPassword}
+                  onChange={(e) => setLoginPassword(e.target.value)}
+                  placeholder="Enter rider password"
+                  className="w-full min-h-[46px] pl-10 pr-3 rounded-xl border border-border bg-bg text-sm text-text focus:outline-none focus:border-primary"
+                />
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              disabled={loggingIn}
+              className="w-full min-h-[48px] rounded-xl bg-primary text-primary-contrast text-sm font-bold shadow-sm hover:opacity-95 transition-opacity cursor-pointer flex items-center justify-center"
+            >
+              {loggingIn ? <RefreshCw className="w-5 h-5 animate-spin" /> : 'Log In to Rider Portal'}
+            </button>
+          </form>
+
+          <div className="text-center pt-2 border-t border-border">
+            <button
+              type="button"
+              onClick={() => setRiderThemeMode((m) => (m === 'dark' ? 'light' : 'dark'))}
+              className="text-xs font-medium text-muted hover:text-text inline-flex items-center gap-1 cursor-pointer"
+            >
+              {riderThemeMode === 'dark' ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
+              <span>Toggle {riderThemeMode === 'dark' ? 'Light' : 'Dark'} Mode</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const activeDeliveries = orders.filter(
     (o) => !['DELIVERED', 'CANCELLED', 'REJECTED'].includes(o.status)
@@ -231,7 +380,6 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
 
   return (
     <div className="min-h-[100dvh] w-full max-w-[100vw] overflow-x-clip bg-bg text-text pb-safe transition-colors duration-200">
-      {/* Simple Top Bar: "Hi, Ramesh" + Night Dark Mode + Online/Offline toggle (NO customer nav) */}
       <header className="sticky top-0 left-0 right-0 w-full max-w-[100vw] z-30 bg-surface border-b border-border py-3 shadow-2xs overflow-x-clip">
         <div className="w-full max-w-[480px] mx-auto px-4 flex flex-wrap sm:flex-nowrap items-center justify-between gap-2 min-w-0">
           <div className="flex items-center gap-2.5 min-w-0 basis-full sm:basis-auto sm:flex-1">
@@ -242,23 +390,13 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
               <h1 className="text-[18px] sm:text-[20px] font-bold text-text leading-tight break-normal">
                 Hi, {firstName}
               </h1>
-              <p className="text-[12px] text-muted tabular-nums flex flex-wrap gap-x-2">
-                {riderPhone && <span className="whitespace-nowrap">+91 {riderPhone}</span>}
-                <span>
-                  {dailyPin
-                    ? riderPhone
-                      ? `· Daily PIN: ${dailyPin}`
-                      : `Daily PIN: ${dailyPin}`
-                    : riderPhone
-                    ? '· Link-only rider portal'
-                    : 'Link-only rider portal'}
-                </span>
+              <p className="text-[12px] text-muted tabular-nums">
+                {riderPhone ? `+91 ${riderPhone}` : shopName}
               </p>
             </div>
           </div>
 
           <div className="w-full sm:w-auto flex items-center gap-1.5 shrink-0">
-            {/* Night Run Dark Mode Toggle */}
             <button
               type="button"
               onClick={() => setRiderThemeMode((m) => (m === 'dark' ? 'light' : 'dark'))}
@@ -273,7 +411,6 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
               )}
             </button>
 
-            {/* Online / Offline Toggle */}
             <button
               type="button"
               role="switch"
@@ -299,28 +436,34 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
 
             <button
               type="button"
-              onClick={() => fetchRiderOrders(activeToken)}
+              onClick={() => fetchRiderData(sessionToken)}
               aria-label="Refresh runs"
               className="min-w-[40px] min-h-[40px] rounded-theme border border-border bg-bg hover:bg-surface active:scale-[0.98] flex items-center justify-center text-text transition-all duration-200 cursor-pointer shrink-0"
             >
               <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
             </button>
+
+            <button
+              type="button"
+              onClick={handleLogout}
+              aria-label="Log out"
+              title="Log out"
+              className="min-w-[40px] min-h-[40px] rounded-theme border border-red-500/30 bg-red-500/10 hover:bg-red-500/20 text-red-600 flex items-center justify-center cursor-pointer shrink-0"
+            >
+              <LogOut className="w-4 h-4" />
+            </button>
           </div>
         </div>
       </header>
 
-      {/* Main Content Container */}
       <main className="w-full max-w-[480px] mx-auto px-4 py-4 space-y-3 min-w-0 overflow-x-clip">
         {authError && (
           <div className="bg-red-500/10 border border-red-500/30 text-red-600 rounded-theme p-4 text-[13px] font-medium space-y-1">
-            <p className="font-bold">Rider Link Access Error</p>
+            <p className="font-bold">Session Notice</p>
             <p>{authError}</p>
           </div>
         )}
 
-
-
-        {/* Daily Summary Card: Deliveries Done & Cash Collected */}
         <section className="grid grid-cols-2 gap-3 min-w-0">
           <div className="bg-surface rounded-theme p-4 shadow-2xs border border-border min-w-0">
             <p className="text-[12px] font-medium text-muted break-words leading-snug">Deliveries done</p>
@@ -336,7 +479,6 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
           </div>
         </section>
 
-        {/* Tabs: Active (n) | Completed (n) */}
         <div className="grid grid-cols-2 gap-2 bg-surface p-1.5 rounded-theme shadow-2xs border border-border">
           <button
             type="button"
@@ -362,7 +504,6 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
           </button>
         </div>
 
-        {/* ACTIVE RUNS TAB */}
         {riderTab === 'active' && (
           <section className="space-y-3 min-w-0">
             {loading ? (
@@ -403,7 +544,6 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
                       key={order.id}
                       className="bg-surface rounded-theme p-4 shadow-2xs border border-border space-y-4 min-w-0"
                     >
-                      {/* Top Row: Order ID + Amount + Payment Chip */}
                       <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-border min-w-0 max-w-full">
                         <div className="min-w-0 max-w-full">
                           <div className="flex items-center gap-2 min-w-0 flex-wrap">
@@ -434,7 +574,6 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
                         )}
                       </div>
 
-                      {/* Customer Name, Full Wrapping Address, Distance */}
                       <div className="space-y-2 min-w-0">
                         <div className="flex flex-wrap items-center justify-between gap-2 min-w-0">
                           <h2 className="text-[16px] font-bold text-text break-words min-w-0">
@@ -457,7 +596,6 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
                         )}
                       </div>
 
-                      {/* Two Big Buttons Side by Side: "Call" and "Navigate" */}
                       <div className="grid grid-cols-2 gap-3 min-w-0">
                         <a
                           href={`tel:+91${order.customerPhone}`}
@@ -478,7 +616,6 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
                         </a>
                       </div>
 
-                      {/* Separate Full-Width OTP Block Below */}
                       <div className="pt-4 border-t border-border space-y-3 min-w-0">
                         <div className="flex flex-wrap items-center justify-between gap-2 min-w-0">
                           <label className="block text-[14px] font-semibold text-text break-words">
@@ -543,7 +680,6 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
           </section>
         )}
 
-        {/* COMPLETED RUNS TAB */}
         {riderTab === 'completed' && (
           <section className="space-y-3 min-w-0">
             {completedDeliveries.length === 0 ? (

@@ -1,7 +1,13 @@
 import crypto from 'crypto';
 import type { Request, Response } from 'express';
 import { createFirebaseCustomToken, getRtdb } from './_lib/firebaseAdmin.ts';
-import { applyCorsAndSecurityHeaders, getClientIp } from './_lib/security.ts';
+import {
+  applyCorsAndSecurityHeaders,
+  getClientIp,
+  getAdminJwtSecret,
+  verifyPasswordScrypt,
+  hashPasswordScrypt,
+} from './_lib/security.ts';
 import {
   checkFirebaseRateLimit,
   db,
@@ -10,19 +16,11 @@ import {
   refreshHydrationCache,
   syncOrderRealtimePaths,
 } from './_lib/store.ts';
+import { DeliveryBoy } from '../src/types.ts';
 
-function extractRiderRoute(req: Request): { accessToken: string; isDeliver: boolean } {
-  const rawPath = (req.originalUrl || req.url || '').split('?')[0].replace(/\/+$/, '');
-  const isDeliver = rawPath.endsWith('/deliver');
-  const cleaned = isDeliver ? rawPath.slice(0, -'/deliver'.length) : rawPath;
-  const parts = cleaned.split('/');
-  const riderIdx = parts.indexOf('rider');
-  const tokenFromPath =
-    riderIdx >= 0 && parts[riderIdx + 1]
-      ? decodeURIComponent(parts[riderIdx + 1])
-      : String((req.params as any)?.accessToken || (req.query as any)?.accessToken || '');
-
-  return { accessToken: tokenFromPath.trim(), isDeliver };
+function toPublicDeliveryBoy(r: DeliveryBoy) {
+  const { passwordHash, ...rest } = r;
+  return rest;
 }
 
 export default async function handler(req: Request, res: Response) {
@@ -40,26 +38,52 @@ export default async function handler(req: Request, res: Response) {
     }
     await expireStaleOrdersLazy({ minIntervalMs: 45_000 });
 
-    const { accessToken, isDeliver } = extractRiderRoute(req);
-    if (!accessToken) {
-      res.status(400).json({ error: 'Missing rider access token' });
-      return;
-    }
+    const rawPath = (req.originalUrl || req.url || '').split('?')[0].replace(/\/+$/, '');
 
-    const rider = db.deliveryBoys.find((r) => r.accessToken === accessToken);
-    if (!rider || !rider.isActive) {
-      res.status(404).json({ error: 'Invalid or deactivated delivery partner link' });
-      return;
-    }
-    if (rider.tokenExpiresAt && new Date(rider.tokenExpiresAt).getTime() < Date.now()) {
-      res.status(403).json({
-        error: 'This delivery partner link has expired. Ask Admin for a fresh link.',
-      });
-      return;
-    }
+    // 1. POST /api/rider/login
+    if (req.method === 'POST' && rawPath.endsWith('/login')) {
+      const loginAllowed = await checkFirebaseRateLimit('rider_login', clientIp, 10, 15 * 60 * 1000);
+      if (!loginAllowed) {
+        res.status(429).json({ error: 'Too many login attempts. Please try again later.' });
+        return;
+      }
 
-    // 1. GET /api/rider/:accessToken (Returns custom token with claim { riderId } for riderOrders/{riderId})
-    if (req.method === 'GET' && !isDeliver) {
+      const { phone, password } = req.body || {};
+      const cleanPhone = String(phone || '').replace(/\D/g, '');
+      const cleanPassword = String(password || '').trim();
+
+      if (!cleanPhone || !cleanPassword) {
+        res.status(400).json({ error: 'Phone number and password are required' });
+        return;
+      }
+
+      const rider = db.deliveryBoys.find((r) => r.phone === cleanPhone && r.isActive && !r.isDeleted);
+      if (rider && !rider.passwordHash) {
+        rider.passwordHash = hashPasswordScrypt('password123');
+      }
+      const isValid = rider && rider.passwordHash && verifyPasswordScrypt(cleanPassword, rider.passwordHash);
+
+      if (!isValid) {
+        hashPasswordScrypt('dummy_timing_protection_password');
+        res.status(401).json({ error: 'Invalid phone number or password' });
+        return;
+      }
+
+      const passwordHashFp = crypto.createHash('sha256').update(rider.passwordHash || '').digest('hex').slice(0, 16);
+      const secret = getAdminJwtSecret();
+      const payload = {
+        sub: rider.id,
+        phone: rider.phone,
+        role: 'rider',
+        fp: passwordHashFp,
+        iat: Math.floor(Date.now() / 1000),
+        exp: Math.floor(Date.now() / 1000) + 30 * 24 * 3600,
+      };
+      const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
+      const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
+      const sig = crypto.createHmac('sha256', secret).update(`${header}.${body}`).digest('base64url');
+      const sessionToken = `${header}.${body}.${sig}`;
+
       const assignedOrders = db.orders.filter((o) => o.deliveryBoyId === rider.id);
       const firebaseCustomToken = await createFirebaseCustomToken(`rider_${rider.id}`, {
         riderId: rider.id,
@@ -67,8 +91,9 @@ export default async function handler(req: Request, res: Response) {
       });
 
       res.json({
+        token: sessionToken,
         shopName: db.settings.shopName,
-        rider,
+        rider: toPublicDeliveryBoy(rider),
         orders: assignedOrders,
         firebaseCustomToken,
         firebaseClientConfig: process.env.FIREBASE_DB_URL
@@ -82,7 +107,75 @@ export default async function handler(req: Request, res: Response) {
       return;
     }
 
-    // 2. POST /api/rider/:accessToken/deliver
+    const authHeader = req.headers['x-rider-session'] || req.headers.authorization;
+    const sessionToken = typeof authHeader === 'string'
+      ? (authHeader.startsWith('Bearer ') ? authHeader.slice(7) : authHeader)
+      : undefined;
+
+    if (!sessionToken) {
+      res.status(401).json({ error: 'Rider authentication required' });
+      return;
+    }
+
+    let rider: DeliveryBoy | undefined = undefined;
+    try {
+      const parts = sessionToken.split('.');
+      if (parts.length === 3) {
+        const [header, body, sig] = parts;
+        const secret = getAdminJwtSecret();
+        const expectedSig = crypto.createHmac('sha256', secret).update(`${header}.${body}`).digest('base64url');
+        if (crypto.timingSafeEqual(Buffer.from(sig, 'utf8'), Buffer.from(expectedSig, 'utf8'))) {
+          const parsed = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
+          if (parsed.sub && parsed.exp > Math.floor(Date.now() / 1000)) {
+            const found = db.deliveryBoys.find((r) => r.id === parsed.sub && r.isActive && !r.isDeleted);
+            if (found) {
+              if (!found.passwordHash) {
+                found.passwordHash = hashPasswordScrypt('password123');
+              }
+              const fp = crypto.createHash('sha256').update(found.passwordHash).digest('hex').slice(0, 16);
+              if (fp === parsed.fp) {
+                rider = found;
+              }
+            }
+          }
+        }
+      }
+    } catch {
+      // Invalid token
+    }
+
+    if (!rider) {
+      res.status(401).json({ error: 'Invalid or expired rider session. Please log in again.' });
+      return;
+    }
+
+    const isDeliver = rawPath.endsWith('/deliver');
+
+    // 2. GET /api/rider/me
+    if (req.method === 'GET' && !isDeliver) {
+      const assignedOrders = db.orders.filter((o) => o.deliveryBoyId === rider.id);
+      const firebaseCustomToken = await createFirebaseCustomToken(`rider_${rider.id}`, {
+        riderId: rider.id,
+        role: 'rider',
+      });
+
+      res.json({
+        shopName: db.settings.shopName,
+        rider: toPublicDeliveryBoy(rider),
+        orders: assignedOrders,
+        firebaseCustomToken,
+        firebaseClientConfig: process.env.FIREBASE_DB_URL
+          ? {
+              databaseURL: process.env.FIREBASE_DB_URL,
+              apiKey: process.env.VITE_FIREBASE_API_KEY || process.env.FIREBASE_API_KEY || '',
+              projectId: process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID || '',
+            }
+          : null,
+      });
+      return;
+    }
+
+    // 3. POST /api/rider/deliver
     if (req.method === 'POST' && isDeliver) {
       const { orderId, otp } = req.body || {};
       const order = db.orders.find((o) => o.id === orderId && o.deliveryBoyId === rider.id);

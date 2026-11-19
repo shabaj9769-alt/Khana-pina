@@ -347,7 +347,9 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   // Rider Form State
   const [newRiderName, setNewRiderName] = useState('');
   const [newRiderPhone, setNewRiderPhone] = useState('');
-  const [copiedRiderId, setCopiedRiderId] = useState<string | null>(null);
+  const [newRiderPassword, setNewRiderPassword] = useState('');
+  const [resettingRiderId, setResettingRiderId] = useState<string | null>(null);
+  const [resetPasswordVal, setResetPasswordVal] = useState('');
 
   // Coupon Form State
   const [newCouponCode, setNewCouponCode] = useState('');
@@ -5498,12 +5500,13 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 <form
                   onSubmit={async (e) => {
                     e.preventDefault();
-                    if (!newRiderName.trim() || !newRiderPhone.trim()) return;
+                    if (!newRiderName.trim() || !newRiderPhone.trim() || !newRiderPassword.trim()) return;
                     const res = await adminFetch('/api/admin/delivery-boys', {
                       method: 'POST',
                       body: JSON.stringify({
                         name: newRiderName.trim(),
                         phone: newRiderPhone.trim(),
+                        password: newRiderPassword.trim(),
                       }),
                     });
                     if (res.ok) {
@@ -5511,10 +5514,11 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       setDeliveryBoys(d.deliveryBoys || []);
                       setNewRiderName('');
                       setNewRiderPhone('');
+                      setNewRiderPassword('');
                       showToast('Saved');
                     }
                   }}
-                  className="bg-surface rounded-2xl border border-border p-4 grid grid-cols-1 sm:grid-cols-3 gap-2"
+                  className="bg-surface rounded-2xl border border-border p-4 grid grid-cols-1 sm:grid-cols-4 gap-2"
                 >
                   <input
                     type="text"
@@ -5529,7 +5533,15 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                     required
                     value={newRiderPhone}
                     onChange={(e) => setNewRiderPhone(e.target.value)}
-                    placeholder="Phone Number (10 digits)"
+                    placeholder="Phone (10 digits)"
+                    className="min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs"
+                  />
+                  <input
+                    type="password"
+                    required
+                    value={newRiderPassword}
+                    onChange={(e) => setNewRiderPassword(e.target.value)}
+                    placeholder="Password (min 6 chars)"
                     className="min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs"
                   />
                   <button
@@ -5540,15 +5552,14 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   </button>
                 </form>
 
+                <p className="text-xs text-muted">
+                  Riders log in at <span className="font-mono font-semibold text-text">/rider</span> using their 10-digit phone number and password set above.
+                </p>
+
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   {deliveryBoys.map((rider) => {
-                    const riderUrl = `${window.location.origin}/rider/${rider.accessToken || ''}`;
-                    const isRiderActive =
-                      rider.isActive &&
-                      !(
-                        rider.tokenExpiresAt &&
-                        new Date(rider.tokenExpiresAt).getTime() < Date.now()
-                      );
+                    const isRiderActive = rider.isActive;
+                    const isResetting = resettingRiderId === rider.id;
                     return (
                       <div
                         key={rider.id}
@@ -5558,7 +5569,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                           <div className="min-w-0 flex-1">
                             <h3 className="font-bold text-sm text-text break-words">{rider.name}</h3>
                             <p className="text-xs text-muted">
-                              {rider.phone} • {rider.activeOrders} active runs
+                              +91 {rider.phone} • {rider.activeOrders} active runs
                             </p>
                           </div>
                           <div className="flex items-center gap-1.5 shrink-0">
@@ -5609,57 +5620,62 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                           </div>
                         </div>
 
-                        <div className="p-2.5 rounded-xl bg-bg border border-border text-xs space-y-1">
-                          <div className="flex items-center justify-between">
-                            <span className="text-muted">Daily Shift PIN:</span>
-                            <span className="font-mono font-bold text-text">
-                              {rider.dailyPin || '----'}
-                            </span>
+                        {isResetting ? (
+                          <div className="space-y-2 pt-2 border-t border-border">
+                            <input
+                              type="password"
+                              value={resetPasswordVal}
+                              onChange={(e) => setResetPasswordVal(e.target.value)}
+                              placeholder="New password (min 6 chars)"
+                              className="w-full min-h-[38px] px-3 rounded-xl border border-border bg-bg text-xs"
+                            />
+                            <div className="flex gap-2">
+                              <button
+                                onClick={async () => {
+                                  if (resetPasswordVal.trim().length < 6) return;
+                                  const res = await adminFetch(
+                                    `/api/admin/delivery-boys/${rider.id}/set-password`,
+                                    {
+                                      method: 'POST',
+                                      body: JSON.stringify({ password: resetPasswordVal.trim() }),
+                                    }
+                                  );
+                                  if (res.ok) {
+                                    const d = await res.json();
+                                    setDeliveryBoys(d.deliveryBoys || []);
+                                    setResettingRiderId(null);
+                                    setResetPasswordVal('');
+                                    showToast('Password updated');
+                                  }
+                                }}
+                                className="flex-1 min-h-[36px] rounded-xl bg-primary text-primary-contrast text-xs font-bold cursor-pointer"
+                              >
+                                Save Password
+                              </button>
+                              <button
+                                onClick={() => {
+                                  setResettingRiderId(null);
+                                  setResetPasswordVal('');
+                                }}
+                                className="min-h-[36px] px-3 rounded-xl border border-border text-xs font-semibold hover:bg-bg cursor-pointer"
+                              >
+                                Cancel
+                              </button>
+                            </div>
                           </div>
-                        </div>
-
-                        <div className="flex flex-wrap gap-2">
-                          {isRiderActive && rider.accessToken && (
+                        ) : (
+                          <div className="flex gap-2 pt-2 border-t border-border">
                             <button
                               onClick={() => {
-                                navigator.clipboard.writeText(riderUrl);
-                                setCopiedRiderId(rider.id);
-                                setTimeout(() => setCopiedRiderId(null), 2000);
+                                setResettingRiderId(rider.id);
+                                setResetPasswordVal('');
                               }}
-                              className="flex-1 min-h-[38px] px-3 rounded-xl bg-bg hover:bg-border text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer"
+                              className="flex-1 min-h-[36px] px-3 rounded-xl border border-border text-xs font-semibold hover:bg-bg cursor-pointer"
                             >
-                              {copiedRiderId === rider.id ? (
-                                <>
-                                  <Check className="w-3.5 h-3.5 text-emerald-600" />
-                                  Copied Link
-                                </>
-                              ) : (
-                                <>
-                                  <Copy className="w-3.5 h-3.5" />
-                                  Copy Rider Link
-                                </>
-                              )}
+                              Reset Password
                             </button>
-                          )}
-                          <button
-                            onClick={async () => {
-                              const res = await adminFetch(
-                                `/api/admin/delivery-boys/${rider.id}/regenerate-token`,
-                                {
-                                  method: 'POST',
-                                }
-                              );
-                              if (res.ok) {
-                                const d = await res.json();
-                                setDeliveryBoys(d.deliveryBoys || []);
-                                showToast('Saved');
-                              }
-                            }}
-                            className="min-h-[38px] px-3 rounded-xl border border-border text-xs font-semibold hover:bg-bg cursor-pointer"
-                          >
-                            New Link &amp; PIN
-                          </button>
-                        </div>
+                          </div>
+                        )}
                       </div>
                     );
                   })}

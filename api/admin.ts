@@ -168,6 +168,11 @@ const DeliveryZoneUpdateSchema = z
   })
   .strict();
 
+function toPublicDeliveryBoy(r: DeliveryBoy) {
+  const { passwordHash, ...rest } = r;
+  return rest;
+}
+
 function getAdminSubPath(req: Request): string {
   const raw = (req.originalUrl || req.url || '').split('?')[0].replace(/\/+$/, '');
   const idx = raw.indexOf('/api/admin');
@@ -851,7 +856,7 @@ export default async function handler(req: Request, res: Response) {
         orders: db.orders.filter(isOrderVisibleToKitchen),
         payments: db.payments,
         refunds: db.refunds,
-        deliveryBoys: db.deliveryBoys,
+        deliveryBoys: db.deliveryBoys.map(toPublicDeliveryBoy),
         reviews: db.reviews,
         auditLogs: db.auditLogs,
         blockedList: db.blockedList,
@@ -1947,14 +1952,19 @@ export default async function handler(req: Request, res: Response) {
       return;
     }
 
-    // 22. Delivery Boys CRUD & Token Regeneration/Revocation
+    // 22. Delivery Boys CRUD & Password Management
     if (method === 'POST' && subPath === '/delivery-boys') {
       const admin = await verifyAdminAuthorized(req, res);
       if (!admin) return;
-      const { name, phone } = req.body || {};
+      const { name, phone, password } = req.body || {};
       const cleanPhone = String(phone || '').replace(/\D/g, '');
-      if (!name || !/^[6-9]\d{9}$/.test(cleanPhone)) {
-        res.status(400).json({ error: 'Valid name and 10-digit phone number required' });
+      const cleanPassword = String(password || '').trim();
+      if (!name || !/^[6-9]\d{9}$/.test(cleanPhone) || cleanPassword.length < 6) {
+        res.status(400).json({ error: 'Valid name, 10-digit phone number, and password (min 6 chars) required' });
+        return;
+      }
+      if (db.deliveryBoys.some((r) => r.phone === cleanPhone && !r.isDeleted)) {
+        res.status(400).json({ error: 'A delivery partner with this phone number already exists' });
         return;
       }
       const rider: DeliveryBoy = {
@@ -1963,9 +1973,7 @@ export default async function handler(req: Request, res: Response) {
         phone: cleanPhone,
         isActive: true,
         activeOrders: 0,
-        accessToken: `rider_token_${crypto.randomBytes(24).toString('hex')}`,
-        tokenExpiresAt: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString(),
-        dailyPin: String(Math.floor(1000 + Math.random() * 9000)),
+        passwordHash: hashPasswordScrypt(cleanPassword),
       };
       db.deliveryBoys.push(rider);
       await rtdb.ref(`deliveryBoys/${rider.id}`).set(rider);
@@ -1977,11 +1985,11 @@ export default async function handler(req: Request, res: Response) {
         `Added delivery partner ${rider.name}`,
         clientIp
       );
-      res.json({ deliveryBoys: db.deliveryBoys });
+      res.json({ deliveryBoys: db.deliveryBoys.map(toPublicDeliveryBoy) });
       return;
     }
 
-    if (method === 'POST' && /^\/delivery-boys\/[^/]+\/regenerate-token$/.test(subPath)) {
+    if (method === 'POST' && /^\/delivery-boys\/[^/]+\/set-password$/.test(subPath)) {
       const admin = await verifyAdminAuthorized(req, res);
       if (!admin) return;
       const riderId = decodeURIComponent(subPath.split('/')[2]);
@@ -1990,44 +1998,23 @@ export default async function handler(req: Request, res: Response) {
         res.status(404).json({ error: 'Rider not found' });
         return;
       }
-      rider.accessToken = `rider_token_${crypto.randomBytes(24).toString('hex')}`;
-      rider.tokenExpiresAt = new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString();
-      rider.dailyPin = String(Math.floor(1000 + Math.random() * 9000));
-      rider.isActive = true;
-      await rtdb.ref(`deliveryBoys/${rider.id}`).set(rider);
-      refreshHydrationCache();
-      await logAudit(
-        admin.email,
-        admin.role,
-        'RIDER_TOKEN_REGENERATED',
-        `Regenerated access link & PIN for rider ${rider.name}`,
-        clientIp
-      );
-      res.json({ deliveryBoys: db.deliveryBoys });
-      return;
-    }
-
-    if (method === 'POST' && /^\/delivery-boys\/[^/]+\/revoke-token$/.test(subPath)) {
-      const admin = await verifyAdminAuthorized(req, res);
-      if (!admin) return;
-      const riderId = decodeURIComponent(subPath.split('/')[2]);
-      const rider = db.deliveryBoys.find((r) => r.id === riderId);
-      if (!rider) {
-        res.status(404).json({ error: 'Rider not found' });
+      const { password } = req.body || {};
+      const cleanPassword = String(password || '').trim();
+      if (cleanPassword.length < 6) {
+        res.status(400).json({ error: 'Password must be at least 6 characters' });
         return;
       }
-      rider.isActive = false;
-      rider.tokenExpiresAt = new Date(0).toISOString();
+      rider.passwordHash = hashPasswordScrypt(cleanPassword);
       await rtdb.ref(`deliveryBoys/${rider.id}`).set(rider);
       refreshHydrationCache();
       await logAudit(
         admin.email,
         admin.role,
-        'RIDER_TOKEN_REVOKED',
-        `Revoked access link for rider ${rider.name}`,
+        'RIDER_PASSWORD_UPDATED',
+        `Updated password for rider ${rider.name}`,
         clientIp
       );
-      res.json({ deliveryBoys: db.deliveryBoys });
+      res.json({ deliveryBoys: db.deliveryBoys.map(toPublicDeliveryBoy) });
       return;
     }
 
@@ -2048,12 +2035,6 @@ export default async function handler(req: Request, res: Response) {
       }
       if (isActive !== undefined) {
         rider.isActive = Boolean(isActive);
-        if (
-          rider.isActive &&
-          (!rider.tokenExpiresAt || new Date(rider.tokenExpiresAt).getTime() < Date.now())
-        ) {
-          rider.tokenExpiresAt = new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString();
-        }
       }
       await rtdb.ref(`deliveryBoys/${rider.id}`).set(rider);
       refreshHydrationCache();
@@ -2064,7 +2045,7 @@ export default async function handler(req: Request, res: Response) {
         `Updated rider ${rider.name}`,
         clientIp
       );
-      res.json({ deliveryBoys: db.deliveryBoys });
+      res.json({ deliveryBoys: db.deliveryBoys.map(toPublicDeliveryBoy) });
       return;
     }
 
@@ -2087,7 +2068,7 @@ export default async function handler(req: Request, res: Response) {
         `Deleted rider ${rider.name}`,
         clientIp
       );
-      res.json({ deliveryBoys: db.deliveryBoys });
+      res.json({ deliveryBoys: db.deliveryBoys.map(toPublicDeliveryBoy) });
       return;
     }
 

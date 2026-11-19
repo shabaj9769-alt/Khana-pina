@@ -322,9 +322,10 @@ export interface DeliveryBoy {
   phone: string;
   isActive: boolean;
   activeOrders: number;
-  accessToken: string;
+  accessToken?: string;
   tokenExpiresAt?: string | null;
   dailyPin?: string;
+  passwordHash?: string;
   isDeleted?: boolean;
 }
 

@@ -237,13 +237,14 @@ export function subscribeToAdminOrders(params: {
  */
 export function subscribeToRiderOrders(params: {
   riderId: string;
-  accessToken: string;
+  sessionToken: string;
   customToken?: string | null;
   firebaseConfig?: FirebaseClientConfig | null;
   onOrdersUpdate: (orders: OrderRecord[]) => void;
+  onUnauthorized?: () => void;
 }): () => void {
-  const { riderId, accessToken, customToken, firebaseConfig, onOrdersUpdate } = params;
-  if (!riderId && !accessToken) return () => {};
+  const { riderId, sessionToken, customToken, firebaseConfig, onOrdersUpdate, onUnauthorized } = params;
+  if (!riderId && !sessionToken) return () => {};
 
   let cancelled = false;
   let unsubRtdb: (() => void) | null = null;
@@ -272,9 +273,15 @@ export function subscribeToRiderOrders(params: {
   })();
 
   const pollTimer = setInterval(async () => {
-    if (cancelled || !accessToken) return;
+    if (cancelled || !sessionToken) return;
     try {
-      const res = await fetch(`/api/rider/${encodeURIComponent(accessToken)}`);
+      const res = await fetch('/api/rider/me', {
+        headers: { 'X-Rider-Session': sessionToken },
+      });
+      if (res.status === 401) {
+        if (onUnauthorized) onUnauthorized();
+        return;
+      }
       if (!res.ok) return;
       const data = await res.json();
       if (Array.isArray(data.orders)) {
