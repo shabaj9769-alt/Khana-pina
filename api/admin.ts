@@ -147,8 +147,16 @@ const AboutPageSchema = z
 const ShopSettingsUpdateSchema = z
   .object({
     shopName: z.string().trim().min(2).max(120).optional(),
-    fssaiNumber: z.string().trim().min(4).max(32).optional(),
+    fssaiNumber: z
+      .string()
+      .trim()
+      .max(32)
+      .refine((v) => v === '' || /^\d{14}$/.test(v), {
+        message: 'FSSAI License Number must be either empty or exactly 14 digits',
+      })
+      .optional(),
     supportPhone: z.string().trim().min(6).max(24).optional(),
+    gstEnabled: z.boolean().optional(),
     isOpen: z.boolean().optional(),
     busyMode: z.boolean().optional(),
     weeklyTimings: z.string().trim().max(150).optional(),
@@ -1005,6 +1013,10 @@ export default async function handler(req: Request, res: Response) {
         deliveryBoyId: null,
         placedAt: nowIso,
         acceptedAt: nowIso,
+        prepTimeMins: 25,
+        etaAt: new Date(new Date(nowIso).getTime() + 25 * 60000).toISOString(),
+        gstApplied: bill.gstApplied,
+        gstPercent: bill.gstPercent,
         items: bill.resolvedItems,
       };
 
@@ -1075,7 +1087,7 @@ export default async function handler(req: Request, res: Response) {
         return;
       }
 
-      const { status, deliveryBoyId, cancelReason, deliveryOtp } = req.body || {};
+      const { status, deliveryBoyId, cancelReason, deliveryOtp, prepTimeMins } = req.body || {};
 
       // Requirement 8: Unpaid RAZORPAY order must NOT be accepted or prepared in kitchen (return 400). COD is exempt.
       if (
@@ -1135,7 +1147,19 @@ export default async function handler(req: Request, res: Response) {
         const wasCancelled = order.status === 'CANCELLED' || order.status === 'REJECTED';
         const wasDelivered = order.status === 'DELIVERED';
         order.status = nextStatus;
-        if (nextStatus === 'ACCEPTED') order.acceptedAt = nowIso;
+        if (nextStatus === 'ACCEPTED') {
+          order.acceptedAt = nowIso;
+          const prep =
+            prepTimeMins !== undefined && prepTimeMins !== null && prepTimeMins !== ''
+              ? Number(prepTimeMins)
+              : 25;
+          if (!Number.isInteger(prep) || prep < 5 || prep > 120) {
+            res.status(400).json({ error: 'Prep time must be an integer between 5 and 120 minutes' });
+            return;
+          }
+          order.prepTimeMins = prep;
+          order.etaAt = new Date(new Date(nowIso).getTime() + prep * 60000).toISOString();
+        }
         if (nextStatus === 'PREPARING') order.preparedAt = nowIso;
         if (nextStatus === 'READY') order.readyAt = nowIso;
         if (nextStatus === 'OUT_FOR_DELIVERY') order.outForDeliveryAt = nowIso;
@@ -2432,7 +2456,7 @@ export default async function handler(req: Request, res: Response) {
       if (!isStorageConfigured) {
         res.status(400).json({
           error:
-            'FIREBASE_STORAGE_BUCKET ya Cloudinary configure nahi hai. Kripya environment variable set karein ya direct photo link paste karein.',
+            'FIREBASE_STORAGE_BUCKET or Cloudinary is not configured. Please set the environment variable or paste a direct photo link.',
         });
         return;
       }

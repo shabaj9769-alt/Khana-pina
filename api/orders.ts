@@ -432,7 +432,7 @@ export default async function handler(req: Request, res: Response) {
       if (order.status !== 'PLACED' && order.status !== 'ACCEPTED') {
         res.status(409).json({
           error:
-            'Kitchen ne order banana shuru kar diya hai. Cancel ke liye kripya kitchen ko call karein.',
+            'The kitchen has started preparing your order. To cancel, please call the kitchen.',
         });
         return;
       }
@@ -729,6 +729,8 @@ export default async function handler(req: Request, res: Response) {
         grandTotal: bill.grandTotal,
         deliveryBoyId: null,
         placedAt: nowIso,
+        gstApplied: bill.gstApplied,
+        gstPercent: bill.gstPercent,
         items: bill.resolvedItems,
         razorpayOrderId,
       };

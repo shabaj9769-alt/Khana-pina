@@ -495,7 +495,7 @@ export function applyAdminOrRiderThemeToDocument(
  * - Only https:// URLs or /assets/ paths allowed
  * - Rejects javascript:, data:, http://, vbscript:, base64 strings
  */
-export const PHOTO_URL_ERROR_MESSAGE = 'Photo link sahi nahi hai';
+export const PHOTO_URL_ERROR_MESSAGE = 'Invalid photo link';
 
 export function isValidPhotoUrl(url?: string | null): boolean {
   if (url === undefined || url === null) return true;

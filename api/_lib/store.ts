@@ -209,7 +209,7 @@ export function getInitialDatabaseState(options?: { forSeeding?: boolean }): Dat
     nextOrderSequence: isLiveMode ? 1001 : 1046,
     settings: {
       shopName: 'Khana Pina',
-      fssaiNumber: '11524006000489',
+      fssaiNumber: '',
       supportPhone: '+91 98201 44500',
       isOpen: true,
       busyMode: false,
@@ -218,6 +218,7 @@ export function getInitialDatabaseState(options?: { forSeeding?: boolean }): Dat
       allowPreOrdersWhenClosed: true,
       holidaysNote: '',
       minOrderAmount: 199,
+      gstEnabled: false,
       gstPercent: 5,
       codEnabled: true,
       codMaxAmount: 1800,
@@ -586,6 +587,8 @@ export function getInitialDatabaseState(options?: { forSeeding?: boolean }): Dat
         itemTotal: 770,
         deliveryFee: 25,
         gstAmount: 39,
+        gstApplied: true,
+        gstPercent: 5,
         discountAmount: 0,
         couponCode: null,
         grandTotal: 834,
@@ -634,6 +637,8 @@ export function getInitialDatabaseState(options?: { forSeeding?: boolean }): Dat
         itemTotal: 770,
         deliveryFee: 25,
         gstAmount: 39,
+        gstApplied: true,
+        gstPercent: 5,
         discountAmount: 0,
         couponCode: null,
         grandTotal: 834,
@@ -643,6 +648,8 @@ export function getInitialDatabaseState(options?: { forSeeding?: boolean }): Dat
         placedAt: samplePlacedAt,
         acceptedAt: new Date(Date.now() - 15 * 60 * 1000).toISOString(),
         preparedAt: new Date(Date.now() - 8 * 60 * 1000).toISOString(),
+        prepTimeMins: 25,
+        etaAt: new Date(Date.now() + 20 * 60 * 1000).toISOString(),
         razorpayOrderId: 'order_demo_1042',
         items: [
           {
@@ -685,6 +692,8 @@ export function getInitialDatabaseState(options?: { forSeeding?: boolean }): Dat
         itemTotal: 695,
         deliveryFee: 25,
         gstAmount: 35,
+        gstApplied: true,
+        gstPercent: 5,
         discountAmount: 0,
         couponCode: null,
         grandTotal: 755,
@@ -846,15 +855,12 @@ export function buildPublicTrackingProjection(order: OrderRecord): PublicTrackin
     0,
     Math.floor((Date.now() - new Date(order.placedAt).getTime()) / 60000)
   );
-  const baseEta = Math.round(28 + order.distanceKm * 2.5);
   const etaMins =
     order.status === 'DELIVERED' || order.status === 'CANCELLED' || order.status === 'REJECTED'
       ? 0
-      : order.status === 'OUT_FOR_DELIVERY'
-      ? Math.max(6, Math.round(order.distanceKm * 3))
-      : order.status === 'READY'
-      ? Math.max(10, Math.round(order.distanceKm * 3.5))
-      : Math.max(8, baseEta - elapsedMins);
+      : order.etaAt
+      ? Math.max(0, Math.ceil((new Date(order.etaAt).getTime() - Date.now()) / 60000))
+      : 0;
 
   return {
     orderId: order.id,
@@ -879,6 +885,10 @@ export function buildPublicTrackingProjection(order: OrderRecord): PublicTrackin
     discountAmount: order.discountAmount,
     couponCode: order.couponCode || null,
     grandTotal: order.grandTotal,
+    ...(order.prepTimeMins !== undefined ? { prepTimeMins: order.prepTimeMins } : {}),
+    ...(order.etaAt ? { etaAt: order.etaAt } : {}),
+    ...(order.gstApplied !== undefined ? { gstApplied: order.gstApplied } : {}),
+    ...(order.gstPercent !== undefined ? { gstPercent: order.gstPercent } : {}),
     itemsSummary: order.items.map((it) => ({
       itemName: it.itemName,
       ...(it.variantName ? { variantName: it.variantName } : {}),
@@ -1077,9 +1087,16 @@ function applySettingsAndZoneToDb(rawSettings: any, rawDeliveryZone: any): void 
         youtube: rawAbout?.socialLinks?.youtube || '',
       },
     };
+    const normalizedGstPercent =
+      rawSettings.gstPercent !== undefined ? Number(rawSettings.gstPercent) : db.settings.gstPercent;
+    const normalizedGstEnabled =
+      rawSettings.gstEnabled !== undefined
+        ? Boolean(rawSettings.gstEnabled)
+        : normalizedGstPercent > 0;
     db.settings = {
       ...db.settings,
       ...rawSettings,
+      gstEnabled: normalizedGstEnabled,
       theme: normalizeThemeConfig(rawSettings?.theme),
       aboutPage: normalizedAboutPage,
     };
@@ -2161,7 +2178,9 @@ export function calculateAuthoritativeBill(params: {
   }
 
   const taxableAmount = Math.max(0, itemTotal - discountAmount);
-  const gstAmount = Math.round((taxableAmount * db.settings.gstPercent) / 100);
+  const gstEnabled = db.settings.gstEnabled !== undefined ? db.settings.gstEnabled : (db.settings.gstPercent > 0);
+  const gstAmount = gstEnabled ? Math.round((taxableAmount * db.settings.gstPercent) / 100) : 0;
+  const actualGstPercent = gstEnabled ? db.settings.gstPercent : 0;
   const grandTotal = taxableAmount + gstAmount + deliveryFee;
 
   let codAllowed = db.settings.codEnabled;
@@ -2195,8 +2214,10 @@ export function calculateAuthoritativeBill(params: {
     maxRadiusKm: db.deliveryZone.radiusKm,
     itemTotal,
     deliveryFee,
-    gstPercent: db.settings.gstPercent,
+    gstPercent: actualGstPercent,
     gstAmount,
+    gstEnabled,
+    gstApplied: gstEnabled,
     discountAmount,
     appliedCoupon,
     couponMessage,

@@ -23,7 +23,7 @@ import {
 } from '../../server';
 import { hashPasswordScrypt } from '../../api/_lib/security';
 import { getRtdb } from '../../api/_lib/firebaseAdmin';
-import { getInitialDatabaseState } from '../../api/_lib/store';
+import { buildPublicTrackingProjection, getInitialDatabaseState } from '../../api/_lib/store';
 import paymentsHandler from '../../api/payments';
 import riderHandler from '../../api/rider';
 import {
@@ -163,7 +163,11 @@ describe('Khana Pina Core & Bypass-Proof Razorpay Suite', () => {
     expect(calc.itemTotal).toBe(calc.resolvedItems[0].unitPrice * 3);
 
     const expectedTaxable = Math.max(0, calc.itemTotal - calc.discountAmount);
-    const expectedGst = Math.round((expectedTaxable * db.settings.gstPercent) / 100);
+    const gstIsEnabled =
+      db.settings.gstEnabled !== undefined ? db.settings.gstEnabled : db.settings.gstPercent > 0;
+    const expectedGst = gstIsEnabled
+      ? Math.round((expectedTaxable * db.settings.gstPercent) / 100)
+      : 0;
     expect(calc.gstAmount).toBe(expectedGst);
     expect(calc.grandTotal).toBe(expectedTaxable + expectedGst + calc.deliveryFee);
   });
@@ -672,4 +676,97 @@ describe('Khana Pina Core & Bypass-Proof Razorpay Suite', () => {
       else process.env.ADMIN_BOOTSTRAP_PASSWORD = prevPass;
     }
   });
+
+  it('15. GST enabled vs disabled calculation behavior & legacy fallback', async () => {
+    const firstItem = db.menuItems.find((m) => m.inStock)!;
+
+    const prevGstEnabled = db.settings.gstEnabled;
+    const prevGstPercent = db.settings.gstPercent;
+    try {
+      db.settings.gstEnabled = false;
+      db.settings.gstPercent = 5;
+      const calcDisabled = calculateAuthoritativeBill({
+        items: [{ menuItemId: firstItem.id, quantity: 1 }],
+        lat: db.deliveryZone.shopLat,
+        lng: db.deliveryZone.shopLng,
+      });
+      expect(calcDisabled.gstAmount).toBe(0);
+      expect(calcDisabled.gstPercent).toBe(0);
+      expect(calcDisabled.gstApplied).toBe(false);
+
+      db.settings.gstEnabled = true;
+      const calcEnabled = calculateAuthoritativeBill({
+        items: [{ menuItemId: firstItem.id, quantity: 1 }],
+        lat: db.deliveryZone.shopLat,
+        lng: db.deliveryZone.shopLng,
+      });
+      expect(calcEnabled.gstAmount).toBe(Math.round((calcEnabled.itemTotal * 5) / 100));
+      expect(calcEnabled.gstPercent).toBe(5);
+      expect(calcEnabled.gstApplied).toBe(true);
+
+      delete (db.settings as any).gstEnabled;
+      db.settings.gstPercent = 5;
+      const calcFallback = calculateAuthoritativeBill({
+        items: [{ menuItemId: firstItem.id, quantity: 1 }],
+        lat: db.deliveryZone.shopLat,
+        lng: db.deliveryZone.shopLng,
+      });
+      expect(calcFallback.gstAmount).toBe(Math.round((calcFallback.itemTotal * 5) / 100));
+      expect(calcFallback.gstPercent).toBe(5);
+      expect(calcFallback.gstApplied).toBe(true);
+    } finally {
+      db.settings.gstEnabled = prevGstEnabled;
+      db.settings.gstPercent = prevGstPercent;
+    }
+  });
+
+  it('16. buildPublicTrackingProjection derives etaMins solely from admin-set etaAt (not distance)', () => {
+    const baseOrder: OrderRecord = {
+      id: 'ord_eta_test',
+      orderNumber: 'AAN-9991',
+      trackingToken: 'trk_eta_test',
+      deliveryOtp: '1234',
+      customerName: 'Test User',
+      customerPhone: '9876543210',
+      customerIp: '127.0.0.1',
+      deliveryAddress: '123 Test Road',
+      deliveryLat: 19.06,
+      deliveryLng: 72.83,
+      distanceKm: 8.5,
+      orderNotes: '',
+      scheduledFor: null,
+      status: 'PLACED',
+      paymentMethod: 'COD',
+      paymentStatus: 'PENDING',
+      itemTotal: 400,
+      deliveryFee: 50,
+      gstAmount: 0,
+      gstApplied: false,
+      gstPercent: 0,
+      discountAmount: 0,
+      couponCode: null,
+      grandTotal: 450,
+      deliveryBoyId: null,
+      placedAt: new Date().toISOString(),
+      items: [],
+    };
+
+    const placedProj = buildPublicTrackingProjection(baseOrder);
+    expect(placedProj.etaMins).toBe(0);
+    expect(placedProj.etaAt).toBeUndefined();
+
+    const acceptedProj = buildPublicTrackingProjection({
+      ...baseOrder,
+      status: 'ACCEPTED',
+      prepTimeMins: 35,
+      etaAt: new Date(Date.now() + 35 * 60000).toISOString(),
+    });
+    expect(acceptedProj.prepTimeMins).toBe(35);
+    expect(acceptedProj.etaAt).toBeTruthy();
+    expect(acceptedProj.etaMins).toBeGreaterThanOrEqual(34);
+    expect(acceptedProj.etaMins).toBeLessThanOrEqual(36);
+    expect(acceptedProj.gstApplied).toBe(false);
+    expect(acceptedProj.gstPercent).toBe(0);
+  });
 });
+

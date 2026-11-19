@@ -122,6 +122,7 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
   const [loading, setLoading] = useState(() => !matchingInitialOrder);
   const [error, setError] = useState<string | null>(null);
   const [statusPulse, setStatusPulse] = useState(false);
+  const [, setNowTick] = useState(() => Date.now());
 
   const [rating, setRating] = useState(5);
   const [comment, setComment] = useState('');
@@ -238,6 +239,10 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
                 cancelReason: proj.cancelReason || undefined,
                 cancelledBy: proj.cancelledBy,
                 refundPending: proj.refundPending,
+                prepTimeMins: proj.prepTimeMins ?? prev.prepTimeMins,
+                etaAt: proj.etaAt ?? prev.etaAt,
+                gstApplied: proj.gstApplied ?? prev.gstApplied,
+                gstPercent: proj.gstPercent ?? prev.gstPercent,
               }
             : prev
         );
@@ -245,6 +250,16 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
     });
     return () => unsub();
   }, [trackingToken, order?.status === 'DELIVERED']);
+
+  useEffect(() => {
+    if (!order || ['PLACED', 'DELIVERED', 'CANCELLED', 'REJECTED'].includes(order.status)) {
+      return;
+    }
+    const timer = setInterval(() => {
+      setNowTick(Date.now());
+    }, 15000);
+    return () => clearInterval(timer);
+  }, [order?.status]);
 
   const handleConfirmCancelOrder = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -403,21 +418,11 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
   const isDelivered = order.status === 'DELIVERED';
   const isCancelledOrRejected = order.status === 'CANCELLED' || order.status === 'REJECTED';
 
-  const placedAtMs = new Date(order.placedAt).getTime();
-  const elapsedMins = Number.isFinite(placedAtMs)
-    ? Math.max(0, Math.floor((getServerNow() - placedAtMs) / 60000))
+  const etaAtIso = liveProjection?.etaAt || order.etaAt;
+  const etaMs = etaAtIso ? new Date(etaAtIso).getTime() : NaN;
+  const remainingEtaMins = Number.isFinite(etaMs)
+    ? Math.max(0, Math.ceil((etaMs - getServerNow()) / 60000))
     : 0;
-  const baseEta = Math.round(28 + order.distanceKm * 2.5);
-  const remainingEtaMins =
-    liveProjection?.etaMins !== undefined
-      ? liveProjection.etaMins
-      : order.status === 'DELIVERED'
-      ? 0
-      : order.status === 'OUT_FOR_DELIVERY'
-      ? Math.max(6, Math.round(order.distanceKm * 3))
-      : order.status === 'READY'
-      ? Math.max(10, Math.round(order.distanceKm * 3.5))
-      : Math.max(8, baseEta - elapsedMins);
 
   const getStepTimeText = (key: OrderStatus): string | null => {
     const rawIso =
@@ -520,11 +525,15 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
                 Delivered by: <span className="font-semibold">{order.deliveryBoyName}</span>
               </p>
             )}
-            {!isCancelledOrRejected && !isDelivered && (
-              <p className="text-base sm:text-lg font-bold text-primary tabular-nums">
-                Arriving in ~{remainingEtaMins} mins
+            {order.status === 'PLACED' ? (
+              <p className="text-base sm:text-lg font-bold text-muted">
+                Waiting for the kitchen to confirm
               </p>
-            )}
+            ) : !isCancelledOrRejected && !isDelivered ? (
+              <p className="text-base sm:text-lg font-bold text-primary tabular-nums">
+                {remainingEtaMins > 0 ? `Arriving in ~${remainingEtaMins} mins` : 'Arriving shortly'}
+              </p>
+            ) : null}
           </div>
 
           {!isCancelledOrRejected && !isDelivered && (
@@ -669,12 +678,12 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
           </div>
         )}
 
-        {(order.status === 'PREPARING' ||
-          order.status === 'READY' ||
-          order.status === 'OUT_FOR_DELIVERY') && (
+        {(order.status === 'ACCEPTED' ||
+          order.status === 'PREPARING' ||
+          order.status === 'READY') && (
           <div className="pt-2 border-t border-border flex flex-wrap items-center justify-between gap-2 text-[13px] text-muted">
             <span className="min-w-0 break-words">
-              Order ban raha hai - cancel karne ke liye kitchen ko call karein
+              Your order is being prepared. To cancel, please call the kitchen.
             </span>
             {shopInfo?.supportPhone && (
               <a
@@ -697,9 +706,11 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
               <h2 className="font-display text-base font-bold text-text break-words">
                 {shopInfo?.shopName || getCachedShopName() || 'Food Ordering'}
               </h2>
-              <p className="text-[13px] text-muted break-words">
-                FSSAI Lic No. {shopInfo?.fssaiNumber}
-              </p>
+              {shopInfo?.fssaiNumber?.trim() && (
+                <p className="text-[13px] text-muted break-words">
+                  FSSAI Lic No. {shopInfo.fssaiNumber.trim()}
+                </p>
+              )}
             </div>
             <div className="text-right tabular-nums text-[13px] text-muted shrink-0">
               <p className="font-bold text-text">#{order.orderNumber}</p>
@@ -743,10 +754,12 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
               <span>Delivery fee ({order.distanceKm} km)</span>
               <span className="tabular-nums">₹{order.deliveryFee}</span>
             </div>
-            <div className="flex justify-between text-muted">
-              <span>GST</span>
-              <span className="tabular-nums">₹{order.gstAmount}</span>
-            </div>
+            {(order.gstAmount > 0 || order.gstApplied) && (
+              <div className="flex justify-between text-muted">
+                <span>GST ({order.gstPercent ?? 5}%)</span>
+                <span className="tabular-nums">₹{order.gstAmount}</span>
+              </div>
+            )}
             <div className="flex justify-between pt-2 border-t border-border text-base font-bold text-text">
               <span>Grand Total ({order.paymentMethod})</span>
               <span className="tabular-nums">₹{order.grandTotal}</span>

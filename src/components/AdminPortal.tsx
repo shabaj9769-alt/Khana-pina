@@ -161,7 +161,7 @@ function formatIstDisplayDate(dateKey: string): string {
 }
 
 const PHOTO_LINK_HINT =
-  'Direct image link paste karein (.jpg / .png / .webp), jaise Imgur, ImgBB, Cloudinary ya Postimages ka direct link';
+  'Paste a direct image link (.jpg / .png / .webp), such as from Imgur, ImgBB, Cloudinary, or Postimages';
 
 interface PhotoLinkInputProps {
   value: string;
@@ -228,7 +228,7 @@ function PhotoLinkInput({
         />
         {showBrokenError && (
           <p className="text-xs font-semibold text-red-600 break-words">
-            Yeh link photo nahi khol raha
+            Unable to load image from this link
           </p>
         )}
       </div>
@@ -303,7 +303,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
   // Navigation State
   const [activeSection, setActiveSection] = useState<AdminTopSection>('dashboard');
-  const [setupChecklistOpen, setSetupChecklistOpen] = useState<boolean>(true);
   const [isCleaningDemoData, setIsCleaningDemoData] = useState<boolean>(false);
   const [menuSubTab, setMenuSubTab] = useState<'items' | 'categories'>('items');
   const [storefrontSubTab, setStorefrontSubTab] = useState<'homepage' | 'banners' | 'theme' | 'about'>(
@@ -458,7 +457,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const [previewModeOverride, setPreviewModeOverride] = useState<'light' | 'dark'>('light');
 
   // About Page Editor State
-  const emptyAboutDraft = (): AboutPageConfig => ({
+  const emptyAboutDraft = (): AboutPageConfig & { fssaiNumber?: string } => ({
     tagline: '',
     story: '',
     coverImage: '',
@@ -468,13 +467,14 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     supportPhone: '',
     whatsappNumber: '',
     mapLink: '',
+    fssaiNumber: '',
     socialLinks: {
       instagram: '',
       facebook: '',
       youtube: '',
     },
   });
-  const [aboutDraft, setAboutDraft] = useState<AboutPageConfig>(emptyAboutDraft);
+  const [aboutDraft, setAboutDraft] = useState<AboutPageConfig & { fssaiNumber?: string }>(emptyAboutDraft);
   const [confirmDeleteAboutCardId, setConfirmDeleteAboutCardId] = useState<string | null>(null);
 
   // KOT Print Modal
@@ -770,7 +770,17 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       setDeliveryBoys(data.deliveryBoys || []);
       setCoupons(data.coupons || []);
       setCustomers(data.customers || []);
-      setShopSettings(data.settings || null);
+      setShopSettings(
+        data.settings
+          ? {
+              ...data.settings,
+              gstEnabled:
+                data.settings.gstEnabled !== undefined
+                  ? Boolean(data.settings.gstEnabled)
+                  : Number(data.settings.gstPercent) > 0,
+            }
+          : null
+      );
       setDeliveryZone(data.deliveryZone || null);
       if (data.deliveryZone) {
         setManualLat(
@@ -822,6 +832,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
           supportPhone: rawA.supportPhone || '',
           whatsappNumber: rawA.whatsappNumber || '',
           mapLink: rawA.mapLink || '',
+          fssaiNumber: data.settings.fssaiNumber || '',
           socialLinks: {
             instagram: rawA.socialLinks?.instagram || '',
             facebook: rawA.socialLinks?.facebook || '',
@@ -829,7 +840,11 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
           },
         });
       } else {
-        setAboutDraft(emptyAboutDraft());
+        setAboutDraft({
+          ...emptyAboutDraft(),
+          supportPhone: data.settings?.supportPhone || '',
+          fssaiNumber: data.settings?.fssaiNumber || '',
+        });
       }
       if (data.currentUser) {
         setAdminUser(data.currentUser);
@@ -1107,7 +1122,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const handleOrderStatusUpdate = async (
     orderId: string,
     status: OrderStatus,
-    extra: { deliveryBoyId?: string; cancelReason?: string } = {}
+    extra: { deliveryBoyId?: string; cancelReason?: string; prepTimeMins?: number } = {}
   ) => {
     try {
       const res = await adminFetch(`/api/admin/orders/${orderId}`, {
@@ -1188,7 +1203,17 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         return;
       }
       const data = await res.json();
-      setShopSettings(data.settings);
+      setShopSettings(
+        data.settings
+          ? {
+              ...data.settings,
+              gstEnabled:
+                data.settings.gstEnabled !== undefined
+                  ? Boolean(data.settings.gstEnabled)
+                  : Number(data.settings.gstPercent) > 0,
+            }
+          : null
+      );
       setDeliveryZone(data.deliveryZone);
       if (data.deliveryZone) {
         setManualLat(
@@ -1224,11 +1249,26 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
           supportPhone: rawA.supportPhone || '',
           whatsappNumber: rawA.whatsappNumber || '',
           mapLink: rawA.mapLink || '',
+          fssaiNumber: data.settings.fssaiNumber || '',
           socialLinks: {
             instagram: rawA.socialLinks?.instagram || '',
             facebook: rawA.socialLinks?.facebook || '',
             youtube: rawA.socialLinks?.youtube || '',
           },
+        });
+      } else {
+        setAboutDraft({
+          tagline: '',
+          story: '',
+          coverImage: '',
+          sections: [],
+          openingHours: '',
+          address: '',
+          supportPhone: data.settings?.supportPhone || '',
+          whatsappNumber: '',
+          mapLink: '',
+          fssaiNumber: data.settings?.fssaiNumber || '',
+          socialLinks: { instagram: '', facebook: '', youtube: '' },
         });
       }
       triggerStoreRefresh();
@@ -2236,6 +2276,52 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const primaryContrastRatio = getContrastRatio(themeDraft.primaryColor, primaryContrastColor);
   const wcagPassesAA = primaryContrastRatio >= 4.5;
 
+  const renderGstSettingsControl = (inputId: string) => {
+    if (!shopSettings) return null;
+    const isGstOn = shopSettings.gstEnabled ?? (shopSettings.gstPercent > 0);
+    return (
+      <div>
+        <div className="flex items-center gap-2 mb-1.5">
+          <input
+            type="checkbox"
+            id={inputId}
+            checked={isGstOn}
+            onChange={(e) =>
+              setShopSettings({
+                ...shopSettings,
+                gstEnabled: e.target.checked,
+              })
+            }
+          />
+          <label htmlFor={inputId} className="text-xs font-semibold text-text cursor-pointer">
+            Enable GST
+          </label>
+        </div>
+        {isGstOn && (
+          <>
+            <label className="block text-xs font-semibold text-muted mb-1">
+              GST Percentage (%)
+            </label>
+            <input
+              type="number"
+              min={0}
+              max={28}
+              step={0.5}
+              value={shopSettings.gstPercent}
+              onChange={(e) =>
+                setShopSettings({
+                  ...shopSettings,
+                  gstPercent: Number(e.target.value),
+                })
+              }
+              className="w-full min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs"
+            />
+          </>
+        )}
+      </div>
+    );
+  };
+
   const formatScheduledDateTime = (scheduledFor?: string | null) => {
     if (!scheduledFor) return '';
     return formatOrderScheduledAt(scheduledFor) || scheduledFor;
@@ -2283,7 +2369,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             <div className="grid grid-cols-2 gap-2">
               <button
                 type="button"
-                onClick={() => handleOrderStatusUpdate(order.id, 'ACCEPTED')}
+                onClick={() => handleOrderStatusUpdate(order.id, 'ACCEPTED', { prepTimeMins: prepMins })}
                 className="min-h-[42px] rounded-xl bg-emerald-600 text-white text-xs font-bold cursor-pointer"
               >
                 Accept ({prepMins}m)
@@ -2524,7 +2610,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
           {/* Bill Total */}
           <div className="flex items-center justify-between gap-2 text-xs">
             <span className="text-muted min-w-0 truncate">
-              Total (incl. ₹{order.gstAmount} GST & ₹{order.deliveryFee} del)
+              Total (incl. {order.gstAmount > 0 ? `₹${order.gstAmount} GST & ` : ''}₹{order.deliveryFee} del)
             </span>
             <span className="text-sm font-bold text-text shrink-0">₹{order.grandTotal}</span>
           </div>
@@ -2957,141 +3043,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 </div>
               )}
 
-              {/* a2) First-Run Setup Checklist */}
-              {shopSettings && (() => {
-                const sampleMenuIds = new Set([
-                  'item_lucknowi_biryani',
-                  'item_paneer_tikka',
-                  'item_butter_chicken',
-                  'item_gulab_jamun',
-                  'item_subz_biryani',
-                  'item_dal_makhani',
-                ]);
-                const hasSampleMenu = menuItems.some((m) => sampleMenuIds.has(m.id));
-                const addressConfigured = Boolean(
-                  deliveryZone?.shopAddress?.trim() &&
-                    !deliveryZone.shopAddress.includes('Please set your shop address')
-                );
-                const shopInfoDone = Boolean(
-                  shopSettings.shopName?.trim() &&
-                    shopSettings.supportPhone?.trim() &&
-                    addressConfigured
-                );
-                const hoursDone = Boolean(
-                  shopSettings.opensAtText?.trim() || shopSettings.weeklyTimings?.trim()
-                );
-                const zoneDone = Boolean(
-                  addressConfigured &&
-                    deliveryZone &&
-                    Number.isFinite(deliveryZone.shopLat) &&
-                    Number.isFinite(deliveryZone.shopLng) &&
-                    deliveryZone.radiusKm > 0
-                );
-                const feesDone = Boolean(
-                  shopSettings.deliverySlabs?.length > 0 && shopSettings.minOrderAmount >= 0
-                );
-                const menuDone = menuItems.length > 0 && !hasSampleMenu;
 
-                const checklistSteps = [
-                  {
-                    id: 'menu',
-                    label: 'Menu items & prices',
-                    detail: hasSampleMenu
-                      ? `${menuItems.length} sample items found — replace with your real menu & prices`
-                      : `${menuItems.length} menu item(s) active`,
-                    done: menuDone,
-                    target: 'menu' as AdminTopSection,
-                  },
-                  {
-                    id: 'shop',
-                    label: 'Shop name, address & phone',
-                    detail: shopInfoDone
-                      ? `${shopSettings.shopName} · ${shopSettings.supportPhone}`
-                      : 'Set your real shop name, support phone & address',
-                    done: shopInfoDone,
-                    target: (addressConfigured ? 'settings' : 'delivery') as AdminTopSection,
-                  },
-                  {
-                    id: 'zone',
-                    label: 'Delivery zone (location & radius)',
-                    detail: zoneDone && deliveryZone
-                      ? `${deliveryZone.radiusKm} km radius configured`
-                      : 'Pin shop coordinates & delivery radius',
-                    done: zoneDone,
-                    target: 'delivery' as AdminTopSection,
-                  },
-                  {
-                    id: 'fees',
-                    label: 'Delivery fee & min order amount',
-                    detail: `Min order ₹${shopSettings.minOrderAmount} · Base fee ₹${shopSettings.deliverySlabs?.[0]?.fee ?? 0}`,
-                    done: feesDone,
-                    target: 'delivery' as AdminTopSection,
-                  },
-                  {
-                    id: 'hours',
-                    label: 'Opening hours',
-                    detail: shopSettings.opensAtText
-                      ? `Opens at ${shopSettings.opensAtText}`
-                      : 'Configure opening hours & pre-orders',
-                    done: hoursDone,
-                    target: 'settings' as AdminTopSection,
-                  },
-                ];
-                const completedCount = checklistSteps.filter((s) => s.done).length;
-
-                return (
-                  <div className="bg-surface rounded-2xl border border-border p-3.5 sm:p-4 space-y-3">
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="min-w-0">
-                        <p className="text-sm font-bold text-text">
-                          First-Run Setup Checklist ({completedCount}/{checklistSteps.length})
-                        </p>
-                        <p className="text-xs text-muted">
-                          {completedCount === checklistSteps.length
-                            ? 'All essential store details are configured'
-                            : 'Complete these before taking live customer orders'}
-                        </p>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => setSetupChecklistOpen((v) => !v)}
-                        className="px-3 py-1.5 rounded-xl border border-border text-xs font-semibold text-text hover:bg-bg cursor-pointer shrink-0"
-                      >
-                        {setupChecklistOpen ? 'Hide' : 'Show'}
-                      </button>
-                    </div>
-                    {setupChecklistOpen && (
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
-                        {checklistSteps.map((step) => (
-                          <button
-                            key={step.id}
-                            type="button"
-                            onClick={() => setActiveSection(step.target)}
-                            className="text-left p-2.5 rounded-xl border border-border bg-bg hover:border-primary/50 transition-colors flex items-start justify-between gap-2 cursor-pointer"
-                          >
-                            <div className="min-w-0">
-                              <p className="text-xs font-bold text-text flex items-center gap-1.5">
-                                <span
-                                  className={`inline-block w-2 h-2 rounded-full shrink-0 ${
-                                    step.done ? 'bg-emerald-500' : 'bg-amber-500'
-                                  }`}
-                                />
-                                <span className="truncate">{step.label}</span>
-                              </p>
-                              <p className="text-[11px] text-muted mt-0.5 break-words">
-                                {step.detail}
-                              </p>
-                            </div>
-                            <span className="text-[11px] font-bold text-primary shrink-0">
-                              {step.done ? 'Edit' : 'Set up'} →
-                            </span>
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                );
-              })()}
 
               {/* b) 3 Summary Cards in a Row */}
               <div className="grid grid-cols-3 gap-2 sm:gap-3">
@@ -4958,6 +4910,22 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
                       <div>
                         <label className="block text-xs font-bold text-text mb-1">
+                          FSSAI License Number (14 digits)
+                        </label>
+                        <input
+                          type="text"
+                          maxLength={32}
+                          value={aboutDraft.fssaiNumber || ''}
+                          onChange={(e) =>
+                            setAboutDraft((prev) => ({ ...prev, fssaiNumber: e.target.value }))
+                          }
+                          placeholder="14-digit FSSAI number (leave blank if none)"
+                          className="w-full min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs text-text"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-bold text-text mb-1">
                           WhatsApp Number
                         </label>
                         <input
@@ -5115,7 +5083,10 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                             youtube: normalizeUrl(aboutDraft.socialLinks?.youtube),
                           },
                         };
-                        handleUpdateShopSettings({ aboutPage: payload });
+                        handleUpdateShopSettings({
+                          aboutPage: payload,
+                          fssaiNumber: (aboutDraft.fssaiNumber || '').trim(),
+                        });
                       }}
                       className="w-full min-h-[44px] rounded-xl bg-primary text-primary-contrast font-bold text-xs cursor-pointer shadow-sm"
                     >
@@ -5644,25 +5615,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         className="w-full min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs"
                       />
                     </div>
-                    <div>
-                      <label className="block text-xs font-semibold text-muted mb-1">
-                        GST (%)
-                      </label>
-                      <input
-                        type="number"
-                        min={0}
-                        max={28}
-                        step={0.5}
-                        value={shopSettings.gstPercent}
-                        onChange={(e) =>
-                          setShopSettings({
-                            ...shopSettings,
-                            gstPercent: Number(e.target.value),
-                          })
-                        }
-                        className="w-full min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs"
-                      />
-                    </div>
+                    {renderGstSettingsControl('gstEnabledControl1')}
                   </div>
 
                   <button
@@ -5690,6 +5643,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         {
                           cityArea: (shopSettings.cityArea || '').trim(),
                           minOrderAmount: Math.max(0, Number(shopSettings.minOrderAmount) || 0),
+                          gstEnabled: shopSettings.gstEnabled ?? (shopSettings.gstPercent > 0),
                           gstPercent: Math.max(0, Math.min(28, Number(shopSettings.gstPercent) || 0)),
                           deliverySlabs: [
                             {
@@ -6157,7 +6111,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       </p>
                     </div>
                     <div className="bg-surface rounded-2xl border border-border p-4">
-                      <p className="text-xs text-muted">Total GST Collected (5%)</p>
+                      <p className="text-xs text-muted">Total GST Collected</p>
                       <p className="text-2xl font-bold text-primary mt-1">
                         ₹{reportData.totalGst}
                       </p>
@@ -6356,24 +6310,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         className="w-full min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs"
                       />
                     </div>
-                    <div>
-                      <label className="block text-xs font-semibold text-muted mb-1">
-                        GST Percentage (%)
-                      </label>
-                      <input
-                        type="number"
-                        min={0}
-                        max={28}
-                        value={shopSettings.gstPercent}
-                        onChange={(e) =>
-                          setShopSettings({
-                            ...shopSettings,
-                            gstPercent: Number(e.target.value),
-                          })
-                        }
-                        className="w-full min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs"
-                      />
-                    </div>
+                    {renderGstSettingsControl('gstEnabledControl2')}
                     <div className="flex items-center gap-2 sm:col-span-2 pt-1">
                       <input
                         type="checkbox"
@@ -6400,7 +6337,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         shopName: shopSettings.shopName,
                         supportPhone: shopSettings.supportPhone,
                         opensAtText: shopSettings.opensAtText,
-                        gstPercent: shopSettings.gstPercent,
+                        gstEnabled: shopSettings.gstEnabled ?? (shopSettings.gstPercent > 0),
+                        gstPercent: Math.max(0, Math.min(28, Number(shopSettings.gstPercent) || 0)),
                         allowPreOrdersWhenClosed: shopSettings.allowPreOrdersWhenClosed,
                       })
                     }
@@ -6877,10 +6815,12 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 <span>Delivery Fee</span>
                 <span>₹{selectedOrderDetails.deliveryFee}</span>
               </div>
-              <div className="flex justify-between text-muted">
-                <span>GST</span>
-                <span>₹{selectedOrderDetails.gstAmount}</span>
-              </div>
+              {(selectedOrderDetails.gstAmount > 0 || selectedOrderDetails.gstApplied) && (
+                <div className="flex justify-between text-muted">
+                  <span>GST ({selectedOrderDetails.gstPercent ?? 5}%)</span>
+                  <span>₹{selectedOrderDetails.gstAmount}</span>
+                </div>
+              )}
               {selectedOrderDetails.discountAmount > 0 && (
                 <div className="flex justify-between text-emerald-600 font-medium">
                   <span>

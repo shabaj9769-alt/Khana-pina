@@ -882,7 +882,7 @@ export default function App() {
                       </button>
                     </div>
                     <p className="text-[12px] text-muted break-words print:hidden">
-                      Order ID ya link save kar lo, OTP wapas dekhne ke kaam aayega.
+                      Save your Order ID or this link so you can view your delivery OTP again.
                     </p>
                   </div>
                 </div>

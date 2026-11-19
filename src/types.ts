@@ -143,6 +143,7 @@ export interface ShopSettings {
   allowPreOrdersWhenClosed?: boolean;
   holidaysNote: string;
   minOrderAmount: number;
+  gstEnabled: boolean;
   gstPercent: number;
   codEnabled: boolean;
   codMaxAmount: number;
@@ -271,6 +272,10 @@ export interface OrderRecord {
   deliveredAt?: string;
   cancelledAt?: string;
   updatedAt?: string;
+  prepTimeMins?: number;
+  etaAt?: string;
+  gstApplied?: boolean;
+  gstPercent?: number;
   items: OrderItemRecord[];
   razorpayOrderId?: string;
 }
@@ -401,6 +406,8 @@ export interface CheckoutPreviewResponse {
   deliveryFee: number;
   gstPercent: number;
   gstAmount: number;
+  gstEnabled?: boolean;
+  gstApplied?: boolean;
   discountAmount: number;
   appliedCoupon: string | null;
   couponMessage?: string;
@@ -435,6 +442,10 @@ export interface PublicTrackingProjection {
   discountAmount: number;
   couponCode: string | null;
   grandTotal: number;
+  prepTimeMins?: number;
+  etaAt?: string;
+  gstApplied?: boolean;
+  gstPercent?: number;
   itemsSummary: Array<{
     itemName: string;
     variantName?: string;

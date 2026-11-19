@@ -1753,16 +1753,21 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
   };
 
   const primaryCoupon = coupons[0];
-  const whatsappDigits = (settings.supportPhone || '+919820144500').replace(/\D/g, '');
+  const whatsappDigits = (
+    settings.aboutPage?.whatsappNumber ||
+    settings.aboutPage?.supportPhone ||
+    settings.supportPhone ||
+    ''
+  ).replace(/\D/g, '');
   const whatsappBaseText =
     cart.length > 0
       ? `Hi, I'd like to place an order from ${settings.shopName}: ${cart
           .map((c) => `${c.quantity}x ${c.name}`)
           .join(', ')} (Total: ₹${totalCartAmount})`
       : `Hi, I'd like to place an order from ${settings.shopName}`;
-  const whatsappHref = `https://wa.me/${whatsappDigits}?text=${encodeURIComponent(
-    whatsappBaseText
-  )}`;
+  const whatsappHref = whatsappDigits
+    ? `https://wa.me/${whatsappDigits}?text=${encodeURIComponent(whatsappBaseText)}`
+    : '';
 
   // Customization Sheet dynamic total
   const customModalTotal = customizingItem
@@ -1796,10 +1801,11 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
   const scheduleFieldError =
     isScheduled && !scheduledFor ? 'Please choose a delivery time slot.' : null;
 
+  const gstEnabled = billPreview?.gstEnabled ?? settings.gstEnabled ?? (settings.gstPercent > 0);
   const estimatedGst =
-    billPreview?.gstAmount ?? Math.round(totalCartAmount * (settings.gstPercent / 100));
+    billPreview?.gstAmount ?? (gstEnabled ? Math.round(totalCartAmount * (settings.gstPercent / 100)) : 0);
   const estimatedGrandTotal =
-    billPreview?.grandTotal ?? totalCartAmount + estimatedGst;
+    billPreview?.grandTotal ?? (totalCartAmount + (billPreview?.deliveryFee ?? 0) - (billPreview?.discountAmount ?? 0) + estimatedGst);
 
   const isPlaceOrderDisabled =
     placingOrder ||
@@ -1979,15 +1985,17 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                       <span>Add more dishes</span>
                     </button>
 
-                    <a
-                      href={whatsappHref}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-[14px] font-semibold text-accent hover:underline inline-flex items-center gap-1.5 cursor-pointer"
-                    >
-                      <MessageCircle className="w-4 h-4 shrink-0" />
-                      <span>Order via WhatsApp instead →</span>
-                    </a>
+                    {whatsappHref && (
+                      <a
+                        href={whatsappHref}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[14px] font-semibold text-accent hover:underline inline-flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <MessageCircle className="w-4 h-4 shrink-0" />
+                        <span>Order via WhatsApp instead →</span>
+                      </a>
+                    )}
                   </div>
                 </section>
               </>
@@ -2282,7 +2290,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                         handleCheckoutInputBlur();
                       }}
                       onChange={(e) => setGuestPhone(e.target.value.replace(/\D/g, ''))}
-                      placeholder="e.g. 9820144500"
+                      placeholder="10-digit mobile number"
                       className={`w-full max-w-full min-h-[48px] px-3.5 py-2.5 rounded-xl border bg-bg text-[16px] tabular-nums text-text box-border focus:outline-none focus:border-primary ${
                         (checkoutTouched || phoneTouched) && phoneFieldError
                           ? 'border-primary'
@@ -2622,12 +2630,14 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                       ₹{billPreview?.deliveryFee ?? 0}
                     </span>
                   </div>
-                  <div className="flex justify-between text-muted">
-                    <span>GST ({billPreview?.gstPercent ?? settings.gstPercent}%)</span>
-                    <span className="tabular-nums font-semibold text-text">
-                      ₹{estimatedGst}
-                    </span>
-                  </div>
+                  {gstEnabled && (
+                    <div className="flex justify-between text-muted">
+                      <span>GST ({billPreview?.gstPercent ?? settings.gstPercent}%)</span>
+                      <span className="tabular-nums font-semibold text-text">
+                        ₹{estimatedGst}
+                      </span>
+                    </div>
+                  )}
                   <div className="flex justify-between pt-2.5 border-t border-border text-[16px] font-extrabold text-text">
                     <span>Grand total</span>
                     <span className="tabular-nums">₹{estimatedGrandTotal}</span>
@@ -4039,12 +4049,12 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                     </div>
                   )}
 
-                  {(ord.status === 'PREPARING' ||
-                    ord.status === 'READY' ||
-                    ord.status === 'OUT_FOR_DELIVERY') && (
+                  {(ord.status === 'ACCEPTED' ||
+                    ord.status === 'PREPARING' ||
+                    ord.status === 'READY') && (
                     <div className="flex flex-wrap items-center justify-between gap-2 text-[13px] text-muted">
                       <span className="min-w-0 break-words">
-                        Order ban raha hai - cancel karne ke liye kitchen ko call karein
+                        Your order is being prepared. To cancel, please call the kitchen.
                       </span>
                       {settings.supportPhone && (
                         <a
@@ -4081,21 +4091,27 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   ? ` · ${settings.cityArea.trim()}`
                   : ''}
               </p>
-              <p className="text-[13px] font-semibold tabular-nums text-muted break-words">
-                FSSAI Lic No. {settings.fssaiNumber} · GST {settings.gstPercent}%
-              </p>
+              {(settings.fssaiNumber?.trim() || settings.gstEnabled) && (
+                <p className="text-[13px] font-semibold tabular-nums text-muted break-words">
+                  {settings.fssaiNumber?.trim() ? `FSSAI Lic No. ${settings.fssaiNumber.trim()}` : ''}
+                  {settings.fssaiNumber?.trim() && settings.gstEnabled ? ' · ' : ''}
+                  {settings.gstEnabled ? `GST ${settings.gstPercent}%` : ''}
+                </p>
+              )}
             </div>
 
             {/* Green WhatsApp Order Button */}
-            <a
-              href={whatsappHref}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="min-h-[48px] px-5 rounded-2xl bg-accent hover:opacity-90 text-white text-[15px] font-extrabold inline-flex items-center justify-center gap-2.5 shadow-sm whitespace-nowrap shrink-0 transition-all active:scale-[0.98]"
-            >
-              <MessageCircle className="w-5 h-5 fill-white/20 shrink-0" />
-              <span>Order on WhatsApp</span>
-            </a>
+            {whatsappHref && (
+              <a
+                href={whatsappHref}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="min-h-[48px] px-5 rounded-2xl bg-accent hover:opacity-90 text-white text-[15px] font-extrabold inline-flex items-center justify-center gap-2.5 shadow-sm whitespace-nowrap shrink-0 transition-all active:scale-[0.98]"
+              >
+                <MessageCircle className="w-5 h-5 fill-white/20 shrink-0" />
+                <span>Order on WhatsApp</span>
+              </a>
+            )}
           </div>
 
           <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 pt-2 border-t border-border/60 ">
@@ -4146,12 +4162,16 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
             >
               Contact Us
             </button>
-            <span aria-hidden="true" className="text-muted">
-              ·
-            </span>
-            <span className="text-[13px] font-medium text-muted tabular-nums px-2">
-              FSSAI: {settings.fssaiNumber}
-            </span>
+            {settings.fssaiNumber?.trim() && (
+              <>
+                <span aria-hidden="true" className="text-muted">
+                  ·
+                </span>
+                <span className="text-[13px] font-medium text-muted tabular-nums px-2">
+                  FSSAI: {settings.fssaiNumber.trim()}
+                </span>
+              </>
+            )}
           </div>
         </footer>
       )}
@@ -4720,9 +4740,11 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   <p>
                     By placing an order on <strong className="text-text">{settings.shopName}</strong>, you confirm that your delivery address and phone number are accurate and within our active delivery radius ({deliveryZone.radiusKm} km).
                   </p>
-                  <p>
-                    All menu prices are in Indian Rupees (INR). Applicable GST ({settings.gstPercent}%) and distance-based delivery fees are shown transparently before checkout.
-                  </p>
+                  {settings.gstEnabled && (
+                    <p>
+                      All menu prices are in Indian Rupees (INR). Applicable GST ({settings.gstPercent}%) and distance-based delivery fees are shown transparently before checkout.
+                    </p>
+                  )}
                   <p>
                     For security, doorstep handover requires sharing the 4-digit Delivery OTP shown on your live order tracking page with our delivery partner.
                   </p>
@@ -4756,24 +4778,17 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   <p>
                     <strong className="text-text">{settings.shopName}</strong>
                   </p>
-                  <p>
-                    <strong className="text-text">Phone / Support:</strong>{' '}
-                    <a
-                      href={`tel:${(settings.aboutPage?.supportPhone || settings.supportPhone).replace(/[^+\d]/g, '')}`}
-                      className="text-primary font-semibold underline"
-                    >
-                      {settings.aboutPage?.supportPhone || settings.supportPhone}
-                    </a>
-                  </p>
-                  <p>
-                    <strong className="text-text">Email:</strong>{' '}
-                    <a
-                      href="mailto:support@khanapina.in"
-                      className="text-primary font-semibold underline"
-                    >
-                      support@khanapina.in
-                    </a>
-                  </p>
+                  {(settings.aboutPage?.supportPhone || settings.supportPhone) && (
+                    <p>
+                      <strong className="text-text">Phone / Support:</strong>{' '}
+                      <a
+                        href={`tel:${(settings.aboutPage?.supportPhone || settings.supportPhone).replace(/[^+\d]/g, '')}`}
+                        className="text-primary font-semibold underline"
+                      >
+                        {settings.aboutPage?.supportPhone || settings.supportPhone}
+                      </a>
+                    </p>
+                  )}
                   <p>
                     <strong className="text-text">Kitchen Address:</strong>{' '}
                     {settings.aboutPage?.address || deliveryZone.shopAddress}
@@ -4783,9 +4798,11 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                     <strong className="text-text">Operating Hours:</strong>{' '}
                     {settings.aboutPage?.openingHours || settings.weeklyTimings}
                   </p>
-                  <p className="text-[13px] tabular-nums">
-                    FSSAI License No.: {settings.fssaiNumber}
-                  </p>
+                  {settings.fssaiNumber?.trim() && (
+                    <p className="text-[13px] tabular-nums">
+                      FSSAI License No.: {settings.fssaiNumber.trim()}
+                    </p>
+                  )}
                 </>
               )}
             </div>

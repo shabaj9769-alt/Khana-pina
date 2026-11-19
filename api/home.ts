@@ -98,8 +98,16 @@ export default async function handler(req: Request, res: Response) {
 
     const rzpCfg = getRazorpayConfig();
 
+    const normalizedSettings = {
+      ...db.settings,
+      gstEnabled:
+        db.settings.gstEnabled !== undefined
+          ? db.settings.gstEnabled
+          : db.settings.gstPercent > 0,
+    };
+
     const payload = {
-      settings: db.settings,
+      settings: normalizedSettings,
       deliveryZone: db.deliveryZone,
       banners: activeBanners,
       categories: activeCategories,
