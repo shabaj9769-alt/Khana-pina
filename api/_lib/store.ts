@@ -31,8 +31,15 @@ import {
   ThemeMode,
 } from '../../src/types.ts';
 import { DEFAULT_STOREFRONT_THEME, normalizeThemeConfig } from '../../src/utils/themeTokens.ts';
-import { getRtdb } from './firebaseAdmin.ts';
-import { hashPasswordScrypt, isRazorpayConfigured, parseCookies, verifyJwtRaw } from './security.ts';
+import { getRtdb, isStrictProductionOrLiveMode } from './firebaseAdmin.ts';
+import {
+  hashPasswordScrypt,
+  isCodOtpProviderConfigured,
+  isDemoModeEnabled,
+  isRazorpayConfigured,
+  parseCookies,
+  verifyJwtRaw,
+} from './security.ts';
 import { notifyTelegramCancelledOrder } from './telegram.ts';
 
 // Image URLs (Optimized <80KB WebP assets)
@@ -139,15 +146,69 @@ export function calculateHaversineKm(
   return Number((R * c).toFixed(2));
 }
 
-export function getInitialDatabaseState(): DatabaseState {
+export function resolveBootstrapAdminUser(options?: {
+  allowDevFallback?: boolean;
+}): AdminUserRecord | null {
+  const nowIso = new Date().toISOString();
+  const envEmail = (process.env.ADMIN_BOOTSTRAP_EMAIL || '').trim().toLowerCase();
+  const envPassword = (process.env.ADMIN_BOOTSTRAP_PASSWORD || '').trim();
+  const isLiveMode = isStrictProductionOrLiveMode() && !process.env.VITEST;
+
+  if (envEmail && envEmail.includes('@') && envPassword.length >= 8) {
+    return {
+      id: 'adm_owner',
+      email: envEmail,
+      passwordHash: hashPasswordScrypt(envPassword),
+      name: 'Owner',
+      role: 'owner',
+      isActive: true,
+      mustChangePassword: false,
+      tokenVersion: 1,
+      totpEnabled: false,
+      createdAt: nowIso,
+    };
+  }
+
+  if (isLiveMode || !options?.allowDevFallback) {
+    return null;
+  }
+
+  return {
+    id: 'adm_owner',
+    email: 'owner@khanapina.in',
+    passwordHash: hashPasswordScrypt('admin123'),
+    name: 'Owner',
+    role: 'owner',
+    isActive: true,
+    mustChangePassword: true,
+    tokenVersion: 1,
+    totpEnabled: false,
+    createdAt: nowIso,
+  };
+}
+
+export function getInitialDatabaseState(options?: { forSeeding?: boolean }): DatabaseState {
   const nowIso = new Date().toISOString();
   const samplePlacedAt = new Date(Date.now() - 18 * 60 * 1000).toISOString();
   const sampleDeliveredAt = new Date(Date.now() - 2 * 3600 * 1000).toISOString();
+  const isLiveMode = isStrictProductionOrLiveMode() && !process.env.VITEST;
+  const bootstrapAdmin = resolveBootstrapAdminUser({
+    allowDevFallback: !isLiveMode,
+  });
+
+  if (isLiveMode && options?.forSeeding && !bootstrapAdmin) {
+    throw new Error(
+      'SERVER CONFIG ERROR: ADMIN_BOOTSTRAP_EMAIL and ADMIN_BOOTSTRAP_PASSWORD (min 8 chars) must be set in live/production mode before seeding the initial admin account.'
+    );
+  }
+
+  const seededAdminUsers = bootstrapAdmin ? [bootstrapAdmin] : [];
+  const auditEmail = bootstrapAdmin?.email || 'system@khanapina.in';
 
   return {
-    nextOrderSequence: 1046,
+    nextOrderSequence: isLiveMode ? 1001 : 1046,
     settings: {
-      shopName: 'Aangan Artisanal Kitchen',
+      shopName: 'Khana Pina',
       fssaiNumber: '11524006000489',
       supportPhone: '+91 98201 44500',
       isOpen: true,
@@ -488,19 +549,23 @@ export function getInitialDatabaseState(): DatabaseState {
       },
     ],
     couponUsages: [],
-    customers: {
-      '9820112233': {
-        phone: '9820112233',
-        name: 'Kabir Mehta',
-        isBlocked: false,
-        orderCount: 2,
-        totalSpent: 1540,
-        firstOrderAt: sampleDeliveredAt,
-        lastOrderAt: samplePlacedAt,
-        lastAddress: 'Flat 701, Green Heights, Main Road',
-      },
-    },
-    orders: [
+    customers: isLiveMode
+      ? {}
+      : {
+          '9820112233': {
+            phone: '9820112233',
+            name: 'Kabir Mehta',
+            isBlocked: false,
+            orderCount: 2,
+            totalSpent: 1540,
+            firstOrderAt: sampleDeliveredAt,
+            lastOrderAt: samplePlacedAt,
+            lastAddress: 'Flat 701, Green Heights, Main Road',
+          },
+        },
+    orders: isLiveMode
+      ? []
+      : [
       {
         id: 'ord_sample_new',
         orderNumber: 'AAN-1045',
@@ -645,7 +710,9 @@ export function getInitialDatabaseState(): DatabaseState {
         ],
       },
     ],
-    payments: [
+    payments: isLiveMode
+      ? []
+      : [
       {
         id: 'pay_sample_1042',
         orderId: 'ord_sample_live',
@@ -682,7 +749,9 @@ export function getInitialDatabaseState(): DatabaseState {
       },
     ],
     refunds: [],
-    deliveryBoys: [
+    deliveryBoys: isLiveMode
+      ? []
+      : [
       {
         id: 'rider_1',
         name: 'Ramesh Pawar',
@@ -704,45 +773,38 @@ export function getInitialDatabaseState(): DatabaseState {
         dailyPin: '8820',
       },
     ],
-    reviews: [
-      {
-        id: 'rev_1',
-        orderId: 'ord_sample_delivered',
-        orderNumber: 'AAN-1039',
-        customerPhone: '9820112233',
-        customerName: 'Kabir Mehta',
-        rating: 5,
-        comment: 'The copper handi seal kept the Murgh Makhani piping hot. Best garlic naan we have ever tasted.',
-        complaintStatus: 'NONE',
-        createdAt: nowIso,
-      },
-    ],
-    adminUsers: [
-      {
-        id: 'adm_owner',
-        email: 'owner@aangan.in',
-        passwordHash: hashPasswordScrypt('admin123'),
-        name: 'Owner',
-        role: 'owner',
-        isActive: true,
-        mustChangePassword: true,
-        tokenVersion: 1,
-        totpEnabled: false,
-        createdAt: nowIso,
-      },
-    ],
+    reviews: isLiveMode
+      ? []
+      : [
+          {
+            id: 'rev_1',
+            orderId: 'ord_sample_delivered',
+            orderNumber: 'AAN-1039',
+            customerPhone: '9820112233',
+            customerName: 'Kabir Mehta',
+            rating: 5,
+            comment:
+              'The copper handi seal kept the Murgh Makhani piping hot. Best garlic naan we have ever tasted.',
+            complaintStatus: 'NONE',
+            createdAt: nowIso,
+          },
+        ],
+    adminUsers: seededAdminUsers,
     adminSessions: [],
-    auditLogs: [
-      {
-        id: 'aud_init',
-        adminEmail: 'owner@aangan.in',
-        adminRole: 'owner',
-        action: 'SYSTEM_INITIALIZED',
-        details: 'Initialized Aangan Artisanal Kitchen with Firebase Realtime Database, Admin SDK transactions, and Razorpay verification.',
-        ipAddress: '127.0.0.1',
-        createdAt: nowIso,
-      },
-    ],
+    auditLogs: isLiveMode
+      ? []
+      : [
+          {
+            id: 'aud_init',
+            adminEmail: auditEmail,
+            adminRole: 'owner',
+            action: 'SYSTEM_INITIALIZED',
+            details:
+              'Initialized Khana Pina with Firebase Realtime Database, Admin SDK transactions, and Razorpay verification.',
+            ipAddress: '127.0.0.1',
+            createdAt: nowIso,
+          },
+        ],
     blockedList: [],
     broadcasts: [],
   };
@@ -1142,7 +1204,25 @@ export async function ensureAdminAuthLoaded(): Promise<void> {
     ]);
 
     if (!usersSnap.exists()) {
-      await ensureFirebaseSeeded();
+      const [settingsSnap, menuSnap] = await Promise.all([
+        rtdb.ref('settings').get(),
+        rtdb.ref('menuItems').get(),
+      ]);
+      if (!settingsSnap.exists() || !menuSnap.exists()) {
+        await ensureFirebaseSeeded();
+        return;
+      }
+      const isLiveMode = isStrictProductionOrLiveMode() && !process.env.VITEST;
+      const bootstrapAdmin = resolveBootstrapAdminUser({ allowDevFallback: !isLiveMode });
+      if (!bootstrapAdmin) {
+        throw new Error(
+          'SERVER CONFIG ERROR: ADMIN_BOOTSTRAP_EMAIL and ADMIN_BOOTSTRAP_PASSWORD (min 8 chars) must be configured in live mode to initialize the admin account.'
+        );
+      }
+      await rtdb.ref(`adminUsers/${bootstrapAdmin.id}`).set(bootstrapAdmin);
+      db.adminUsers = [bootstrapAdmin];
+      db.adminSessions = recordToArray<AdminSessionRecord>(sessionsSnap.val());
+      lastAdminAuthHydratedAt = Date.now();
       return;
     }
 
@@ -1328,7 +1408,7 @@ export async function ensureFirebaseSeeded(force = false): Promise<DatabaseState
     const rootVal = snap.val();
 
     if (!rootVal || !rootVal.settings || !rootVal.menuItems) {
-      const initial = getInitialDatabaseState();
+      const initial = getInitialDatabaseState({ forSeeding: true });
       const trackingMap: Record<string, PublicTrackingProjection> = {};
       const adminOrdersMap: Record<string, OrderRecord> = {};
       const riderOrdersMap: Record<string, Record<string, OrderRecord>> = {};
@@ -1388,6 +1468,7 @@ export async function ensureFirebaseSeeded(force = false): Promise<DatabaseState
         adminOrders: adminOrdersMap,
         riderOrders: riderOrdersMap,
       });
+      Object.assign(db, initial);
       firebaseSeeded = true;
       lastHydratedAt = Date.now();
       lastHomeHydratedAt = lastHydratedAt;
@@ -1910,7 +1991,7 @@ export async function authenticateAdminFromTokenOrCookieAsync(
   cookieHeader?: string
 ): Promise<VerifiedAdminContext | null> {
   const cookies = parseCookies(cookieHeader);
-  const candidate = rawToken || cookies['aangan_admin_access'];
+  const candidate = rawToken || cookies['khanapina_admin_access'];
   if (!candidate) return null;
 
   const payload = verifyJwtRaw(candidate);
@@ -2122,9 +2203,211 @@ export function calculateAuthoritativeBill(params: {
     grandTotal,
     codAllowed,
     codDisallowedReason,
-    requirePhoneOtpForCod: db.settings.requirePhoneOtpForCod,
+    requirePhoneOtpForCod:
+      db.settings.requirePhoneOtpForCod &&
+      (isDemoModeEnabled() || isCodOtpProviderConfigured()),
     minOrderMet: itemTotal >= db.settings.minOrderAmount,
     minOrderAmount: db.settings.minOrderAmount,
     resolvedItems,
+  };
+}
+
+export interface DemoCleanupResult {
+  removedOrders: number;
+  removedTracking: number;
+  removedPayments: number;
+  removedWebhookEvents: number;
+  removedPaymentLocks: number;
+  removedReviews: number;
+  removedCustomers: number;
+  removedDeliveryBoys: number;
+  legacyDefaultAdminFound: boolean;
+  legacyDefaultAdminReplaced: boolean;
+}
+
+function isDemoOrderRecord(ord: Partial<OrderRecord> | null | undefined, idKey?: string): boolean {
+  if (!ord) return false;
+  const oid = String(ord.id || idKey || '');
+  const tok = String(ord.trackingToken || '');
+  return (
+    oid === 'ord_sample_new' ||
+    oid === 'ord_sample_live' ||
+    oid === 'ord_sample_delivered' ||
+    oid.startsWith('ord_sample_') ||
+    /^trk_.*_demo_/.test(tok) ||
+    ord.razorpayOrderId === 'order_demo_1042'
+  );
+}
+
+export async function cleanupDemoRecordsFromRtdb(options?: {
+  replaceLegacyDefaultAdmin?: boolean;
+}): Promise<DemoCleanupResult> {
+  const rtdb = getRtdb();
+  const snap = await rtdb.ref().get();
+  const root = (snap.val() || {}) as Record<string, any>;
+
+  const updates: Record<string, null | any> = {};
+  const removedOrderIds = new Set<string>(['ord_sample_new', 'ord_sample_live', 'ord_sample_delivered']);
+  const removedTokens = new Set<string>([
+    'trk_new_demo_884a1b2c3d4e',
+    'trk_live_demo_991a7b3c4d5e6f',
+    'trk_delivered_demo_772b9c1a',
+  ]);
+
+  let removedOrders = 0;
+  let removedTracking = 0;
+  let removedPayments = 0;
+  let removedWebhookEvents = 0;
+  let removedPaymentLocks = 0;
+  let removedReviews = 0;
+  let removedCustomers = 0;
+  let removedDeliveryBoys = 0;
+
+  const ordersObj = (root.orders || {}) as Record<string, OrderRecord>;
+  const remainingOrders: OrderRecord[] = [];
+  for (const [key, ord] of Object.entries(ordersObj)) {
+    if (isDemoOrderRecord(ord, key)) {
+      removedOrderIds.add(key);
+      if (ord?.id) removedOrderIds.add(ord.id);
+      if (ord?.trackingToken) removedTokens.add(ord.trackingToken);
+      updates[`orders/${key}`] = null;
+      updates[`adminOrders/${key}`] = null;
+      if (ord?.deliveryBoyId) {
+        updates[`riderOrders/${ord.deliveryBoyId}/${key}`] = null;
+      }
+      removedOrders += 1;
+    } else if (ord) {
+      remainingOrders.push(ord);
+    }
+  }
+
+  const adminOrdersObj = (root.adminOrders || {}) as Record<string, OrderRecord>;
+  for (const [key, ord] of Object.entries(adminOrdersObj)) {
+    if (isDemoOrderRecord(ord, key) || removedOrderIds.has(key)) {
+      updates[`adminOrders/${key}`] = null;
+    }
+  }
+
+  const trackingObj = (root.tracking || {}) as Record<string, PublicTrackingProjection>;
+  for (const [tokKey, proj] of Object.entries(trackingObj)) {
+    if (
+      removedTokens.has(tokKey) ||
+      /^trk_.*_demo_/.test(tokKey) ||
+      (proj?.orderId && removedOrderIds.has(proj.orderId))
+    ) {
+      updates[`tracking/${tokKey}`] = null;
+      removedTracking += 1;
+    }
+  }
+
+  const riderOrdersObj = (root.riderOrders || {}) as Record<string, Record<string, OrderRecord>>;
+  for (const [riderId, ordMap] of Object.entries(riderOrdersObj)) {
+    if (!ordMap || typeof ordMap !== 'object') continue;
+    for (const [ordKey, ord] of Object.entries(ordMap)) {
+      if (isDemoOrderRecord(ord, ordKey) || removedOrderIds.has(ordKey)) {
+        updates[`riderOrders/${riderId}/${ordKey}`] = null;
+      }
+    }
+  }
+
+  const paymentsObj = (root.payments || {}) as Record<string, PaymentRecord>;
+  for (const [payKey, pay] of Object.entries(paymentsObj)) {
+    const isDemoPay =
+      payKey === 'pay_sample_1042' ||
+      payKey === 'pay_sample_1039' ||
+      pay?.razorpayPaymentId === 'pay_rzp_demo_998123' ||
+      pay?.razorpayOrderId === 'order_demo_1042' ||
+      (pay?.orderId && removedOrderIds.has(pay.orderId));
+    if (isDemoPay) {
+      updates[`payments/${payKey}`] = null;
+      removedPayments += 1;
+    }
+  }
+
+  const locksObj = (root.paymentLocks || {}) as Record<string, { orderId?: string }>;
+  for (const [lockKey, lockVal] of Object.entries(locksObj)) {
+    if (
+      lockKey === 'pay_rzp_demo_998123' ||
+      (lockVal?.orderId && removedOrderIds.has(lockVal.orderId))
+    ) {
+      updates[`paymentLocks/${lockKey}`] = null;
+      removedPaymentLocks += 1;
+    }
+  }
+
+  const webhookObj = (root.webhookEvents || {}) as Record<string, unknown>;
+  if (webhookObj['evt_demo_1042']) {
+    updates['webhookEvents/evt_demo_1042'] = null;
+    removedWebhookEvents += 1;
+  }
+
+  const reviewsObj = (root.reviews || {}) as Record<string, ReviewRecord>;
+  for (const [revKey, rev] of Object.entries(reviewsObj)) {
+    if (revKey === 'rev_1' || (rev?.orderId && removedOrderIds.has(rev.orderId))) {
+      updates[`reviews/${revKey}`] = null;
+      removedReviews += 1;
+    }
+  }
+
+  const customersObj = (root.customers || {}) as Record<string, CustomerRecord>;
+  const demoCustomer = customersObj['9820112233'];
+  const hasRealOrdersForDemoCustomer = remainingOrders.some((o) => o.customerPhone === '9820112233');
+  if (demoCustomer && demoCustomer.name === 'Kabir Mehta' && !hasRealOrdersForDemoCustomer) {
+    updates['customers/9820112233'] = null;
+    removedCustomers += 1;
+  }
+
+  const ridersObj = (root.deliveryBoys || {}) as Record<string, DeliveryBoy>;
+  for (const [riderKey, rider] of Object.entries(ridersObj)) {
+    const isSeededDemoRider =
+      (riderKey === 'rider_1' && rider?.phone === '9876501234') ||
+      (riderKey === 'rider_2' && rider?.phone === '9876505678');
+    const hasRealOrdersForRider = remainingOrders.some((o) => o.deliveryBoyId === riderKey);
+    if (isSeededDemoRider && !hasRealOrdersForRider) {
+      updates[`deliveryBoys/${riderKey}`] = null;
+      removedDeliveryBoys += 1;
+    }
+  }
+
+  const adminsObj = (root.adminUsers || {}) as Record<string, AdminUserRecord>;
+  const legacyEntry = Object.entries(adminsObj).find(
+    ([, u]) => u?.email?.toLowerCase() === 'owner@aangan.in'
+  );
+  const legacyDefaultAdminFound = Boolean(legacyEntry);
+  let legacyDefaultAdminReplaced = false;
+
+  if (legacyEntry && options?.replaceLegacyDefaultAdmin) {
+    const [legacyKey] = legacyEntry;
+    const otherActiveOwner = Object.entries(adminsObj).some(
+      ([k, u]) => k !== legacyKey && u?.role === 'owner' && u?.isActive
+    );
+    const bootstrapAdmin = resolveBootstrapAdminUser({ allowDevFallback: false });
+    if (bootstrapAdmin && bootstrapAdmin.email !== 'owner@aangan.in') {
+      updates[`adminUsers/${legacyKey}`] = bootstrapAdmin;
+      legacyDefaultAdminReplaced = true;
+    } else if (otherActiveOwner) {
+      updates[`adminUsers/${legacyKey}`] = null;
+      legacyDefaultAdminReplaced = true;
+    }
+  }
+
+  if (Object.keys(updates).length > 0) {
+    await rtdb.ref().update(updates);
+  }
+
+  invalidateHydration();
+  await ensureFirebaseSeeded(true);
+
+  return {
+    removedOrders,
+    removedTracking,
+    removedPayments,
+    removedWebhookEvents,
+    removedPaymentLocks,
+    removedReviews,
+    removedCustomers,
+    removedDeliveryBoys,
+    legacyDefaultAdminFound,
+    legacyDefaultAdminReplaced,
   };
 }

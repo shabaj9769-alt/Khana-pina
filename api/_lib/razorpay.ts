@@ -288,7 +288,7 @@ export async function verifyRazorpayPaymentAuthoritative(params: {
     await getRtdb().ref(`payments/${payment.id}`).set(payment);
     await syncOrderRealtimePaths(order);
     await logAudit(
-      'system@aangan.in',
+      'system@khanapina.in',
       'owner',
       'PAYMENT_SIGNATURE_REJECTED',
       `Invalid HMAC signature on order ${order.orderNumber} (${razorpayOrderId})`,
@@ -301,7 +301,7 @@ export async function verifyRazorpayPaymentAuthoritative(params: {
   const lockResult = await claimPaymentIdForOrderTx(razorpayPaymentId, order.id);
   if (!lockResult.ok) {
     await logAudit(
-      'system@aangan.in',
+      'system@khanapina.in',
       'owner',
       'DUPLICATE_PAYMENT_ID_BLOCKED',
       `Blocked reuse of razorpayPaymentId ${razorpayPaymentId} on order ${order.orderNumber} (already bound to ${lockResult.ownerOrderId})`,
@@ -338,7 +338,7 @@ export async function verifyRazorpayPaymentAuthoritative(params: {
     await getRtdb().ref(`payments/${payment.id}`).set(payment);
     await syncOrderRealtimePaths(order);
     await logAudit(
-      'system@aangan.in',
+      'system@khanapina.in',
       'owner',
       'PAYMENT_LATE_CAPTURE',
       `Late payment ${razorpayPaymentId} arrived for cancelled order ${order.orderNumber}`,
@@ -382,7 +382,7 @@ export async function verifyRazorpayPaymentAuthoritative(params: {
     await getRtdb().ref(`payments/${payment.id}`).set(payment);
     await syncOrderRealtimePaths(order);
     await logAudit(
-      'system@aangan.in',
+      'system@khanapina.in',
       'owner',
       'PAYMENT_FLAGGED_MISMATCH',
       `Flagged payment ${razorpayPaymentId} on order ${order.orderNumber}: ${payment.flagReason}`,

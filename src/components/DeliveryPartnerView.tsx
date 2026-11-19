@@ -54,7 +54,7 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = () => {
   const [firebaseClientConfig, setFirebaseClientConfig] = useState<Record<string, string> | null>(
     null
   );
-  const [shopName, setShopName] = useState<string>(() => getCachedShopName() || 'Food Ordering');
+  const [shopName, setShopName] = useState<string>(() => getCachedShopName() || 'Khana Pina');
   const [riderName, setRiderName] = useState('');
   const [riderPhone, setRiderPhone] = useState('');
   const [authError, setAuthError] = useState<string | null>(null);
@@ -67,7 +67,7 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = () => {
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [riderThemeMode, setRiderThemeMode] = useState<ThemeMode>(() => {
     try {
-      const saved = localStorage.getItem('aangan_rider_theme_v1');
+      const saved = localStorage.getItem('khanapina_rider_theme_v1');
       if (saved === 'dark' || saved === 'light') return saved;
     } catch {
       // Ignore storage error
@@ -80,7 +80,7 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = () => {
   useEffect(() => {
     applyAdminOrRiderThemeToDocument(riderThemeMode, '#D9480F');
     try {
-      localStorage.setItem('aangan_rider_theme_v1', riderThemeMode);
+      localStorage.setItem('khanapina_rider_theme_v1', riderThemeMode);
     } catch {
       // Ignore storage error
     }

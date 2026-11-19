@@ -1,6 +1,6 @@
-# Aangan Artisanal Kitchen — Direct Food Delivery (Vercel + Firebase RTDB)
+# Khana Pina — Direct Food Delivery (Vercel + Firebase RTDB)
 
-Single-shop artisanal Indian kitchen and direct food delivery PWA with **guest-only customer checkout** (no customer login, signup, or mandatory OTP), Haversine delivery zone validation, bypass-proof Razorpay double-verified payments (`fetch` + Node `crypto.timingSafeEqual`), Firebase Realtime Database multi-path real-time sync, and full Admin, Kitchen & Delivery Partner portals.
+Khana Pina — Direct food delivery PWA with **guest-only customer checkout** (no customer login, signup, or mandatory OTP), Haversine delivery zone validation, bypass-proof Razorpay double-verified payments (`fetch` + Node `crypto.timingSafeEqual`), Firebase Realtime Database multi-path real-time sync, and full Admin, Kitchen & Delivery Partner portals.
 
 ---
 

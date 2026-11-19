@@ -25,7 +25,6 @@ import {
   ACCESS_TTL_SEC,
   applyCorsAndSecurityHeaders,
   clearAdminAuthCookies,
-  computeTotpCode,
   generateTotpSecret,
   getClientIp,
   getRazorpayConfig,
@@ -46,6 +45,7 @@ import {
   BroadcastRecord,
   buildPublicShopStatus,
   calculateAuthoritativeBill,
+  cleanupDemoRecordsFromRtdb,
   clearHomeCache,
   clearLoginFailuresFirebase,
   db,
@@ -427,7 +427,7 @@ export default async function handler(req: Request, res: Response) {
     // 3. POST /api/admin/refresh
     if (method === 'POST' && subPath === '/refresh') {
       const cookies = parseCookies(req.headers.cookie);
-      const refreshToken = cookies['aangan_admin_refresh'] || req.body?.refreshToken;
+      const refreshToken = cookies['khanapina_admin_refresh'] || req.body?.refreshToken;
       if (!refreshToken) {
         res.status(401).json({ error: 'No refresh token present' });
         return;
@@ -770,7 +770,6 @@ export default async function handler(req: Request, res: Response) {
       await rtdb.ref(`adminUsers/${user.id}`).set(user);
       res.json({
         secretHex: secret,
-        currentDemoCode: computeTotpCode(secret, 0),
       });
       return;
     }
@@ -941,7 +940,7 @@ export default async function handler(req: Request, res: Response) {
       const orderNumber = `AAN-${orderSeq}`;
       const orderId = `ord_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
       const trackingToken = `trk_${crypto.randomBytes(16).toString('hex')}`;
-      const deliveryOtp = String(Math.floor(1000 + Math.random() * 9000));
+      const deliveryOtp = String(crypto.randomInt(1000, 10000));
       const nowIso = new Date().toISOString();
 
       const newOrder: OrderRecord = {
@@ -2414,10 +2413,28 @@ export default async function handler(req: Request, res: Response) {
         'Downloaded full JSON database backup from Firebase RTDB',
         clientIp
       );
-      const filename = `aangan-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      const filename = `khana-pina-backup-${new Date().toISOString().slice(0, 10)}.json`;
       res.setHeader('Content-Type', 'application/json');
       res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
       res.send(JSON.stringify(db, null, 2));
+      return;
+    }
+
+    // 29. POST /api/admin/cleanup-demo-data (Owner-only cleanup for legacy seeded demo records)
+    if (method === 'POST' && subPath === '/cleanup-demo-data') {
+      const admin = await verifyAdminAuthorized(req, res);
+      if (!admin) return;
+      const result = await cleanupDemoRecordsFromRtdb({
+        replaceLegacyDefaultAdmin: Boolean(req.body?.replaceLegacyDefaultAdmin),
+      });
+      await logAudit(
+        admin.email,
+        admin.role,
+        'DEMO_DATA_CLEANED',
+        `Cleaned demo records: ${result.removedOrders} orders, ${result.removedPayments} payments, ${result.removedReviews} reviews, ${result.removedCustomers} customers, ${result.removedDeliveryBoys} riders.`,
+        clientIp
+      );
+      res.json({ ok: true, result });
       return;
     }
 

@@ -161,7 +161,11 @@ function parseServiceAccount(raw: string): admin.ServiceAccount {
 }
 
 export function isStrictProductionOrLiveMode(): boolean {
-  return process.env.NODE_ENV === 'production' || process.env.RAZORPAY_MODE === 'live';
+  return (
+    process.env.NODE_ENV === 'production' ||
+    process.env.RAZORPAY_MODE === 'live' ||
+    process.env.VERCEL_ENV === 'production'
+  );
 }
 
 export function getFirebaseAdminApp(): admin.app.App | null {
@@ -286,7 +290,7 @@ export async function uploadImageToCloudOrStorage(params: {
     try {
       const bucketName =
         process.env.FIREBASE_STORAGE_BUCKET ||
-        `${(app.options.credential as any)?.projectId || 'aangan'}.appspot.com`;
+        `${(app.options.credential as any)?.projectId || 'khana-pina'}.appspot.com`;
       const bucket = admin.storage(app).bucket(bucketName);
       const safeBase =
         String(filename || 'asset')

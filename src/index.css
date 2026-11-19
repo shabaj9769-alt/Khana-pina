@@ -2,21 +2,21 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 @theme inline {
-  --color-bg: var(--aangan-bg, #FFFFFF);
-  --color-surface: var(--aangan-surface, #FFFFFF);
-  --color-soft-tint: var(--aangan-soft-tint, #FFF5F3);
-  --color-text: var(--aangan-text, #1C1C1C);
-  --color-muted: var(--aangan-muted, #686B78);
-  --color-border: var(--aangan-border, #E8E8E8);
-  --color-primary: var(--aangan-primary, #E23744);
-  --color-primary-contrast: var(--aangan-primary-contrast, #FFFFFF);
-  --color-accent: var(--aangan-accent, #1BA672);
+  --color-bg: var(--kp-bg, #FFFFFF);
+  --color-surface: var(--kp-surface, #FFFFFF);
+  --color-soft-tint: var(--kp-soft-tint, #FFF5F3);
+  --color-text: var(--kp-text, #1C1C1C);
+  --color-muted: var(--kp-muted, #686B78);
+  --color-border: var(--kp-border, #E8E8E8);
+  --color-primary: var(--kp-primary, #E23744);
+  --color-primary-contrast: var(--kp-primary-contrast, #FFFFFF);
+  --color-accent: var(--kp-accent, #1BA672);
   --color-veg: #1BA672;
   --radius-sm: 0.625rem;
   --radius-theme: var(--radius, 1rem);
   --radius-lg: 1.5rem;
-  --font-display: var(--aangan-font-display, 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif);
-  --font-body: var(--aangan-font-body, 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif);
+  --font-display: var(--kp-font-display, 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif);
+  --font-body: var(--kp-font-body, 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif);
 }
 
 @layer base {
@@ -32,15 +32,15 @@
     --color-accent: #1BA672;
     --color-veg: #1BA672;
 
-    --aangan-bg: var(--color-bg);
-    --aangan-surface: var(--color-surface);
-    --aangan-soft-tint: var(--color-soft-tint);
-    --aangan-text: var(--color-text);
-    --aangan-muted: var(--color-muted);
-    --aangan-border: var(--color-border);
-    --aangan-primary: var(--color-primary);
-    --aangan-primary-contrast: var(--color-primary-contrast);
-    --aangan-accent: var(--color-accent);
+    --kp-bg: var(--color-bg);
+    --kp-surface: var(--color-surface);
+    --kp-soft-tint: var(--color-soft-tint);
+    --kp-text: var(--color-text);
+    --kp-muted: var(--color-muted);
+    --kp-border: var(--color-border);
+    --kp-primary: var(--color-primary);
+    --kp-primary-contrast: var(--color-primary-contrast);
+    --kp-accent: var(--color-accent);
 
     --radius-sm: 0.625rem;
     --radius: 1rem;
@@ -57,8 +57,8 @@
     --font-body: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
     --font-mono: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
     --font-ops: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
-    --aangan-font-display: var(--font-display);
-    --aangan-font-body: var(--font-body);
+    --kp-font-display: var(--font-display);
+    --kp-font-body: var(--font-body);
   }
 
   .dark {
@@ -139,7 +139,7 @@
 }
 
 /* Shimmer Skeleton Loading for Menu & Cards */
-@keyframes aanganShimmer {
+@keyframes kpShimmer {
   0% {
     background-position: -200% 0;
   }
@@ -156,7 +156,7 @@
     var(--color-border) 75%
   );
   background-size: 200% 100%;
-  animation: aanganShimmer 1.4s ease-in-out infinite;
+  animation: kpShimmer 1.4s ease-in-out infinite;
 }
 
 /* User-action micro-animations (sheet slide, floating cart bar, order tick) */

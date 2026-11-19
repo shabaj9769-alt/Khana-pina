@@ -236,7 +236,7 @@ function PhotoLinkInput({
   );
 }
 
-const ADMIN_USER_CACHE_KEY = 'aangan_admin_user_cache_v1';
+const ADMIN_USER_CACHE_KEY = 'khanapina_admin_user_cache_v1';
 
 function readCachedAdminUser(): AdminUserPublic | null {
   try {
@@ -291,18 +291,20 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
   // Admin Personal Theme (separate from Customer Storefront theme)
   const [adminThemeMode, setAdminThemeMode] = useState<ThemeMode>(() => {
-    const saved = localStorage.getItem('aangan_admin_theme_mode');
+    const saved = localStorage.getItem('khanapina_admin_theme_mode');
     return saved === 'light' || saved === 'dark' || saved === 'auto' ? saved : 'light';
   });
   const [adminAccentColor, setAdminAccentColor] = useState<string>(() => {
-    return localStorage.getItem('aangan_admin_accent_color') || '#D9480F';
+    return localStorage.getItem('khanapina_admin_accent_color') || '#D9480F';
   });
   const [publicShopName, setPublicShopName] = useState<string>(
-    () => getCachedShopName() || 'Food Ordering'
+    () => getCachedShopName() || 'Khana Pina'
   );
 
   // Navigation State
   const [activeSection, setActiveSection] = useState<AdminTopSection>('dashboard');
+  const [setupChecklistOpen, setSetupChecklistOpen] = useState<boolean>(true);
+  const [isCleaningDemoData, setIsCleaningDemoData] = useState<boolean>(false);
   const [menuSubTab, setMenuSubTab] = useState<'items' | 'categories'>('items');
   const [storefrontSubTab, setStorefrontSubTab] = useState<'homepage' | 'banners' | 'theme' | 'about'>(
     'homepage'
@@ -665,8 +667,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     setTimeout(() => setToastMsg(null), 3200);
   };
 
-  const displayShopName = shopSettings?.shopName || publicShopName || 'Food Ordering';
-  const shopInitial = (displayShopName.trim().charAt(0) || 'S').toUpperCase();
+  const displayShopName = shopSettings?.shopName || publicShopName || 'Khana Pina';
+  const shopInitial = (displayShopName.trim().charAt(0) || 'K').toUpperCase();
 
   useEffect(() => {
     applyShopBrandingToDocument(displayShopName, {
@@ -677,8 +679,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   // Apply Admin Personal Theme to Document
   useEffect(() => {
     applyAdminOrRiderThemeToDocument(adminThemeMode, adminAccentColor);
-    localStorage.setItem('aangan_admin_theme_mode', adminThemeMode);
-    localStorage.setItem('aangan_admin_accent_color', adminAccentColor);
+    localStorage.setItem('khanapina_admin_theme_mode', adminThemeMode);
+    localStorage.setItem('khanapina_admin_accent_color', adminAccentColor);
   }, [adminThemeMode, adminAccentColor]);
 
   // Chime sound + Web Notification API for new orders
@@ -1576,7 +1578,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `aangan-menu-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.download = `khana-pina-menu-${new Date().toISOString().slice(0, 10)}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -2954,6 +2956,142 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   </button>
                 </div>
               )}
+
+              {/* a2) First-Run Setup Checklist */}
+              {shopSettings && (() => {
+                const sampleMenuIds = new Set([
+                  'item_lucknowi_biryani',
+                  'item_paneer_tikka',
+                  'item_butter_chicken',
+                  'item_gulab_jamun',
+                  'item_subz_biryani',
+                  'item_dal_makhani',
+                ]);
+                const hasSampleMenu = menuItems.some((m) => sampleMenuIds.has(m.id));
+                const addressConfigured = Boolean(
+                  deliveryZone?.shopAddress?.trim() &&
+                    !deliveryZone.shopAddress.includes('Please set your shop address')
+                );
+                const shopInfoDone = Boolean(
+                  shopSettings.shopName?.trim() &&
+                    shopSettings.supportPhone?.trim() &&
+                    addressConfigured
+                );
+                const hoursDone = Boolean(
+                  shopSettings.opensAtText?.trim() || shopSettings.weeklyTimings?.trim()
+                );
+                const zoneDone = Boolean(
+                  addressConfigured &&
+                    deliveryZone &&
+                    Number.isFinite(deliveryZone.shopLat) &&
+                    Number.isFinite(deliveryZone.shopLng) &&
+                    deliveryZone.radiusKm > 0
+                );
+                const feesDone = Boolean(
+                  shopSettings.deliverySlabs?.length > 0 && shopSettings.minOrderAmount >= 0
+                );
+                const menuDone = menuItems.length > 0 && !hasSampleMenu;
+
+                const checklistSteps = [
+                  {
+                    id: 'menu',
+                    label: 'Menu items & prices',
+                    detail: hasSampleMenu
+                      ? `${menuItems.length} sample items found — replace with your real menu & prices`
+                      : `${menuItems.length} menu item(s) active`,
+                    done: menuDone,
+                    target: 'menu' as AdminTopSection,
+                  },
+                  {
+                    id: 'shop',
+                    label: 'Shop name, address & phone',
+                    detail: shopInfoDone
+                      ? `${shopSettings.shopName} · ${shopSettings.supportPhone}`
+                      : 'Set your real shop name, support phone & address',
+                    done: shopInfoDone,
+                    target: (addressConfigured ? 'settings' : 'delivery') as AdminTopSection,
+                  },
+                  {
+                    id: 'zone',
+                    label: 'Delivery zone (location & radius)',
+                    detail: zoneDone && deliveryZone
+                      ? `${deliveryZone.radiusKm} km radius configured`
+                      : 'Pin shop coordinates & delivery radius',
+                    done: zoneDone,
+                    target: 'delivery' as AdminTopSection,
+                  },
+                  {
+                    id: 'fees',
+                    label: 'Delivery fee & min order amount',
+                    detail: `Min order ₹${shopSettings.minOrderAmount} · Base fee ₹${shopSettings.deliverySlabs?.[0]?.fee ?? 0}`,
+                    done: feesDone,
+                    target: 'delivery' as AdminTopSection,
+                  },
+                  {
+                    id: 'hours',
+                    label: 'Opening hours',
+                    detail: shopSettings.opensAtText
+                      ? `Opens at ${shopSettings.opensAtText}`
+                      : 'Configure opening hours & pre-orders',
+                    done: hoursDone,
+                    target: 'settings' as AdminTopSection,
+                  },
+                ];
+                const completedCount = checklistSteps.filter((s) => s.done).length;
+
+                return (
+                  <div className="bg-surface rounded-2xl border border-border p-3.5 sm:p-4 space-y-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="text-sm font-bold text-text">
+                          First-Run Setup Checklist ({completedCount}/{checklistSteps.length})
+                        </p>
+                        <p className="text-xs text-muted">
+                          {completedCount === checklistSteps.length
+                            ? 'All essential store details are configured'
+                            : 'Complete these before taking live customer orders'}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setSetupChecklistOpen((v) => !v)}
+                        className="px-3 py-1.5 rounded-xl border border-border text-xs font-semibold text-text hover:bg-bg cursor-pointer shrink-0"
+                      >
+                        {setupChecklistOpen ? 'Hide' : 'Show'}
+                      </button>
+                    </div>
+                    {setupChecklistOpen && (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                        {checklistSteps.map((step) => (
+                          <button
+                            key={step.id}
+                            type="button"
+                            onClick={() => setActiveSection(step.target)}
+                            className="text-left p-2.5 rounded-xl border border-border bg-bg hover:border-primary/50 transition-colors flex items-start justify-between gap-2 cursor-pointer"
+                          >
+                            <div className="min-w-0">
+                              <p className="text-xs font-bold text-text flex items-center gap-1.5">
+                                <span
+                                  className={`inline-block w-2 h-2 rounded-full shrink-0 ${
+                                    step.done ? 'bg-emerald-500' : 'bg-amber-500'
+                                  }`}
+                                />
+                                <span className="truncate">{step.label}</span>
+                              </p>
+                              <p className="text-[11px] text-muted mt-0.5 break-words">
+                                {step.detail}
+                              </p>
+                            </div>
+                            <span className="text-[11px] font-bold text-primary shrink-0">
+                              {step.done ? 'Edit' : 'Set up'} →
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
 
               {/* b) 3 Summary Cards in a Row */}
               <div className="grid grid-cols-3 gap-2 sm:gap-3">
@@ -5084,7 +5222,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       required
                       value={newCouponCode}
                       onChange={(e) => setNewCouponCode(e.target.value)}
-                      placeholder="CODE (e.g. AANGAN20)"
+                      placeholder="CODE (e.g. KHANA20)"
                       className="min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs uppercase font-mono"
                     />
                     <input
@@ -5987,7 +6125,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                           const url = URL.createObjectURL(blob);
                           const a = document.createElement('a');
                           a.href = url;
-                          a.download = `aangan-report-${reportRange}.csv`;
+                          a.download = `khana-pina-report-${reportRange}.csv`;
                           a.click();
                           URL.revokeObjectURL(url);
                         }}
@@ -6309,6 +6447,47 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                           Online payments (UPI &amp; cards) are active for customer orders.
                         </p>
                       )}
+                    </div>
+                  </div>
+
+                  {/* Demo Data Cleanup Card */}
+                  <div className="pt-3 border-t border-border space-y-2.5">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <h4 className="text-xs font-bold text-text">Clean Seeded Demo Data</h4>
+                        <p className="text-[11px] text-muted">
+                          Remove sample demo orders, tracking links, test payments, and sample reviews from Firebase RTDB.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={isCleaningDemoData}
+                        onClick={async () => {
+                          setIsCleaningDemoData(true);
+                          try {
+                            const res = await adminFetch('/api/admin/cleanup-demo-data', {
+                              method: 'POST',
+                              body: JSON.stringify({ replaceLegacyDefaultAdmin: false }),
+                            });
+                            const data = await res.json().catch(() => ({}));
+                            if (!res.ok) {
+                              showToast(data.error || 'Cleanup failed');
+                              return;
+                            }
+                            const r = data.result || {};
+                            showToast(
+                              `Cleaned: ${r.removedOrders || 0} orders, ${r.removedPayments || 0} payments, ${r.removedReviews || 0} reviews`
+                            );
+                            await fetchBootstrap();
+                            triggerStoreRefresh();
+                          } finally {
+                            setIsCleaningDemoData(false);
+                          }
+                        }}
+                        className="min-h-[38px] px-3.5 rounded-xl border border-border bg-bg text-xs font-bold text-text hover:border-primary/60 cursor-pointer disabled:opacity-60"
+                      >
+                        {isCleaningDemoData ? 'Cleaning...' : 'Remove Demo Records'}
+                      </button>
                     </div>
                   </div>
                 </div>

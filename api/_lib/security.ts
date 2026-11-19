@@ -9,7 +9,7 @@ import { isStrictProductionOrLiveMode } from './firebaseAdmin.ts';
 
 export function getAdminJwtSecret(): string {
   const secret = process.env.ADMIN_JWT_SECRET;
-  if (!secret || secret.trim().length < 16 || secret === 'aangan_admin_jwt_secret_key_change_in_prod') {
+  if (!secret || secret.trim().length < 16 || secret === 'khanapina_admin_jwt_secret_key_change_in_prod') {
     if (isStrictProductionOrLiveMode()) {
       throw new Error(
         'SERVER CONFIG ERROR: ADMIN_JWT_SECRET must be set to a strong secret in production or live mode.'
@@ -25,6 +25,15 @@ export function isDemoModeEnabled(): boolean {
     return false;
   }
   return (process.env.DEMO_MODE ?? 'true') === 'true';
+}
+
+export function isCodOtpProviderConfigured(): boolean {
+  const hasWhatsapp = Boolean(
+    (process.env.WHATSAPP_CLOUD_API_TOKEN || '').trim() &&
+      (process.env.WHATSAPP_PHONE_NUMBER_ID || '').trim()
+  );
+  const hasMsg91 = Boolean((process.env.MSG91_AUTH_KEY || '').trim());
+  return hasWhatsapp || hasMsg91;
 }
 
 export function getRazorpayMode(): 'demo' | 'live' {
@@ -194,16 +203,16 @@ export function parseCookies(cookieHeader?: string): Record<string, string> {
 export function setAdminAuthCookies(res: Response, accessToken: string, refreshToken: string) {
   const secureFlag = process.env.NODE_ENV === 'production' ? '; Secure' : '';
   res.setHeader('Set-Cookie', [
-    `aangan_admin_access=${encodeURIComponent(accessToken)}; HttpOnly; Path=/; Max-Age=${ACCESS_TTL_SEC}; SameSite=Strict${secureFlag}`,
-    `aangan_admin_refresh=${encodeURIComponent(refreshToken)}; HttpOnly; Path=/; Max-Age=${REFRESH_TTL_SEC}; SameSite=Strict${secureFlag}`,
+    `khanapina_admin_access=${encodeURIComponent(accessToken)}; HttpOnly; Path=/; Max-Age=${ACCESS_TTL_SEC}; SameSite=Strict${secureFlag}`,
+    `khanapina_admin_refresh=${encodeURIComponent(refreshToken)}; HttpOnly; Path=/; Max-Age=${REFRESH_TTL_SEC}; SameSite=Strict${secureFlag}`,
   ]);
 }
 
 export function clearAdminAuthCookies(res: Response) {
   const secureFlag = process.env.NODE_ENV === 'production' ? '; Secure' : '';
   res.setHeader('Set-Cookie', [
-    `aangan_admin_access=; HttpOnly; Path=/; Max-Age=0; SameSite=Strict${secureFlag}`,
-    `aangan_admin_refresh=; HttpOnly; Path=/; Max-Age=0; SameSite=Strict${secureFlag}`,
+    `khanapina_admin_access=; HttpOnly; Path=/; Max-Age=0; SameSite=Strict${secureFlag}`,
+    `khanapina_admin_refresh=; HttpOnly; Path=/; Max-Age=0; SameSite=Strict${secureFlag}`,
   ]);
 }
 

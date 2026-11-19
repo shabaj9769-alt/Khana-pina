@@ -299,9 +299,20 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
   const [cancelOrderError, setCancelOrderError] = useState<string | null>(null);
 
   // Policy Modal
-  const [activePolicyModal, setActivePolicyModal] = useState<'privacy' | 'terms' | 'refund' | null>(
-    null
-  );
+  const [activePolicyModal, setActivePolicyModal] = useState<
+    'privacy' | 'terms' | 'refund' | 'shipping' | 'contact' | null
+  >(() => {
+    if (typeof window === 'undefined') return null;
+    const p = (window.location.pathname || '').toLowerCase();
+    const h = (window.location.hash || '').toLowerCase();
+    const target = `${p} ${h}`;
+    if (target.includes('privacy')) return 'privacy';
+    if (target.includes('terms')) return 'terms';
+    if (target.includes('refund') || target.includes('cancel')) return 'refund';
+    if (target.includes('shipping') || target.includes('delivery-policy')) return 'shipping';
+    if (target.includes('contact')) return 'contact';
+    return null;
+  });
 
   const menuSectionRef = useRef<HTMLElement | null>(null);
   const timeSlots = useMemo(() => generateShopHourSlots(), []);
@@ -797,7 +808,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
     const siteKey = homeData?.turnstileSiteKey;
     if (!siteKey || !cartDrawerOpen) return;
 
-    (window as unknown as Record<string, unknown>).onAanganTurnstileSuccess = (token: string) => {
+    (window as unknown as Record<string, unknown>).onKhanaPinaTurnstileSuccess = (token: string) => {
       setTurnstileToken(token);
     };
 
@@ -1324,7 +1335,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'x-aangan-webhook-sim': 'true',
+            'x-khanapina-webhook-sim': 'true',
           },
           body: JSON.stringify({
             eventId: `evt_fail_${Date.now()}`,
@@ -1373,7 +1384,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-aangan-webhook-sim': 'true',
+          'x-khanapina-webhook-sim': 'true',
         },
         body: JSON.stringify({
           eventId: `evt_cap_${Date.now()}`,
@@ -2537,7 +2548,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                     <div
                       className="cf-turnstile"
                       data-sitekey={homeData.turnstileSiteKey}
-                      data-callback="onAanganTurnstileSuccess"
+                      data-callback="onKhanaPinaTurnstileSuccess"
                     />
                   </div>
                 )}
@@ -4087,13 +4098,13 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
             </a>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-border/60 ">
+          <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 pt-2 border-t border-border/60 ">
             <button
               type="button"
               onClick={() => setActivePolicyModal('privacy')}
-              className="min-h-[44px] px-3 rounded-xl hover:bg-soft-tint text-[14px] font-semibold text-text cursor-pointer whitespace-nowrap"
+              className="min-h-[44px] px-2.5 rounded-xl hover:bg-soft-tint text-[13px] sm:text-[14px] font-semibold text-text cursor-pointer whitespace-nowrap"
             >
-              Privacy
+              Privacy Policy
             </button>
             <span aria-hidden="true" className="text-muted">
               ·
@@ -4101,9 +4112,9 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
             <button
               type="button"
               onClick={() => setActivePolicyModal('terms')}
-              className="min-h-[44px] px-3 rounded-xl hover:bg-soft-tint text-[14px] font-semibold text-text cursor-pointer whitespace-nowrap"
+              className="min-h-[44px] px-2.5 rounded-xl hover:bg-soft-tint text-[13px] sm:text-[14px] font-semibold text-text cursor-pointer whitespace-nowrap"
             >
-              Terms
+              Terms &amp; Conditions
             </button>
             <span aria-hidden="true" className="text-muted">
               ·
@@ -4111,9 +4122,29 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
             <button
               type="button"
               onClick={() => setActivePolicyModal('refund')}
-              className="min-h-[44px] px-3 rounded-xl hover:bg-soft-tint text-[14px] font-semibold text-text cursor-pointer whitespace-nowrap"
+              className="min-h-[44px] px-2.5 rounded-xl hover:bg-soft-tint text-[13px] sm:text-[14px] font-semibold text-text cursor-pointer whitespace-nowrap"
             >
-              Help
+              Refund &amp; Cancellation
+            </button>
+            <span aria-hidden="true" className="text-muted">
+              ·
+            </span>
+            <button
+              type="button"
+              onClick={() => setActivePolicyModal('shipping')}
+              className="min-h-[44px] px-2.5 rounded-xl hover:bg-soft-tint text-[13px] sm:text-[14px] font-semibold text-text cursor-pointer whitespace-nowrap"
+            >
+              Shipping &amp; Delivery
+            </button>
+            <span aria-hidden="true" className="text-muted">
+              ·
+            </span>
+            <button
+              type="button"
+              onClick={() => setActivePolicyModal('contact')}
+              className="min-h-[44px] px-2.5 rounded-xl hover:bg-soft-tint text-[13px] sm:text-[14px] font-semibold text-text cursor-pointer whitespace-nowrap"
+            >
+              Contact Us
             </button>
             <span aria-hidden="true" className="text-muted">
               ·
@@ -4641,15 +4672,25 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
 
       {/* Policy Modal */}
       {activePolicyModal && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 p-0 sm:p-4">
-          <div className="w-full max-w-lg rounded-t-3xl sm:rounded-3xl bg-surface text-text border border-border p-6 space-y-4 pb-safe animate-sheet-up">
-            <div className="flex items-center justify-between gap-2">
+        <div
+          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 p-0 sm:p-4"
+          onClick={() => setActivePolicyModal(null)}
+        >
+          <div
+            className="w-full max-w-lg max-h-[85vh] flex flex-col rounded-t-3xl sm:rounded-3xl bg-surface text-text border border-border p-6 space-y-4 pb-safe animate-sheet-up"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between gap-2 shrink-0">
               <h3 className="font-display text-[18px] font-extrabold text-text break-words">
                 {activePolicyModal === 'privacy'
-                  ? 'Guest Privacy Policy'
+                  ? 'Privacy Policy'
                   : activePolicyModal === 'terms'
-                  ? 'Terms of Service'
-                  : 'Help, Support & Refund Policy'}
+                  ? 'Terms & Conditions'
+                  : activePolicyModal === 'refund'
+                  ? 'Refund & Cancellation Policy'
+                  : activePolicyModal === 'shipping'
+                  ? 'Shipping & Delivery Policy'
+                  : 'Contact Us'}
               </h3>
               <button
                 type="button"
@@ -4660,27 +4701,98 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                 <X className="w-5 h-5" />
               </button>
             </div>
-            <div className="text-[14px] text-muted space-y-2 leading-relaxed">
+            <div className="text-[14px] text-muted space-y-3 leading-relaxed overflow-y-auto pr-1">
               {activePolicyModal === 'privacy' && (
-                <p>
-                  We operate in Guest Mode and collect only your name, 10-digit phone number, and delivery coordinates to fulfill your order. Card data is never stored on our servers.
-                </p>
+                <>
+                  <p>
+                    <strong className="text-text">{settings.shopName}</strong> operates in Guest Checkout mode and collects only the details required to prepare and deliver your food order: your name, 10-digit mobile number, delivery address, and GPS location coordinates.
+                  </p>
+                  <p>
+                    Online payments are processed securely by Razorpay. We never store your debit/credit card numbers, UPI PINs, or net-banking credentials on our servers.
+                  </p>
+                  <p>
+                    Your order history tokens are stored locally on your device for quick tracking. We do not sell or rent customer contact details to third parties.
+                  </p>
+                </>
               )}
               {activePolicyModal === 'terms' && (
-                <p>
-                  Deliveries are fulfilled within our local delivery radius. Doorstep delivery requires the 4-digit OTP shown on your tracking link.
-                </p>
+                <>
+                  <p>
+                    By placing an order on <strong className="text-text">{settings.shopName}</strong>, you confirm that your delivery address and phone number are accurate and within our active delivery radius ({deliveryZone.radiusKm} km).
+                  </p>
+                  <p>
+                    All menu prices are in Indian Rupees (INR). Applicable GST ({settings.gstPercent}%) and distance-based delivery fees are shown transparently before checkout.
+                  </p>
+                  <p>
+                    For security, doorstep handover requires sharing the 4-digit Delivery OTP shown on your live order tracking page with our delivery partner.
+                  </p>
+                </>
               )}
               {activePolicyModal === 'refund' && (
-                <p>
-                  Unaccepted orders are automatically cancelled after {settings.autoCancelUnacceptedMins} minutes and refunded in full via the Razorpay Refunds API. For instant support, contact {settings.supportPhone}.
-                </p>
+                <>
+                  <p>
+                    <strong className="text-text">Customer Cancellation:</strong> You can cancel an order directly from your tracking page or order list while the order is still in <em>Placed</em> status (before kitchen acceptance). Once preparation starts, cancellations require calling the kitchen directly at {settings.supportPhone}.
+                  </p>
+                  <p>
+                    <strong className="text-text">Auto-Cancellation &amp; Refunds:</strong> Unaccepted orders are automatically cancelled after {settings.autoCancelUnacceptedMins} minutes, and unpaid online checkouts expire after 10 minutes. Any confirmed online payment on a cancelled or rejected order is refunded in full to the original payment method via Razorpay within 5–7 business days.
+                  </p>
+                </>
+              )}
+              {activePolicyModal === 'shipping' && (
+                <>
+                  <p>
+                    <strong className="text-text">{settings.shopName}</strong> prepares fresh orders and delivers directly within <strong className="text-text">{deliveryZone.radiusKm} km</strong> of our kitchen ({deliveryZone.shopAddress}).
+                  </p>
+                  <p>
+                    Typical preparation and doorstep delivery takes 30–55 minutes depending on dish preparation time, distance, and kitchen load. Scheduled pre-orders are delivered around your chosen time slot.
+                  </p>
+                  <p>
+                    Minimum order value is ₹{settings.minOrderAmount}. Delivery charges are calculated automatically based on distance prior to payment.
+                  </p>
+                </>
+              )}
+              {activePolicyModal === 'contact' && (
+                <>
+                  <p>
+                    <strong className="text-text">{settings.shopName}</strong>
+                  </p>
+                  <p>
+                    <strong className="text-text">Phone / Support:</strong>{' '}
+                    <a
+                      href={`tel:${(settings.aboutPage?.supportPhone || settings.supportPhone).replace(/[^+\d]/g, '')}`}
+                      className="text-primary font-semibold underline"
+                    >
+                      {settings.aboutPage?.supportPhone || settings.supportPhone}
+                    </a>
+                  </p>
+                  <p>
+                    <strong className="text-text">Email:</strong>{' '}
+                    <a
+                      href="mailto:support@khanapina.in"
+                      className="text-primary font-semibold underline"
+                    >
+                      support@khanapina.in
+                    </a>
+                  </p>
+                  <p>
+                    <strong className="text-text">Kitchen Address:</strong>{' '}
+                    {settings.aboutPage?.address || deliveryZone.shopAddress}
+                    {settings.cityArea?.trim() ? `, ${settings.cityArea.trim()}` : ''}
+                  </p>
+                  <p>
+                    <strong className="text-text">Operating Hours:</strong>{' '}
+                    {settings.aboutPage?.openingHours || settings.weeklyTimings}
+                  </p>
+                  <p className="text-[13px] tabular-nums">
+                    FSSAI License No.: {settings.fssaiNumber}
+                  </p>
+                </>
               )}
             </div>
             <button
               type="button"
               onClick={() => setActivePolicyModal(null)}
-              className="w-full min-h-[46px] rounded-2xl bg-primary text-primary-contrast text-[15px] font-extrabold whitespace-nowrap cursor-pointer"
+              className="w-full min-h-[46px] rounded-2xl bg-primary text-primary-contrast text-[15px] font-extrabold whitespace-nowrap cursor-pointer shrink-0"
             >
               Close
             </button>

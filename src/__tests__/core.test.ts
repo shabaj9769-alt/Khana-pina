@@ -23,6 +23,8 @@ import {
 } from '../../server';
 import { hashPasswordScrypt } from '../../api/_lib/security';
 import { getRtdb } from '../../api/_lib/firebaseAdmin';
+import { getInitialDatabaseState } from '../../api/_lib/store';
+import paymentsHandler from '../../api/payments';
 import riderHandler from '../../api/rider';
 import {
   formatOrderDate,
@@ -107,7 +109,7 @@ async function seedTestOrderAndPayment(overrides: {
   return { order, payment };
 }
 
-describe('Aangan Kitchen Core & Bypass-Proof Razorpay Suite', () => {
+describe('Khana Pina Core & Bypass-Proof Razorpay Suite', () => {
   beforeEach(() => {
     loginAttemptsByEmail.clear();
     loginAttemptsByIp.clear();
@@ -382,7 +384,7 @@ describe('Aangan Kitchen Core & Bypass-Proof Razorpay Suite', () => {
   });
 
   it('8. Login brute-force lockout after 5 failed attempts & WCAG AA theme presets', async () => {
-    const email = 'brute@aangan.in';
+    const email = 'brute@khanapina.in';
     const ip = '192.0.2.55';
 
     expect(isLoginLocked(loginAttemptsByEmail, email)).toBe(false);
@@ -595,5 +597,79 @@ describe('Aangan Kitchen Core & Bypass-Proof Razorpay Suite', () => {
     const adjustedNow = getServerNow();
     expect(adjustedNow - Date.now()).toBeGreaterThan(9 * 60 * 1000);
     resetServerTimeOffset();
+  });
+
+  it('13. /api/payments/create-test-signature is strictly disabled (403) in live/production mode', async () => {
+    const prevMode = process.env.RAZORPAY_MODE;
+    process.env.RAZORPAY_MODE = 'live';
+    try {
+      let statusCode = 200;
+      let jsonBody: any = null;
+      const req = {
+        method: 'POST',
+        originalUrl: '/api/payments/create-test-signature',
+        url: '/api/payments/create-test-signature',
+        headers: {},
+        body: { razorpayOrderId: 'order_live_test_123' },
+        socket: { remoteAddress: '127.0.0.1' },
+      } as any;
+      const res = {
+        setHeader: () => res,
+        status: (code: number) => {
+          statusCode = code;
+          return res;
+        },
+        json: (payload: any) => {
+          jsonBody = payload;
+          return res;
+        },
+        end: () => res,
+      } as any;
+      await paymentsHandler(req, res);
+      expect(statusCode).toBe(403);
+      expect(jsonBody?.error).toMatch(/disabled/i);
+    } finally {
+      if (prevMode === undefined) delete process.env.RAZORPAY_MODE;
+      else process.env.RAZORPAY_MODE = prevMode;
+    }
+  });
+
+  it('14. Live seeding requires ADMIN_BOOTSTRAP_EMAIL/PASSWORD and skips fake demo orders/reviews/riders', () => {
+    const prevVitest = process.env.VITEST;
+    const prevMode = process.env.RAZORPAY_MODE;
+    const prevEmail = process.env.ADMIN_BOOTSTRAP_EMAIL;
+    const prevPass = process.env.ADMIN_BOOTSTRAP_PASSWORD;
+
+    delete process.env.VITEST;
+    process.env.RAZORPAY_MODE = 'live';
+    delete process.env.ADMIN_BOOTSTRAP_EMAIL;
+    delete process.env.ADMIN_BOOTSTRAP_PASSWORD;
+
+    try {
+      expect(() => getInitialDatabaseState({ forSeeding: true })).toThrow(
+        /ADMIN_BOOTSTRAP_EMAIL/
+      );
+
+      process.env.ADMIN_BOOTSTRAP_EMAIL = 'liveowner@khanapina.in';
+      process.env.ADMIN_BOOTSTRAP_PASSWORD = 'StrongLivePassword99!';
+      const liveState = getInitialDatabaseState({ forSeeding: true });
+      expect(liveState.settings.shopName).toBe('Khana Pina');
+      expect(liveState.orders).toEqual([]);
+      expect(liveState.payments).toEqual([]);
+      expect(liveState.reviews).toEqual([]);
+      expect(liveState.deliveryBoys).toEqual([]);
+      expect(liveState.customers).toEqual({});
+      expect(liveState.adminUsers).toHaveLength(1);
+      expect(liveState.adminUsers[0].email).toBe('liveowner@khanapina.in');
+      expect(liveState.adminUsers[0].mustChangePassword).toBe(false);
+    } finally {
+      if (prevVitest !== undefined) process.env.VITEST = prevVitest;
+      if (prevMode === undefined) delete process.env.RAZORPAY_MODE;
+      else process.env.RAZORPAY_MODE = prevMode;
+      if (prevEmail === undefined) delete process.env.ADMIN_BOOTSTRAP_EMAIL;
+      else process.env.ADMIN_BOOTSTRAP_EMAIL = prevEmail;
+      if (prevPass === undefined) delete process.env.ADMIN_BOOTSTRAP_PASSWORD;
+      else process.env.ADMIN_BOOTSTRAP_PASSWORD = prevPass;
+    }
   });
 });

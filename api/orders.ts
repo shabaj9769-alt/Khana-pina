@@ -2,12 +2,13 @@ import crypto from 'crypto';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { OrderRecord, PaymentMethod, PaymentRecord } from '../src/types.ts';
-import { getRtdb } from './_lib/firebaseAdmin.ts';
+import { getRtdb, isStrictProductionOrLiveMode } from './_lib/firebaseAdmin.ts';
 import { createRazorpayGatewayOrder } from './_lib/razorpay.ts';
 import {
   applyCorsAndSecurityHeaders,
   getClientIp,
   getRazorpayConfig,
+  isCodOtpProviderConfigured,
   isDemoModeEnabled,
   isRazorpayConfigured,
   verifyTurnstileToken,
@@ -65,6 +66,88 @@ function getNormalizedPath(req: Request): string {
   return raw.replace(/\/+$/, '') || '/api/orders';
 }
 
+async function sendCodOtpViaProvider(
+  cleanPhone: string,
+  otp: string
+): Promise<{ sent: boolean; channel?: 'whatsapp' | 'msg91'; error?: string }> {
+  const waToken = (process.env.WHATSAPP_CLOUD_API_TOKEN || '').trim();
+  const waPhoneId = (process.env.WHATSAPP_PHONE_NUMBER_ID || '').trim();
+
+  if (waToken && waPhoneId) {
+    try {
+      const waTemplate = (process.env.WHATSAPP_OTP_TEMPLATE_NAME || '').trim();
+      const bodyPayload = waTemplate
+        ? {
+            messaging_product: 'whatsapp',
+            to: `91${cleanPhone}`,
+            type: 'template',
+            template: {
+              name: waTemplate,
+              language: { code: 'en' },
+              components: [
+                {
+                  type: 'body',
+                  parameters: [{ type: 'text', text: otp }],
+                },
+              ],
+            },
+          }
+        : {
+            messaging_product: 'whatsapp',
+            to: `91${cleanPhone}`,
+            type: 'text',
+            text: {
+              body: `Your Khana Pina Cash on Delivery verification OTP is ${otp}. Valid for 5 minutes.`,
+            },
+          };
+
+      const resp = await fetch(`https://graph.facebook.com/v20.0/${waPhoneId}/messages`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${waToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(bodyPayload),
+      });
+      if (resp.ok) {
+        return { sent: true, channel: 'whatsapp' };
+      }
+      return { sent: false, error: `WhatsApp OTP request failed (HTTP ${resp.status})` };
+    } catch {
+      return { sent: false, error: 'WhatsApp OTP network request failed' };
+    }
+  }
+
+  const msg91Key = (process.env.MSG91_AUTH_KEY || '').trim();
+  if (msg91Key) {
+    try {
+      const templateId = (process.env.MSG91_TEMPLATE_ID || '').trim();
+      const params = new URLSearchParams({
+        mobile: `91${cleanPhone}`,
+        otp,
+      });
+      if (templateId) {
+        params.set('template_id', templateId);
+      }
+      const resp = await fetch(`https://control.msg91.com/api/v5/otp?${params.toString()}`, {
+        method: 'POST',
+        headers: {
+          authkey: msg91Key,
+          'Content-Type': 'application/json',
+        },
+      });
+      if (resp.ok) {
+        return { sent: true, channel: 'msg91' };
+      }
+      return { sent: false, error: `MSG91 OTP request failed (HTTP ${resp.status})` };
+    } catch {
+      return { sent: false, error: 'MSG91 OTP network request failed' };
+    }
+  }
+
+  return { sent: false, error: 'No SMS or WhatsApp OTP provider configured' };
+}
+
 export default async function handler(req: Request, res: Response) {
   if (applyCorsAndSecurityHeaders(req, res)) return;
 
@@ -117,19 +200,38 @@ export default async function handler(req: Request, res: Response) {
         return;
       }
 
+      if (isStrictProductionOrLiveMode() && !isCodOtpProviderConfigured()) {
+        res.status(503).json({
+          error:
+            'COD phone OTP service is not configured. Please place your Cash on Delivery order directly or pay online.',
+        });
+        return;
+      }
+
       const cleanPhone = String(req.body?.phone || '').replace(/\D/g, '');
       if (!/^[6-9]\d{9}$/.test(cleanPhone)) {
         res.status(400).json({ error: 'Enter a valid 10-digit mobile number first' });
         return;
       }
       const sessionId = `cod_otp_${crypto.randomBytes(8).toString('hex')}`;
-      const otp = String(Math.floor(1000 + Math.random() * 9000));
+      const otp = String(crypto.randomInt(1000, 10000));
       await saveCodOtpSession({
         sessionId,
         phone: cleanPhone,
         otp,
         expiresAt: Date.now() + 5 * 60 * 1000,
       });
+
+      if (isCodOtpProviderConfigured()) {
+        const deliveryResult = await sendCodOtpViaProvider(cleanPhone, otp);
+        if (!deliveryResult.sent && isStrictProductionOrLiveMode()) {
+          res.status(502).json({
+            error: deliveryResult.error || 'Could not send OTP to your phone. Please try again.',
+          });
+          return;
+        }
+      }
+
       res.json({
         sessionId,
         demoOtp: isDemoModeEnabled() ? otp : undefined,
@@ -434,7 +536,10 @@ export default async function handler(req: Request, res: Response) {
       }
 
       const method: PaymentMethod = paymentMethod === 'COD' ? 'COD' : 'RAZORPAY';
-      if (method === 'COD' && db.settings.requirePhoneOtpForCod) {
+      const codOtpRequiredNow =
+        db.settings.requirePhoneOtpForCod &&
+        (isDemoModeEnabled() || isCodOtpProviderConfigured());
+      if (method === 'COD' && codOtpRequiredNow) {
         const matchedOtp = await findVerifiedCodOtpSession(cleanPhone, codOtpToken);
         if (!matchedOtp) {
           res.status(400).json({
@@ -522,7 +627,7 @@ export default async function handler(req: Request, res: Response) {
       const orderNumber = `AAN-${orderSeq}`;
       const orderId = `ord_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
       const trackingToken = `trk_${crypto.randomBytes(16).toString('hex')}`;
-      const deliveryOtp = String(Math.floor(1000 + Math.random() * 9000));
+      const deliveryOtp = String(crypto.randomInt(1000, 10000));
       const nowIso = new Date().toISOString();
 
       // Requirement 2: Claim coupon usage via Firebase Admin SDK transaction

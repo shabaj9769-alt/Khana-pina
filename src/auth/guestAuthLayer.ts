@@ -40,12 +40,12 @@ export interface CustomerAuthAdapter {
 }
 
 const STORAGE_KEYS = {
-  CART: 'aangan_guest_cart_v1',
-  FAVOURITES: 'aangan_guest_favs_v1',
-  PROFILE: 'aangan_guest_profile_v2',
-  RECENT_TOKENS: 'aangan_recent_order_tokens_v1',
-  THEME_MODE: 'aangan_guest_theme_mode_v1',
-  LANGUAGE: 'aangan_guest_lang_v1',
+  CART: 'khanapina_guest_cart_v1',
+  FAVOURITES: 'khanapina_guest_favs_v1',
+  PROFILE: 'khanapina_guest_profile_v2',
+  RECENT_TOKENS: 'khanapina_recent_order_tokens_v1',
+  THEME_MODE: 'khanapina_guest_theme_mode_v1',
+  LANGUAGE: 'khanapina_guest_lang_v1',
 };
 
 const DEFAULT_PROFILE: GuestProfile = {

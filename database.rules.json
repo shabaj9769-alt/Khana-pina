@@ -69,6 +69,66 @@
     "auditLogs": {
       ".read": false,
       ".write": false
+    },
+    "adminUsers": {
+      ".read": false,
+      ".write": false
+    },
+    "adminSessions": {
+      ".read": false,
+      ".write": false
+    },
+    "blockedList": {
+      ".read": false,
+      ".write": false
+    },
+    "broadcasts": {
+      ".read": false,
+      ".write": false
+    },
+    "banners": {
+      ".read": false,
+      ".write": false
+    },
+    "homeSections": {
+      ".read": false,
+      ".write": false
+    },
+    "couponUsages": {
+      ".read": false,
+      ".write": false
+    },
+    "refunds": {
+      ".read": false,
+      ".write": false
+    },
+    "reviews": {
+      ".read": false,
+      ".write": false
+    },
+    "deliveryZone": {
+      ".read": false,
+      ".write": false
+    },
+    "counters": {
+      ".read": false,
+      ".write": false
+    },
+    "codOtpSessions": {
+      ".read": false,
+      ".write": false
+    },
+    "rateLimits": {
+      ".read": false,
+      ".write": false
+    },
+    "loginAttempts": {
+      ".read": false,
+      ".write": false
+    },
+    "mediaUploads": {
+      ".read": false,
+      ".write": false
     }
   }
 }

@@ -50,7 +50,7 @@ export function getFirebaseClientInstances(
           : initializeApp({
               databaseURL: cfg.databaseURL,
               apiKey: cfg.apiKey || 'AIzaSyDummyKeyForRtdbOnly',
-              projectId: cfg.projectId || 'aangan-rtdb',
+              projectId: cfg.projectId || 'khanapina-rtdb',
             });
     }
     if (!cachedDb) {

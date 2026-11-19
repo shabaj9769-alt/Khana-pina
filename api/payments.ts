@@ -45,6 +45,16 @@ export default async function handler(req: Request, res: Response) {
   const rawPath = (req.originalUrl || req.url || '').split('?')[0].replace(/\/+$/, '');
   const clientIp = getClientIp(req);
 
+  if (rawPath.endsWith('/create-test-signature')) {
+    const cfg = getRazorpayConfig();
+    if (isStrictProductionOrLiveMode() || cfg.mode !== 'demo' || !isDemoModeEnabled()) {
+      res.status(403).json({
+        error: 'Test signature endpoint is strictly disabled in production and live Razorpay mode.',
+      });
+      return;
+    }
+  }
+
   if (!isRazorpayConfigured()) {
     if (rawPath.endsWith('/webhook')) {
       res.status(200).json({ status: 'ignored_unconfigured', message: 'Razorpay is not configured.' });
@@ -62,7 +72,7 @@ export default async function handler(req: Request, res: Response) {
       const rawBuffer = await readRawRequestBody(req);
       const signatureHeader = req.headers['x-razorpay-signature'] as string | undefined;
       const eventIdHeader = req.headers['x-razorpay-event-id'] as string | undefined;
-      const demoSimHeader = req.headers['x-aangan-webhook-sim'] as string | undefined;
+      const demoSimHeader = req.headers['x-khanapina-webhook-sim'] as string | undefined;
 
       const result = await processRazorpayWebhookAuthoritative({
         rawBody: rawBuffer,

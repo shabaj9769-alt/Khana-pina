@@ -77,7 +77,7 @@ export function buildNewOrderTelegramMessage(order: OrderRecord): string {
     order.paymentMethod === 'COD' ? 'COD' : `Online-${order.paymentStatus}`;
 
   const lines: string[] = [
-    `🍽 New Order #${order.orderNumber}`,
+    `🍽 New Order #${order.orderNumber} (Khana Pina)`,
     `👤 ${order.customerName}`,
     `📞 ${order.customerPhone}`,
     `📍 ${order.deliveryAddress}`,
@@ -113,7 +113,7 @@ export function buildCancelledOrderTelegramMessage(
 ): string {
   const adminLine = `🔗 Admin: ${getAdminUrl()}`;
   const lines: string[] = [
-    `❌ Order Cancelled #${order.orderNumber}`,
+    `❌ Order Cancelled #${order.orderNumber} (Khana Pina)`,
     `Cancelled by: ${cancelledByLabel}`,
     `Reason: ${order.cancelReason || 'Not specified'}`,
     `👤 ${order.customerName}`,
@@ -142,7 +142,7 @@ export function buildDeliveredOrderTelegramMessage(
   const paymentLabel =
     order.paymentMethod === 'COD' ? 'COD' : `Online-${order.paymentStatus}`;
   const lines: string[] = [
-    `✅ Order Delivered #${order.orderNumber}`,
+    `✅ Order Delivered #${order.orderNumber} (Khana Pina)`,
     `Delivered by: ${deliveredByLabel}`,
     `👤 ${order.customerName}`,
     `Total: Rs ${order.grandTotal}`,

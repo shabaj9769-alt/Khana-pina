@@ -326,7 +326,7 @@ export function cacheStorefrontTheme(
   const resolved = resolveStorefrontThemeTokens(themeConfig, guestModeOverride);
   try {
     localStorage.setItem(
-      'aangan_theme_cache_v1',
+      'khanapina_theme_cache_v1',
       JSON.stringify({
         bg: resolved.bg,
         surface: resolved.surface,
@@ -379,7 +379,7 @@ export function applyStorefrontThemeToDocument(
 
   // On-demand load secondary theme font pairs only when selected by admin
   if (cfg.fontPair !== 'fraunces-jakarta') {
-    const linkId = `aangan-dynamic-font-${cfg.fontPair}`;
+    const linkId = `khanapina-dynamic-font-${cfg.fontPair}`;
     if (!document.getElementById(linkId)) {
       const link = document.createElement('link');
       link.id = linkId;
@@ -395,7 +395,7 @@ export function applyStorefrontThemeToDocument(
   root.style.setProperty('--color-bg', bg);
   root.style.setProperty('--color-surface', surface);
   root.style.setProperty('--color-soft-tint', softTint);
-  root.style.setProperty('--aangan-soft-tint', softTint);
+  root.style.setProperty('--kp-soft-tint', softTint);
   root.style.setProperty('--color-text', text);
   root.style.setProperty('--color-muted', muted);
   root.style.setProperty('--color-border', border);

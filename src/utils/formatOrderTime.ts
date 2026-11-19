@@ -117,7 +117,7 @@ export function installServerTimeFetchSync(): () => void {
     return () => {};
   }
   const originalFetch = window.fetch;
-  if ((originalFetch as any).__aanganServerTimeWrapped) {
+  if ((originalFetch as any).__khanaPinaServerTimeWrapped) {
     return () => {};
   }
   const desc = Object.getOwnPropertyDescriptor(window, 'fetch');
@@ -131,7 +131,7 @@ export function installServerTimeFetchSync(): () => void {
     }
     return res;
   };
-  (wrappedFetch as any).__aanganServerTimeWrapped = true;
+  (wrappedFetch as any).__khanaPinaServerTimeWrapped = true;
   try {
     window.fetch = wrappedFetch;
   } catch {

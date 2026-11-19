@@ -54,7 +54,7 @@ async function runMigration() {
       deliveryZone: { ...sourceState.deliveryZone, ...(parsed.deliveryZone || {}) },
     };
   } else {
-    console.log('No legacy data/store.json file found; seeding initial Aangan Kitchen state to Firebase RTDB...');
+    console.log('No legacy data/store.json file found; seeding initial Khana Pina state to Firebase RTDB...');
   }
 
   const trackingMap: Record<string, PublicTrackingProjection> = {};

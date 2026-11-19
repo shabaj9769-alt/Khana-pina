@@ -14,8 +14,8 @@ export default async function handler(req: Request, res: Response) {
   try {
     await ensureHomeDataLoaded();
 
-    const shopName = (db.settings.shopName || 'Food Ordering').trim() || 'Food Ordering';
-    const shortName = shopName.slice(0, 12).trim() || 'Food App';
+    const shopName = (db.settings.shopName || 'Khana Pina').trim() || 'Khana Pina';
+    const shortName = shopName.slice(0, 12).trim() || 'Khana Pina';
     const theme = db.settings.theme || DEFAULT_STOREFRONT_THEME;
     const themeColor = theme.pwaThemeColor || theme.primaryColor || '#E23744';
     const backgroundColor = theme.mode === 'dark' ? '#121212' : '#FFFFFF';
@@ -60,9 +60,9 @@ export default async function handler(req: Request, res: Response) {
   } catch {
     res.status(200).json({
       id: '/',
-      name: 'Food Ordering',
-      short_name: 'Food App',
-      description: 'Direct Food Ordering & Live Tracking',
+      name: 'Khana Pina',
+      short_name: 'Khana Pina',
+      description: 'Khana Pina — Direct Food Ordering & Live Tracking',
       theme_color: '#E23744',
       background_color: '#FFFFFF',
       display: 'standalone',

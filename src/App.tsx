@@ -75,7 +75,7 @@ export default function App() {
   const [lang, setLang] = useState<'en' | 'hi'>(() => guestAuthLayer.getGuestLanguage());
 
   const [headerMeta, setHeaderMeta] = useState(() => ({
-    shopName: getCachedShopName() || 'Food Ordering',
+    shopName: getCachedShopName() || 'Khana Pina',
     isOpen: true,
     busyMode: false,
     opensAtText: '11:00 AM',
