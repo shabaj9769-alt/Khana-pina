@@ -47,17 +47,17 @@ import {
   ShopSettings,
   DeliveryZone,
   Coupon,
-  AuditLogRecord,
   AdminRole,
   CustomerRecord,
   HomeSection,
   Banner,
   AdminUserPublic,
-  AdminSessionRecord,
   PaymentRecord,
   RefundRecord,
   StorefrontThemeConfig,
   ThemeMode,
+  ItemVariant,
+  ItemAddon,
 } from '../types';
 import {
   DEFAULT_STOREFRONT_THEME,
@@ -128,7 +128,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const [marketingSubTab, setMarketingSubTab] = useState<'coupons' | 'broadcast'>('coupons');
   const [deliverySubTab, setDeliverySubTab] = useState<'riders' | 'zone'>('riders');
   const [financeSubTab, setFinanceSubTab] = useState<'payments' | 'reports'>('payments');
-  const [settingsSubTab, setSettingsSubTab] = useState<'shop' | 'users' | 'audit'>('shop');
+  const [settingsSubTab, setSettingsSubTab] = useState<'shop' | 'users'>('shop');
 
   const [moreDrawerOpen, setMoreDrawerOpen] = useState(false);
   const [notificationDrawerOpen, setNotificationDrawerOpen] = useState(false);
@@ -140,7 +140,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const [categories, setCategories] = useState<Category[]>([]);
   const [deliveryBoys, setDeliveryBoys] = useState<DeliveryBoy[]>([]);
   const [coupons, setCoupons] = useState<Coupon[]>([]);
-  const [auditLogs, setAuditLogs] = useState<AuditLogRecord[]>([]);
   const [customers, setCustomers] = useState<CustomerRecord[]>([]);
   const [shopSettings, setShopSettings] = useState<ShopSettings | null>(null);
   const [deliveryZone, setDeliveryZone] = useState<DeliveryZone | null>(null);
@@ -149,7 +148,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const [payments, setPayments] = useState<PaymentRecord[]>([]);
   const [refunds, setRefunds] = useState<RefundRecord[]>([]);
   const [adminUsers, setAdminUsers] = useState<AdminUserPublic[]>([]);
-  const [adminSessions, setAdminSessions] = useState<AdminSessionRecord[]>([]);
   const [broadcastProviderConfigured, setBroadcastProviderConfigured] = useState(false);
   const [razorpayConfigured, setRazorpayConfigured] = useState<boolean>(false);
   const [broadcastMessage, setBroadcastMessage] = useState('');
@@ -202,8 +200,12 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     spiceLevel: 'Mild' | 'Medium' | 'Fiery';
     prepTimeMins: number;
     imageUrl: string;
-    variantsJson: string;
-    addonsJson: string;
+    variants: Array<{ id: string; name: string; price: string; inStock: boolean }>;
+    addons: Array<{ id: string; name: string; price: string; isVeg: boolean; inStock: boolean }>;
+    isBestseller: boolean;
+    isNewArrival: boolean;
+    isTodaysSpecial: boolean;
+    isCombo: boolean;
   }>({
     name: '',
     description: '',
@@ -214,8 +216,12 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     spiceLevel: 'Medium',
     prepTimeMins: 25,
     imageUrl: '',
-    variantsJson: '[]',
-    addonsJson: '[]',
+    variants: [],
+    addons: [],
+    isBestseller: false,
+    isNewArrival: false,
+    isTodaysSpecial: false,
+    isCombo: false,
   });
 
   // Category Form State
@@ -265,9 +271,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const [reportStartDate, setReportStartDate] = useState('');
   const [reportEndDate, setReportEndDate] = useState('');
 
-  // Audit Log Filter State
-  const [auditSearch, setAuditSearch] = useState('');
-
   // User Management & Password Change State
   const [newUserEmail, setNewUserEmail] = useState('');
   const [newUserName, setNewUserName] = useState('');
@@ -279,14 +282,11 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const [newPasswordInput, setNewPasswordInput] = useState('');
   const [confirmPasswordInput, setConfirmPasswordInput] = useState('');
 
-  const [totpSetupData, setTotpSetupData] = useState<{
-    secretHex: string;
-    currentDemoCode?: string;
-  } | null>(null);
-  const [totpVerifyCode, setTotpVerifyCode] = useState('');
-
   const [resetPassModalUser, setResetPassModalUser] = useState<AdminUserPublic | null>(null);
   const [resetPassNewVal, setResetPassNewVal] = useState('');
+
+  const formatRoleLabel = (role: AdminRole) =>
+    role === 'owner' ? 'Owner' : role === 'manager' ? 'Manager' : 'Staff';
 
   const showToast = (msg: string) => {
     setToastMsg(msg);
@@ -387,7 +387,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       setCategories(data.categories || []);
       setDeliveryBoys(data.deliveryBoys || []);
       setCoupons(data.coupons || []);
-      setAuditLogs(data.auditLogs || []);
       setCustomers(data.customers || []);
       setShopSettings(data.settings || null);
       setDeliveryZone(data.deliveryZone || null);
@@ -419,7 +418,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         }
       }
       if (data.adminUsers) setAdminUsers(data.adminUsers);
-      if (data.adminSessions) setAdminSessions(data.adminSessions);
     } catch (e) {
       console.error('Admin bootstrap failed:', e);
     } finally {
@@ -495,33 +493,82 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     }
   };
 
-  // Image File Upload helper (converts file to base64 and calls /api/admin/upload-image)
-  const uploadImageFile = async (file: File, prefix: string): Promise<string | null> => {
-    if (file.size > 2.8 * 1024 * 1024) {
-      showToast('Image file must be under 3 MB');
-      return null;
-    }
-    setIsUploadingImage(true);
-    try {
-      const dataUrl = await new Promise<string>((resolve, reject) => {
+  // Compress image automatically before upload using canvas
+  const compressImageToDataUrl = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      if (file.type === 'image/svg+xml') {
         const reader = new FileReader();
         reader.onload = () => resolve(String(reader.result));
         reader.onerror = () => reject(new Error('File read failed'));
         reader.readAsDataURL(file);
-      });
+        return;
+      }
+
+      const objectUrl = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const maxDim = 1080;
+          let { width, height } = img;
+          if (width > maxDim || height > maxDim) {
+            if (width >= height) {
+              height = Math.max(1, Math.round((height * maxDim) / width));
+              width = maxDim;
+            } else {
+              width = Math.max(1, Math.round((width * maxDim) / height));
+              height = maxDim;
+            }
+          }
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.max(1, width);
+          canvas.height = Math.max(1, height);
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            URL.revokeObjectURL(objectUrl);
+            reject(new Error('Canvas unavailable'));
+            return;
+          }
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          let dataUrl = canvas.toDataURL('image/webp', 0.8);
+          if (!dataUrl.startsWith('data:image/webp')) {
+            dataUrl = canvas.toDataURL('image/jpeg', 0.82);
+          }
+          URL.revokeObjectURL(objectUrl);
+          resolve(dataUrl);
+        } catch (err) {
+          URL.revokeObjectURL(objectUrl);
+          reject(err);
+        }
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(objectUrl);
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = () => reject(new Error('File read failed'));
+        reader.readAsDataURL(file);
+      };
+      img.src = objectUrl;
+    });
+  };
+
+  // Image File Upload helper (compresses automatically and calls /api/admin/upload-image)
+  const uploadImageFile = async (file: File, prefix: string): Promise<string | null> => {
+    setIsUploadingImage(true);
+    try {
+      const dataUrl = await compressImageToDataUrl(file);
       const res = await adminFetch('/api/admin/upload-image', {
         method: 'POST',
         body: JSON.stringify({ dataUrl, filename: prefix }),
       });
       const data = await res.json();
       if (!res.ok) {
-        showToast(data.error || 'Image upload failed');
+        showToast(data.error || 'Could not upload photo');
         return null;
       }
-      showToast('Image uploaded');
+      showToast('Photo uploaded');
       return data.url;
     } catch {
-      showToast('Failed to upload image');
+      showToast('Could not upload photo');
       return null;
     } finally {
       setIsUploadingImage(false);
@@ -566,7 +613,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       setLoginTotpCode('');
       setRequiresTwoFactor(false);
       await fetchBootstrap();
-      showToast(`Signed in as ${data.user.name} (${data.user.role.toUpperCase()})`);
+      showToast(`Signed in as ${data.user.name}`);
     } catch {
       setLoginError('Network error while signing in');
     } finally {
@@ -597,14 +644,14 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       });
       const data = await res.json();
       if (!res.ok) {
-        showToast(data.error || 'Failed to update status');
+        showToast(data.error || 'Could not update order');
         return;
       }
       setOrders((prev) => prev.map((o) => (o.id === orderId ? data.order : o)));
       triggerStoreRefresh();
-      showToast(`Order updated to ${status}`);
+      showToast('Updated');
     } catch {
-      showToast('Failed to update order');
+      showToast('Could not update order');
     }
   };
 
@@ -616,7 +663,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       return;
     }
     if (manualItems.length === 0) {
-      showToast('Add at least one dish to the manual order');
+      showToast('Add at least one dish to the order');
       return;
     }
     try {
@@ -633,7 +680,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       });
       const data = await res.json();
       if (!res.ok) {
-        showToast(data.error || 'Failed to create manual order');
+        showToast(data.error || 'Could not create order');
         return;
       }
       setManualOrderModalOpen(false);
@@ -644,9 +691,9 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       setManualItems([]);
       await fetchBootstrap();
       triggerStoreRefresh();
-      showToast(`Manual Order ${data.order.orderNumber} created!`);
+      showToast(`Order ${data.order.orderNumber} created`);
     } catch {
-      showToast('Error creating manual order');
+      showToast('Could not create order');
     }
   };
 
@@ -665,7 +712,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       });
       if (!res.ok) {
         const err = await res.json();
-        showToast(err.error || 'Failed to save settings');
+        showToast(err.error || 'Could not save');
         return;
       }
       const data = await res.json();
@@ -675,16 +722,17 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         setThemeDraft(data.settings.theme);
       }
       triggerStoreRefresh();
-      showToast('Settings updated');
+      showToast('Saved');
     } catch {
-      showToast('Network error saving settings');
+      showToast('Could not save');
     }
   };
 
   // Save Home Page Sections & Banners helper
   const handleUpdateHomeManager = async (
     nextSections?: HomeSection[],
-    nextBanners?: Banner[]
+    nextBanners?: Banner[],
+    silentToast = false
   ) => {
     try {
       const res = await adminFetch('/api/admin/home-manager', {
@@ -695,7 +743,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         }),
       });
       if (!res.ok) {
-        showToast('Failed to update Home Page');
+        if (!silentToast) showToast('Could not save');
         return;
       }
       const data = await res.json();
@@ -703,13 +751,13 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       setBanners(data.banners || []);
       if (data.menuItems) setMenuItems(data.menuItems);
       triggerStoreRefresh();
-      showToast('Storefront Home Page updated');
+      if (!silentToast) showToast('Saved');
     } catch {
-      showToast('Error saving Home Page');
+      if (!silentToast) showToast('Could not save');
     }
   };
 
-  // Single Source of Truth map: MenuItem ID -> Array of HomeSection Titles
+  // Map: MenuItem ID -> Array of HomeSection Titles
   const itemHomeSectionNamesMap = useMemo(() => {
     const map: Record<string, string[]> = {};
     for (const sec of homeSections) {
@@ -720,6 +768,86 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     }
     return map;
   }, [homeSections]);
+
+  const generateClientSideId = (prefix: string) =>
+    `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+
+  const syncDishHomePlacement = async (
+    itemId: string,
+    flags: {
+      isBestseller: boolean;
+      isNewArrival: boolean;
+      isTodaysSpecial: boolean;
+      isCombo: boolean;
+    }
+  ) => {
+    const toggleId = (ids: string[] = [], shouldInclude: boolean) => {
+      const has = ids.includes(itemId);
+      if (shouldInclude && !has) return [itemId, ...ids];
+      if (!shouldInclude && has) return ids.filter((id) => id !== itemId);
+      return ids;
+    };
+
+    const updatedSections = homeSections.map((sec) => {
+      if (sec.sectionType === 'BESTSELLERS') {
+        const nextIds = toggleId(sec.itemIds, flags.isBestseller);
+        return { ...sec, itemIds: nextIds, maxItems: Math.max(sec.maxItems, nextIds.length) };
+      }
+      if (sec.sectionType === 'NEW_ARRIVALS') {
+        const nextIds = toggleId(sec.itemIds, flags.isNewArrival);
+        return { ...sec, itemIds: nextIds, maxItems: Math.max(sec.maxItems, nextIds.length) };
+      }
+      if (sec.sectionType === 'TODAYS_SPECIAL') {
+        const nextIds = toggleId(sec.itemIds, flags.isTodaysSpecial);
+        return { ...sec, itemIds: nextIds, maxItems: Math.max(sec.maxItems, nextIds.length) };
+      }
+      if (sec.sectionType === 'COMBO_OFFERS') {
+        const nextIds = toggleId(sec.itemIds, flags.isCombo);
+        return { ...sec, itemIds: nextIds, maxItems: Math.max(sec.maxItems, nextIds.length) };
+      }
+      return sec;
+    });
+
+    await handleUpdateHomeManager(updatedSections, undefined, true);
+  };
+
+  const handleToggleDishChip = async (
+    chipKey: 'isBestseller' | 'isNewArrival' | 'isTodaysSpecial' | 'isCombo'
+  ) => {
+    const nextFlags = {
+      isBestseller: dishForm.isBestseller,
+      isNewArrival: dishForm.isNewArrival,
+      isTodaysSpecial: dishForm.isTodaysSpecial,
+      isCombo: dishForm.isCombo,
+      [chipKey]: !dishForm[chipKey],
+    };
+    setDishForm((prev) => ({ ...prev, [chipKey]: nextFlags[chipKey] }));
+
+    if (editingDish) {
+      try {
+        const res = await adminFetch('/api/admin/menu-items', {
+          method: 'POST',
+          body: JSON.stringify({
+            id: editingDish.id,
+            name: dishForm.name.trim() || editingDish.name,
+            categoryId: dishForm.categoryId || editingDish.categoryId,
+            isBestseller: nextFlags.isBestseller,
+            isNewArrival: nextFlags.isNewArrival,
+            isTodaysSpecial: nextFlags.isTodaysSpecial,
+          }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.menuItems) setMenuItems(data.menuItems);
+        }
+        await syncDishHomePlacement(editingDish.id, nextFlags);
+        triggerStoreRefresh();
+        showToast('Updated');
+      } catch {
+        showToast('Could not update');
+      }
+    }
+  };
 
   // Menu Item Create/Update
   const openCreateDishModal = () => {
@@ -734,14 +862,31 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       spiceLevel: 'Medium',
       prepTimeMins: 25,
       imageUrl: '/assets/images/dish_butter_chicken_1793975541967.jpg',
-      variantsJson: '[]',
-      addonsJson: '[]',
+      variants: [],
+      addons: [],
+      isBestseller: false,
+      isNewArrival: false,
+      isTodaysSpecial: false,
+      isCombo: false,
     });
     setDishModalOpen(true);
   };
 
   const openEditDishModal = (item: MenuItem) => {
     setEditingDish(item);
+    const inBestsellerSec = homeSections.some(
+      (s) => s.sectionType === 'BESTSELLERS' && (s.itemIds || []).includes(item.id)
+    );
+    const inNewSec = homeSections.some(
+      (s) => s.sectionType === 'NEW_ARRIVALS' && (s.itemIds || []).includes(item.id)
+    );
+    const inSpecialSec = homeSections.some(
+      (s) => s.sectionType === 'TODAYS_SPECIAL' && (s.itemIds || []).includes(item.id)
+    );
+    const inComboSec = homeSections.some(
+      (s) => s.sectionType === 'COMBO_OFFERS' && (s.itemIds || []).includes(item.id)
+    );
+
     setDishForm({
       name: item.name,
       description: item.description,
@@ -752,23 +897,50 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       spiceLevel: item.spiceLevel || 'Medium',
       prepTimeMins: item.prepTimeMins || 25,
       imageUrl: item.imageUrl,
-      variantsJson: JSON.stringify(item.variants || [], null, 2),
-      addonsJson: JSON.stringify(item.addons || [], null, 2),
+      variants: (item.variants || []).map((v) => ({
+        id: v.id || generateClientSideId('var'),
+        name: v.name || '',
+        price: String(v.price ?? ''),
+        inStock: v.inStock !== false,
+      })),
+      addons: (item.addons || []).map((a) => ({
+        id: a.id || generateClientSideId('add'),
+        name: a.name || '',
+        price: String(a.price ?? ''),
+        isVeg: a.isVeg !== false,
+        inStock: a.inStock !== false,
+      })),
+      isBestseller: Boolean(item.isBestseller || inBestsellerSec),
+      isNewArrival: Boolean(item.isNewArrival || inNewSec),
+      isTodaysSpecial: Boolean(item.isTodaysSpecial || inSpecialSec),
+      isCombo: Boolean(inComboSec),
     });
     setDishModalOpen(true);
   };
 
   const handleSaveDish = async (e: React.FormEvent) => {
     e.preventDefault();
-    let parsedVariants = [];
-    let parsedAddons = [];
-    try {
-      parsedVariants = JSON.parse(dishForm.variantsJson || '[]');
-      parsedAddons = JSON.parse(dishForm.addonsJson || '[]');
-    } catch {
-      showToast('Invalid JSON in Variants or Add-ons');
-      return;
-    }
+    const targetItemId = editingDish?.id || '';
+    const formattedVariants: ItemVariant[] = dishForm.variants
+      .filter((v) => v.name.trim().length > 0)
+      .map((v) => ({
+        id: v.id || generateClientSideId('var'),
+        itemId: targetItemId,
+        name: v.name.trim(),
+        price: Math.max(0, Number(v.price) || 0),
+        inStock: v.inStock,
+      }));
+
+    const formattedAddons: ItemAddon[] = dishForm.addons
+      .filter((a) => a.name.trim().length > 0)
+      .map((a) => ({
+        id: a.id || generateClientSideId('add'),
+        itemId: targetItemId,
+        name: a.name.trim(),
+        price: Math.max(0, Number(a.price) || 0),
+        isVeg: a.isVeg,
+        inStock: a.inStock,
+      }));
 
     const payload = {
       id: editingDish?.id,
@@ -778,11 +950,14 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       categoryId: dishForm.categoryId,
       isVeg: dishForm.isVeg,
       inStock: dishForm.inStock,
+      isBestseller: dishForm.isBestseller,
+      isNewArrival: dishForm.isNewArrival,
+      isTodaysSpecial: dishForm.isTodaysSpecial,
       spiceLevel: dishForm.spiceLevel,
       prepTimeMins: Number(dishForm.prepTimeMins),
       imageUrl: dishForm.imageUrl,
-      variants: parsedVariants,
-      addons: parsedAddons,
+      variants: formattedVariants,
+      addons: formattedAddons,
     };
 
     try {
@@ -793,11 +968,20 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       if (!res.ok) throw new Error();
       const data = await res.json();
       setMenuItems(data.menuItems || []);
+      const savedId: string | undefined = data.item?.id || editingDish?.id;
+      if (savedId) {
+        await syncDishHomePlacement(savedId, {
+          isBestseller: dishForm.isBestseller,
+          isNewArrival: dishForm.isNewArrival,
+          isTodaysSpecial: dishForm.isTodaysSpecial,
+          isCombo: dishForm.isCombo,
+        });
+      }
       setDishModalOpen(false);
       triggerStoreRefresh();
-      showToast(editingDish ? `Updated "${dishForm.name}"` : `Added "${dishForm.name}"`);
+      showToast('Saved');
     } catch {
-      showToast('Failed to save dish');
+      showToast('Could not save dish');
     }
   };
 
@@ -810,9 +994,9 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       setMenuItems(data.menuItems || []);
       if (data.homeSections) setHomeSections(data.homeSections);
       triggerStoreRefresh();
-      showToast(`Deleted "${dish.name}"`);
+      showToast('Removed');
     } else {
-      showToast('Failed to delete dish');
+      showToast('Could not remove dish');
     }
   };
 
@@ -829,9 +1013,9 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       const data = await res.json();
       setMenuItems(data.menuItems || []);
       triggerStoreRefresh();
-      showToast('Bulk menu update applied');
+      showToast('Updated');
     } else {
-      showToast('Bulk menu action failed');
+      showToast('Could not update');
     }
   };
 
@@ -1020,7 +1204,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     setCurrentPasswordInput('');
     setNewPasswordInput('');
     setConfirmPasswordInput('');
-    showToast('Password updated. Other sessions revoked.');
+    showToast('Password updated');
   };
 
   if (authChecking) {
@@ -1111,7 +1295,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
           </form>
 
           <div className="mt-6 pt-4 border-t border-border flex items-center justify-between text-xs text-muted">
-            <span>Protected by HttpOnly Session & Lockout</span>
+            <span>Staff Sign-In Portal</span>
             <a href="/" className="text-primary font-semibold hover:underline">
               ← Back to Storefront
             </a>
@@ -1166,7 +1350,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 {shopSettings?.shopName || 'Aangan Kitchen'}
               </h2>
               <p className="text-[11px] text-muted truncate">
-                {adminUser.name} • {adminUser.role.toUpperCase()}
+                {adminUser.name} • {formatRoleLabel(adminUser.role)}
               </p>
             </div>
           </div>
@@ -1264,7 +1448,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       ======================================================================== */}
       <div className="flex-1 flex flex-col min-w-0 pb-20 lg:pb-6">
         {/* TOP HEADER BAR */}
-        <header className="sticky top-0 z-30 bg-surface border-b border-border px-3 sm:px-6 py-2.5 flex items-center justify-between gap-2">
+        <header className="sticky top-0 z-30 bg-surface border-b border-border px-2.5 sm:px-6 py-2.5 flex items-center justify-between gap-1.5 sm:gap-2 min-w-0">
           <div className="flex items-center gap-2 min-w-0">
             <div className="lg:hidden w-8 h-8 rounded-lg bg-primary text-primary-contrast flex items-center justify-center font-bold text-sm shrink-0">
               A
@@ -1274,12 +1458,12 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 {shopSettings?.shopName || 'Aangan Kitchen'}
               </h1>
               <p className="text-[11px] text-muted hidden sm:block">
-                Role: {adminRole.toUpperCase()} • Single-Shop Direct Delivery
+                {formatRoleLabel(adminRole)} • Kitchen Admin
               </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-1 sm:gap-2 shrink-0">
             {/* Open / Closed Quick Toggle */}
             {shopSettings && (
               <button
@@ -1290,7 +1474,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   })
                 }
                 disabled={!canEditMenu}
-                className={`min-h-[36px] px-3 rounded-full text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer ${
+                className={`min-h-[34px] sm:min-h-[36px] px-2.5 sm:px-3 rounded-full text-[11px] sm:text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer ${
                   shopSettings.isOpen
                     ? 'bg-emerald-500/15 text-emerald-600 border border-emerald-500/30'
                     : 'bg-red-500/15 text-red-600 border border-red-500/30'
@@ -1308,7 +1492,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             {/* Sound Toggle */}
             <button
               onClick={() => setSoundEnabled(!soundEnabled)}
-              className="w-9 h-9 rounded-xl border border-border flex items-center justify-center text-muted hover:bg-bg cursor-pointer"
+              className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl border border-border flex items-center justify-center text-muted hover:bg-bg cursor-pointer"
               title={soundEnabled ? 'Mute order chime' : 'Unmute order chime'}
             >
               {soundEnabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
@@ -1322,7 +1506,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   adminAccentColor
                 )
               }
-              className="w-9 h-9 rounded-xl border border-border flex items-center justify-center text-muted hover:bg-bg cursor-pointer"
+              className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl border border-border flex items-center justify-center text-muted hover:bg-bg cursor-pointer"
               title="Toggle Admin Dark/Light theme"
             >
               {adminThemeMode === 'dark' ? (
@@ -1338,7 +1522,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 setNotificationDrawerOpen(!notificationDrawerOpen);
                 setUnreadOrdersCount(0);
               }}
-              className="relative w-9 h-9 rounded-xl border border-border flex items-center justify-center text-text hover:bg-bg cursor-pointer"
+              className="relative w-8 h-8 sm:w-9 sm:h-9 rounded-xl border border-border flex items-center justify-center text-text hover:bg-bg cursor-pointer"
               aria-label="Notifications"
             >
               <Bell className="w-4 h-4" />
@@ -1352,7 +1536,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             {/* Refresh Button */}
             <button
               onClick={fetchBootstrap}
-              className="w-9 h-9 rounded-xl border border-border flex items-center justify-center text-muted hover:bg-bg cursor-pointer"
+              className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl border border-border flex items-center justify-center text-muted hover:bg-bg cursor-pointer"
               title="Refresh data"
             >
               <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
@@ -1423,13 +1607,13 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                     <Plus className="w-4 h-4" />
                     Manual Phone Order
                   </button>
-                  <div className="relative flex-1 sm:w-60">
+                  <div className="relative flex-1 min-w-[180px] sm:w-60">
                     <Search className="w-4 h-4 text-muted absolute left-3 top-1/2 -translate-y-1/2" />
                     <input
                       type="text"
                       value={orderSearch}
                       onChange={(e) => setOrderSearch(e.target.value)}
-                      placeholder="Search ID, name, phone..."
+                      placeholder="Search order number, name, phone..."
                       className="w-full min-h-[40px] pl-9 pr-3 rounded-xl border border-border bg-surface text-xs text-text focus:outline-none focus:border-primary"
                     />
                   </div>
@@ -1524,7 +1708,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
                           {/* Customer Block */}
                           <div className="space-y-1.5 min-w-0">
-                            <div className="flex items-center justify-between gap-2">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
                               <p className="font-bold text-sm text-text break-words min-w-0">
                                 {order.customerName}
                               </p>
@@ -1896,13 +2080,13 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       return (
                         <div
                           key={item.id}
-                          className="bg-surface rounded-2xl border border-border p-3.5 flex gap-3 items-start justify-between min-w-0"
+                          className="bg-surface rounded-2xl border border-border p-3 sm:p-3.5 flex gap-2.5 sm:gap-3 items-start justify-between min-w-0"
                         >
                           <SafeImage
                             src={item.imageUrl}
                             alt={item.name}
-                            className="w-16 h-16 rounded-xl object-cover shrink-0 bg-bg"
-                            containerClassName="w-16 h-16 rounded-xl object-cover shrink-0 bg-bg"
+                            className="w-14 h-14 sm:w-16 sm:h-16 rounded-xl object-cover shrink-0 bg-bg"
+                            containerClassName="w-14 h-14 sm:w-16 sm:h-16 rounded-xl object-cover shrink-0 bg-bg"
                           />
                           <div className="flex-1 min-w-0 space-y-1">
                             <div className="flex items-center gap-1.5 flex-wrap">
@@ -2010,7 +2194,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                           setCategories(data.categories || []);
                           setNewCategoryName('');
                           triggerStoreRefresh();
-                          showToast('Category added');
+                          showToast('Saved');
                         }
                       }}
                       className="bg-surface rounded-2xl border border-border p-4 flex flex-col sm:flex-row gap-2"
@@ -2070,7 +2254,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                                   setCategories(d.categories || []);
                                   setEditingCategoryId(null);
                                   triggerStoreRefresh();
-                                  showToast('Category renamed');
+                                  showToast('Saved');
                                 }
                               }}
                               className="px-3 py-1.5 rounded-lg bg-primary text-primary-contrast text-xs font-bold cursor-pointer"
@@ -2131,7 +2315,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                                     const d = await res.json();
                                     setCategories(d.categories || []);
                                     triggerStoreRefresh();
-                                    showToast('Category deleted');
+                                    showToast('Removed');
                                   }
                                 }}
                                 className="p-1.5 rounded-lg border border-red-500/30 text-red-600 hover:bg-red-500/10 cursor-pointer"
@@ -2193,11 +2377,10 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 <div className="space-y-4">
                   <div className="bg-surface rounded-2xl border border-border p-4">
                     <h3 className="text-sm font-bold text-text mb-1">
-                      Home Page Sections (Single Source of Truth)
+                      Home Page Sections
                     </h3>
                     <p className="text-xs text-muted mb-4">
-                      Add, reorder, or assign dishes to custom Home Page rails here. Menu items
-                      display a read-only badge reflecting these assignments.
+                      Choose which dishes appear in each section on your customer home page.
                     </p>
 
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-4">
@@ -2359,17 +2542,18 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       placeholder="Banner Subtitle"
                       className="min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs"
                     />
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="text"
-                        value={newBannerImageUrl}
-                        onChange={(e) => setNewBannerImageUrl(e.target.value)}
-                        placeholder="Image URL or upload file →"
-                        className="flex-1 min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs"
-                      />
-                      <label className="min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs font-bold flex items-center gap-1 cursor-pointer">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      {newBannerImageUrl ? (
+                        <SafeImage
+                          src={newBannerImageUrl}
+                          alt="Banner preview"
+                          className="w-14 h-10 rounded-lg object-cover border border-border shrink-0 bg-bg"
+                          containerClassName="w-14 h-10 rounded-lg object-cover border border-border shrink-0 bg-bg"
+                        />
+                      ) : null}
+                      <label className="flex-1 min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer hover:bg-surface">
                         <Upload className="w-3.5 h-3.5" />
-                        Upload
+                        {isUploadingImage ? 'Uploading...' : newBannerImageUrl ? 'Change Banner Photo' : 'Upload Banner Photo'}
                         <input
                           type="file"
                           accept="image/*"
@@ -2458,7 +2642,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                           Customer Storefront Theme
                         </h3>
                         <p className="text-xs text-muted">
-                          Applies globally to all guests before first paint. Audited on save.
+                          Updates the look of your customer menu right away.
                         </p>
                       </div>
                       <button
@@ -2506,7 +2690,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                     {/* 2. 6 Ready Presets */}
                     <div>
                       <label className="block text-xs font-bold text-text mb-2">
-                        2. Ready Theme Presets (6 Curated Palettes)
+                        2. Ready Color Themes
                       </label>
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                         {STOREFRONT_THEME_PRESETS.map((preset) => {
@@ -2585,8 +2769,9 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                           }`}
                         >
                           <ShieldCheck className="w-3.5 h-3.5" />
-                          Contrast Ratio: {primaryContrastRatio}:1 (
-                          {wcagPassesAA ? 'WCAG AA Pass' : 'Auto-contrasted text applied'})
+                          {wcagPassesAA
+                            ? 'Easy-to-read button text'
+                            : 'Button text color adjusted for readability'}
                         </p>
                       </div>
 
@@ -2668,19 +2853,18 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       <label className="block text-xs font-bold text-text mb-1.5">
                         Store Brand Logo (Optional)
                       </label>
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="text"
-                          value={themeDraft.logoUrl || ''}
-                          onChange={(e) =>
-                            setThemeDraft({ ...themeDraft, logoUrl: e.target.value })
-                          }
-                          placeholder="Paste Logo URL or upload image →"
-                          className="flex-1 min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs"
-                        />
-                        <label className="min-h-[40px] px-3.5 rounded-xl border border-border bg-bg text-xs font-bold flex items-center gap-1.5 cursor-pointer">
+                      <div className="flex items-center gap-3">
+                        {themeDraft.logoUrl ? (
+                          <SafeImage
+                            src={themeDraft.logoUrl}
+                            alt="Store logo"
+                            className="w-12 h-12 rounded-xl object-cover border border-border bg-bg shrink-0"
+                            containerClassName="w-12 h-12 rounded-xl object-cover border border-border bg-bg shrink-0"
+                          />
+                        ) : null}
+                        <label className="flex-1 min-h-[42px] px-4 rounded-xl border border-border bg-bg text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer hover:bg-surface">
                           <Upload className="w-3.5 h-3.5" />
-                          {isUploadingImage ? 'Uploading...' : 'Upload Logo'}
+                          {isUploadingImage ? 'Uploading...' : themeDraft.logoUrl ? 'Change Logo' : 'Upload Logo'}
                           <input
                             type="file"
                             accept="image/*"
@@ -2693,6 +2877,15 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                             }}
                           />
                         </label>
+                        {themeDraft.logoUrl && (
+                          <button
+                            type="button"
+                            onClick={() => setThemeDraft({ ...themeDraft, logoUrl: '' })}
+                            className="min-h-[42px] px-3 rounded-xl border border-red-500/30 text-red-600 text-xs font-semibold hover:bg-red-500/10 cursor-pointer"
+                          >
+                            Remove
+                          </button>
+                        )}
                       </div>
                     </div>
 
@@ -2963,7 +3156,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                           setNewCouponCode('');
                           setNewCouponDescription('');
                           triggerStoreRefresh();
-                          showToast('Coupon created');
+                          showToast('Saved');
                         }
                       }}
                       className="bg-surface rounded-2xl border border-border p-4 grid grid-cols-1 sm:grid-cols-3 gap-2"
@@ -3038,7 +3231,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                                   const d = await res.json();
                                   setCoupons(d.coupons || []);
                                   triggerStoreRefresh();
-                                  showToast('Coupon deleted');
+                                  showToast('Removed');
                                 }
                               }}
                               className="p-1.5 rounded-lg border border-red-500/30 text-red-600 hover:bg-red-500/10 cursor-pointer"
@@ -3086,7 +3279,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       const d = await res.json();
                       if (res.ok) {
                         setBroadcastMessage('');
-                        showToast('Broadcast sent!');
+                        showToast('Sent');
                       } else {
                         showToast(d.error || 'Broadcast failed');
                       }
@@ -3147,7 +3340,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                           setDeliveryBoys(d.deliveryBoys || []);
                           setNewRiderName('');
                           setNewRiderPhone('');
-                          showToast('Rider added with secure token & PIN');
+                          showToast('Saved');
                         }
                       }}
                       className="bg-surface rounded-2xl border border-border p-4 grid grid-cols-1 sm:grid-cols-3 gap-2"
@@ -3198,7 +3391,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                                 {rider.phone} • {rider.activeOrders} active runs
                               </p>
                             </div>
-                            <div className="flex items-center gap-1.5">
+                            <div className="flex items-center gap-1.5 shrink-0">
                               <span
                                 className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold ${
                                   isRevoked
@@ -3206,7 +3399,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                                     : 'bg-emerald-500/15 text-emerald-600'
                                 }`}
                               >
-                                {isRevoked ? 'LINK REVOKED' : 'ACTIVE'}
+                                {isRevoked ? 'DISABLED' : 'ACTIVE'}
                               </span>
                               {canEditMenu && (
                                 <button
@@ -3218,7 +3411,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                                     if (res.ok) {
                                       const d = await res.json();
                                       setDeliveryBoys(d.deliveryBoys || []);
-                                      showToast('Rider removed');
+                                      showToast('Removed');
                                     }
                                   }}
                                   className="p-1.5 rounded-lg border border-red-500/30 text-red-600 hover:bg-red-500/10 cursor-pointer"
@@ -3281,12 +3474,12 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                                 if (res.ok) {
                                   const d = await res.json();
                                   setDeliveryBoys(d.deliveryBoys || []);
-                                  showToast('Regenerated Rider Link & Daily PIN');
+                                  showToast('Updated');
                                 }
                               }}
                               className="min-h-[38px] px-3 rounded-xl border border-border text-xs font-semibold hover:bg-bg cursor-pointer"
                             >
-                              Rotate Token/PIN
+                              New Link & PIN
                             </button>
                             {!isRevoked && (
                               <button
@@ -3300,12 +3493,12 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                                   if (res.ok) {
                                     const d = await res.json();
                                     setDeliveryBoys(d.deliveryBoys || []);
-                                    showToast('Rider Link Revoked');
+                                    showToast('Updated');
                                   }
                                 }}
                                 className="min-h-[38px] px-3 rounded-xl border border-red-500/30 text-red-600 text-xs font-semibold hover:bg-red-500/10 cursor-pointer"
                               >
-                                Revoke
+                                Disable
                               </button>
                             )}
                           </div>
@@ -3319,7 +3512,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 deliveryZone && (
                   <div className="bg-surface rounded-2xl border border-border p-4 space-y-4">
                     <h3 className="text-sm font-bold text-text">
-                      Haversine Delivery Radius & Minimum Order
+                      Delivery Area & Minimum Order
                     </h3>
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                       <div>
@@ -3385,7 +3578,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       }
                       className="min-h-[40px] px-4 rounded-xl bg-primary text-primary-contrast text-xs font-bold cursor-pointer"
                     >
-                      Save Delivery Zone Rules
+                      Save Delivery Area
                     </button>
                   </div>
                 )
@@ -3434,15 +3627,15 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                           : 'bg-amber-500/15 text-amber-600'
                       }`}
                     >
-                      {razorpayConfigured ? 'Razorpay Gateway Active' : 'Razorpay Gateway Unconfigured (COD Mode)'}
+                      {razorpayConfigured ? 'Online Payments Active' : 'Cash on Delivery Only'}
                     </span>
                   </div>
 
                   {!razorpayConfigured && (
                     <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-700 dark:text-amber-400">
-                      <p className="font-bold">Razorpay payment gateway is not configured</p>
+                      <p className="font-bold">Online payments are not set up yet</p>
                       <p className="text-[11px] opacity-90 mt-0.5">
-                        Online payments and online refunds are disabled. Customer storefront accepts Cash on Delivery (COD).
+                        Your storefront currently accepts Cash on Delivery (COD) orders.
                       </p>
                     </div>
                   )}
@@ -3457,7 +3650,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         >
                           <div>
                             <p className="font-bold text-text">
-                              {p.orderNumber} • ₹{p.amount} ({p.gateway})
+                              {p.orderNumber} • ₹{p.amount} ({p.gateway === 'COD' ? 'COD' : 'Online'})
                             </p>
                             <p className="text-muted">
                               Status: {p.status}{' '}
@@ -3467,7 +3660,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                           {p.status !== 'REFUNDED' && canEditSettings && (
                             p.gateway === 'RAZORPAY' && !razorpayConfigured ? (
                               <span className="text-muted italic text-[11px]">
-                                Online refunds disabled (Razorpay not configured)
+                                Online refunds unavailable
                               </span>
                             ) : (
                             <div className="flex flex-wrap items-center gap-2">
@@ -3512,7 +3705,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                                   );
                                   if (res.ok) {
                                     await fetchBootstrap();
-                                    showToast(`Refunded ₹${amt} for ${p.orderNumber}`);
+                                    showToast('Saved');
                                   } else {
                                     const err = await res.json();
                                     showToast(err.error || 'Refund failed');
@@ -3666,7 +3859,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                     <h4 className="text-xs font-bold uppercase tracking-wider text-muted">
                       Peak Ordering Hours Heatmap
                     </h4>
-                    <div className="grid grid-cols-6 sm:grid-cols-12 gap-2">
+                    <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-12 gap-2">
                       {Array.from({ length: 12 }, (_, idx) => idx + 11).map((hr) => {
                         const count = reportData.hourCounts[hr] || 0;
                         return (
@@ -3687,7 +3880,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
           )}
 
           {/* ====================================================================
-              8. SETTINGS SECTION (Shop Info & Backup + Users/Sessions/2FA + Audit Log)
+              8. SETTINGS SECTION (Shop Info + Staff Accounts)
           ==================================================================== */}
           {activeSection === 'settings' && (
             <div className="space-y-4">
@@ -3700,7 +3893,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       : 'bg-surface border border-border text-text'
                   }`}
                 >
-                  Shop Info & Backup
+                  Shop Info
                 </button>
                 {canEditSettings && (
                   <button
@@ -3711,37 +3904,17 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         : 'bg-surface border border-border text-text'
                     }`}
                   >
-                    Staff Users, 2FA & Sessions
+                    Staff Accounts
                   </button>
                 )}
-                <button
-                  onClick={() => setSettingsSubTab('audit')}
-                  className={`min-h-[40px] px-4 rounded-xl text-xs font-bold cursor-pointer ${
-                    settingsSubTab === 'audit'
-                      ? 'bg-primary text-primary-contrast'
-                      : 'bg-surface border border-border text-text'
-                  }`}
-                >
-                  Security Audit Log
-                </button>
               </div>
 
               {settingsSubTab === 'shop' && shopSettings && (
                 <div className="bg-surface rounded-2xl border border-border p-4 space-y-4">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <h3 className="text-sm font-bold text-text">
-                      Storefront Identity, Timings & Pre-Orders
+                      Shop Details, Timings & Pre-Orders
                     </h3>
-                    {canEditSettings && (
-                      <a
-                        href="/api/admin/backup"
-                        download
-                        className="px-3.5 py-2 rounded-xl border border-border bg-bg hover:bg-surface text-xs font-bold flex items-center gap-1.5 text-primary"
-                      >
-                        <Download className="w-4 h-4" />
-                        Download Full JSON Backup
-                      </a>
-                    )}
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -3785,7 +3958,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         className="w-full min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs"
                       />
                     </div>
-                    <div className="flex items-center gap-2 pt-5">
+                    <div className="flex items-center gap-2 pt-2 sm:pt-5">
                       <input
                         type="checkbox"
                         id="allowPreOrdersWhenClosed"
@@ -3819,15 +3992,15 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                     Save Store Info
                   </button>
 
-                  {/* Payment Gateway Configuration Card */}
+                  {/* Payment Options Status Card */}
                   <div className="pt-3 border-t border-border space-y-3">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div>
                         <h4 className="text-xs font-bold text-text">
-                          Payment Gateway Status
+                          Customer Payment Options
                         </h4>
                         <p className="text-[11px] text-muted">
-                          Razorpay API credentials and customer checkout gateway status
+                          Ways customers can pay when placing an order
                         </p>
                       </div>
                       <span
@@ -3837,24 +4010,24 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                             : 'bg-amber-500/15 text-amber-600'
                         }`}
                       >
-                        {razorpayConfigured ? 'RAZORPAY ACTIVE' : 'COD ONLY (UNCONFIGURED)'}
+                        {razorpayConfigured ? 'ONLINE PAYMENTS ON' : 'CASH ON DELIVERY ONLY'}
                       </span>
                     </div>
 
                     <div className="p-3 rounded-xl border border-border bg-bg space-y-2 text-xs">
-                      <div className="flex items-center justify-between">
-                        <span className="font-semibold text-text">Razorpay Online Gateway (UPI/Cards):</span>
+                      <div className="flex flex-wrap items-center justify-between gap-1">
+                        <span className="font-semibold text-text">Online Payments (UPI / Cards):</span>
                         <span className={`font-bold ${razorpayConfigured ? 'text-emerald-600' : 'text-muted'}`}>
-                          {razorpayConfigured ? 'Connected & Verified' : 'Disabled (Keys Not Configured)'}
+                          {razorpayConfigured ? 'Active' : 'Not Set Up'}
                         </span>
                       </div>
                       {!razorpayConfigured ? (
                         <p className="text-muted text-[11px] leading-relaxed">
-                          Razorpay keys (RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET, RAZORPAY_WEBHOOK_SECRET) are missing. Online gateway settings and online refunds are disabled to prevent errors. The storefront is safely operating in Cash on Delivery (COD) mode.
+                          Online payments are not set up yet. Your menu safely accepts Cash on Delivery orders.
                         </p>
                       ) : (
                         <p className="text-muted text-[11px] leading-relaxed">
-                          Razorpay keys are detected and active. Customers can pay online with automated verification.
+                          Online payments (UPI &amp; cards) are active for customer orders.
                         </p>
                       )}
                     </div>
@@ -3862,112 +4035,12 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 </div>
               )}
 
-              {/* OWNER USER MANAGEMENT, SESSIONS & TOTP 2FA */}
+              {/* OWNER STAFF ACCOUNTS MANAGEMENT */}
               {settingsSubTab === 'users' && canEditSettings && (
                 <div className="space-y-6">
-                  {/* TOTP 2FA Card */}
-                  <div className="bg-surface rounded-2xl border border-border p-4 space-y-3">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <h3 className="text-sm font-bold text-text">
-                          Two-Factor Authentication (TOTP)
-                        </h3>
-                        <p className="text-xs text-muted">
-                          Protect your Owner account with Google Authenticator / Authy
-                        </p>
-                      </div>
-                      <span
-                        className={`px-2.5 py-1 rounded-full text-xs font-bold ${
-                          adminUser.totpEnabled
-                            ? 'bg-emerald-500/15 text-emerald-600'
-                            : 'bg-bg text-muted'
-                        }`}
-                      >
-                        {adminUser.totpEnabled ? '2FA ENABLED' : '2FA OFF'}
-                      </span>
-                    </div>
-
-                    {!adminUser.totpEnabled && !totpSetupData && (
-                      <button
-                        onClick={async () => {
-                          const res = await adminFetch('/api/admin/totp/setup', {
-                            method: 'POST',
-                          });
-                          if (res.ok) {
-                            const d = await res.json();
-                            setTotpSetupData(d);
-                          }
-                        }}
-                        className="min-h-[38px] px-4 rounded-xl bg-primary text-primary-contrast text-xs font-bold cursor-pointer"
-                      >
-                        Configure 2FA Authenticator
-                      </button>
-                    )}
-
-                    {totpSetupData && (
-                      <div className="p-3.5 rounded-xl bg-bg border border-border space-y-3 text-xs">
-                        <p className="font-semibold text-text">
-                          1. Add this Secret Key to your Authenticator app:
-                        </p>
-                        <code className="block p-2 rounded bg-surface border border-border font-mono font-bold text-primary break-all">
-                          {totpSetupData.secretHex}
-                        </code>
-                        <p className="font-semibold text-text">
-                          2. Enter the 6-digit code generated by your app to activate:
-                        </p>
-                        <div className="flex gap-2">
-                          <input
-                            type="text"
-                            maxLength={6}
-                            value={totpVerifyCode}
-                            onChange={(e) => setTotpVerifyCode(e.target.value)}
-                            placeholder="123456"
-                            className="w-36 min-h-[38px] px-3 rounded-xl border border-border bg-surface font-mono"
-                          />
-                          <button
-                            onClick={async () => {
-                              const res = await adminFetch('/api/admin/totp/verify', {
-                                method: 'POST',
-                                body: JSON.stringify({ code: totpVerifyCode }),
-                              });
-                              if (res.ok) {
-                                setTotpSetupData(null);
-                                setTotpVerifyCode('');
-                                await fetchBootstrap();
-                                showToast('2FA enabled on your account');
-                              } else {
-                                showToast('Invalid 6-digit TOTP code');
-                              }
-                            }}
-                            className="px-4 rounded-xl bg-emerald-600 text-white font-bold cursor-pointer"
-                          >
-                            Verify & Enable
-                          </button>
-                        </div>
-                      </div>
-                    )}
-
-                    {adminUser.totpEnabled && (
-                      <button
-                        onClick={async () => {
-                          const res = await adminFetch('/api/admin/totp/disable', {
-                            method: 'POST',
-                          });
-                          if (res.ok) {
-                            await fetchBootstrap();
-                            showToast('2FA disabled');
-                          }
-                        }}
-                        className="min-h-[38px] px-4 rounded-xl border border-red-500/30 text-red-600 text-xs font-bold cursor-pointer"
-                      >
-                        Disable 2FA
-                      </button>
-                    )}
-                  </div>
-
-                  {/* Create Staff / Manager Account */}
+                  {/* Add Staff / Manager Account */}
                   <div className="bg-surface rounded-2xl border border-border p-4 space-y-4">
-                    <h3 className="text-sm font-bold text-text">Create Staff / Manager Account</h3>
+                    <h3 className="text-sm font-bold text-text">Add Staff Account</h3>
                     <form
                       onSubmit={async (e) => {
                         e.preventDefault();
@@ -3982,16 +4055,16 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         });
                         const d = await res.json();
                         if (!res.ok) {
-                          showToast(d.error || 'Failed to create user');
+                          showToast(d.error || 'Could not add staff account');
                           return;
                         }
                         setNewUserEmail('');
                         setNewUserName('');
                         setNewUserPassword('');
                         await fetchBootstrap();
-                        showToast('Staff user created');
+                        showToast('Saved');
                       }}
-                      className="grid grid-cols-1 sm:grid-cols-5 gap-2"
+                      className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2"
                     >
                       <input
                         type="text"
@@ -4015,9 +4088,9 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         onChange={(e) => setNewUserRole(e.target.value as AdminRole)}
                         className="min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs"
                       >
-                        <option value="staff">STAFF (Orders only)</option>
-                        <option value="manager">MANAGER (Menu + Orders)</option>
-                        <option value="owner">OWNER (Full Access)</option>
+                        <option value="staff">Staff — Orders only</option>
+                        <option value="manager">Manager — Menu &amp; Orders</option>
+                        <option value="owner">Owner — Full Access</option>
                       </select>
                       <input
                         type="password"
@@ -4031,36 +4104,27 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         type="submit"
                         className="min-h-[40px] px-4 rounded-xl bg-primary text-primary-contrast text-xs font-bold cursor-pointer"
                       >
-                        + Add User
+                        + Add Staff
                       </button>
                     </form>
 
-                    {/* Existing Users List */}
+                    {/* Existing Staff List */}
                     <div className="space-y-2 pt-2">
                       {adminUsers.map((u) => (
                         <div
                           key={u.id}
-                          className="p-3 rounded-xl border border-border flex flex-wrap items-center justify-between gap-2 text-xs"
+                          className="p-3 rounded-xl border border-border flex flex-wrap items-center justify-between gap-2 text-xs min-w-0"
                         >
-                          <div>
-                            <p className="font-bold text-text">
-                              {u.name} ({u.email})
-                            </p>
-                            <p className="text-muted">
-                              Role: <strong>{u.role.toUpperCase()}</strong> •{' '}
-                              {u.totpEnabled ? '2FA Active' : 'No 2FA'}
-                            </p>
+                          <div className="min-w-0 flex-1 space-y-0.5">
+                            <div className="flex flex-wrap items-center gap-2 min-w-0">
+                              <p className="font-bold text-text break-words">{u.name}</p>
+                              <span className="px-2 py-0.5 rounded-full bg-bg border border-border text-[11px] font-semibold text-text">
+                                {formatRoleLabel(u.role)}
+                              </span>
+                            </div>
+                            <p className="text-muted break-all">{u.email}</p>
                           </div>
-                          <div className="flex items-center gap-2">
-                            <button
-                              onClick={() => {
-                                setResetPassModalUser(u);
-                                setResetPassNewVal('');
-                              }}
-                              className="px-2.5 py-1 rounded-lg border border-border font-semibold hover:bg-bg cursor-pointer"
-                            >
-                              Reset Password
-                            </button>
+                          <div className="flex flex-wrap items-center gap-2 shrink-0">
                             {u.id !== adminUser.id && (
                               <button
                                 onClick={async () => {
@@ -4070,136 +4134,31 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                                   });
                                   if (res.ok) {
                                     await fetchBootstrap();
-                                    showToast(u.isActive ? 'User disabled' : 'User enabled');
+                                    showToast('Updated');
                                   }
                                 }}
-                                className={`px-2.5 py-1 rounded-lg font-bold cursor-pointer ${
+                                className={`px-2.5 py-1.5 rounded-lg font-bold cursor-pointer ${
                                   !u.isActive
                                     ? 'bg-red-500/15 text-red-600'
                                     : 'bg-emerald-500/15 text-emerald-600'
                                 }`}
                               >
-                                {!u.isActive ? 'Disabled' : 'Active'}
+                                {!u.isActive ? 'Blocked' : 'Active'}
                               </button>
                             )}
+                            <button
+                              onClick={() => {
+                                setResetPassModalUser(u);
+                                setResetPassNewVal('');
+                              }}
+                              className="px-2.5 py-1.5 rounded-lg border border-border font-semibold hover:bg-bg cursor-pointer"
+                            >
+                              Reset Password
+                            </button>
                           </div>
                         </div>
                       ))}
                     </div>
-                  </div>
-
-                  {/* Active Sessions List */}
-                  <div className="bg-surface rounded-2xl border border-border p-4 space-y-3">
-                    <h3 className="text-sm font-bold text-text">Active Admin Sessions</h3>
-                    <div className="space-y-2">
-                      {adminSessions.map((s) => (
-                        <div
-                          key={s.id}
-                          className="p-3 rounded-xl border border-border flex items-center justify-between gap-2 text-xs"
-                        >
-                          <div className="min-w-0">
-                            <p className="font-bold text-text">
-                              {s.email} ({s.role.toUpperCase()})
-                            </p>
-                            <p className="text-muted truncate">
-                              IP: {s.ipAddress} • Created: {new Date(s.createdAt).toLocaleString()}
-                            </p>
-                          </div>
-                          <button
-                            onClick={async () => {
-                              const res = await adminFetch(`/api/admin/sessions/${s.id}`, {
-                                method: 'DELETE',
-                              });
-                              if (res.ok) {
-                                await fetchBootstrap();
-                                showToast('Session revoked');
-                              }
-                            }}
-                            className="px-3 py-1.5 rounded-lg border border-red-500/30 text-red-600 font-semibold hover:bg-red-500/10 shrink-0 cursor-pointer"
-                          >
-                            Revoke
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Audit Logs + Filter + CSV Export */}
-              {settingsSubTab === 'audit' && (
-                <div className="bg-surface rounded-2xl border border-border p-4 space-y-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <h3 className="text-sm font-bold text-text">Immutable Audit Trail</h3>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <input
-                        type="text"
-                        value={auditSearch}
-                        onChange={(e) => setAuditSearch(e.target.value)}
-                        placeholder="Search user, action, detail..."
-                        className="min-h-[36px] px-3 rounded-xl border border-border bg-bg text-xs"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const headers = ['Timestamp', 'Email', 'Role', 'Action', 'Details'];
-                          const rows = auditLogs.map((l) =>
-                            [
-                              l.createdAt,
-                              l.adminEmail,
-                              l.adminRole,
-                              l.action,
-                              `"${(l.details || '').replace(/"/g, '""')}"`,
-                            ].join(',')
-                          );
-                          const csv = [headers.join(','), ...rows].join('\n');
-                          const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-                          const url = URL.createObjectURL(blob);
-                          const a = document.createElement('a');
-                          a.href = url;
-                          a.download = `aangan-audit-logs.csv`;
-                          a.click();
-                          URL.revokeObjectURL(url);
-                        }}
-                        className="px-3 py-1.5 rounded-xl border border-border text-xs font-bold flex items-center gap-1 hover:bg-bg cursor-pointer"
-                      >
-                        <Download className="w-3.5 h-3.5" />
-                        Export CSV
-                      </button>
-                    </div>
-                  </div>
-                  <div className="space-y-2 max-h-96 overflow-y-auto">
-                    {auditLogs
-                      .filter((log) => {
-                        if (!auditSearch.trim()) return true;
-                        const q = auditSearch.toLowerCase();
-                        return (
-                          log.action.toLowerCase().includes(q) ||
-                          log.details.toLowerCase().includes(q) ||
-                          log.adminEmail.toLowerCase().includes(q)
-                        );
-                      })
-                      .map((log) => (
-                        <div
-                          key={log.id}
-                          className="p-2.5 rounded-xl bg-bg border border-border text-xs flex items-start justify-between gap-2"
-                        >
-                          <div className="min-w-0">
-                            <span className="font-bold text-text">{log.action}</span>
-                            <span className="text-muted">
-                              {' '}
-                              • {log.adminEmail} ({log.adminRole})
-                            </span>
-                            <p className="text-muted break-words">{log.details}</p>
-                          </div>
-                          <span className="text-[11px] text-muted shrink-0">
-                            {new Date(log.createdAt).toLocaleTimeString([], {
-                              hour: '2-digit',
-                              minute: '2-digit',
-                            })}
-                          </span>
-                        </div>
-                      ))}
                   </div>
                 </div>
               )}
@@ -4211,7 +4170,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       {/* ========================================================================
           MOBILE BOTTOM NAVIGATION (4 Primary + "More" Sheet)
       ======================================================================== */}
-      <nav className="lg:hidden fixed bottom-0 left-0 right-0 z-30 bg-surface border-t border-border px-2 py-1.5 grid grid-cols-5 gap-1">
+      <nav className="lg:hidden fixed bottom-0 left-0 right-0 z-30 bg-surface border-t border-border px-1 sm:px-2 py-1.5 grid grid-cols-5 gap-0.5 sm:gap-1">
         {(['orders', 'menu', 'storefront', 'finance'] as AdminTopSection[]).map((secId) => {
           const item = navItems.find((n) => n.id === secId)!;
           const Icon = item.icon;
@@ -4223,22 +4182,22 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 setActiveSection(secId);
                 setMoreDrawerOpen(false);
               }}
-              className={`min-h-[44px] rounded-xl flex flex-col items-center justify-center gap-0.5 text-[11px] font-semibold cursor-pointer ${
+              className={`min-h-[44px] min-w-0 px-1 rounded-xl flex flex-col items-center justify-center gap-0.5 text-[10px] sm:text-[11px] font-semibold cursor-pointer ${
                 active ? 'text-primary bg-primary/10' : 'text-muted'
               }`}
             >
-              <Icon className="w-4 h-4" />
-              <span className="truncate">{item.label}</span>
+              <Icon className="w-4 h-4 shrink-0" />
+              <span className="truncate w-full text-center">{item.label}</span>
             </button>
           );
         })}
         <button
           onClick={() => setMoreDrawerOpen(!moreDrawerOpen)}
-          className={`min-h-[44px] rounded-xl flex flex-col items-center justify-center gap-0.5 text-[11px] font-semibold cursor-pointer ${
+          className={`min-h-[44px] min-w-0 px-1 rounded-xl flex flex-col items-center justify-center gap-0.5 text-[10px] sm:text-[11px] font-semibold cursor-pointer ${
             moreDrawerOpen ? 'text-primary bg-primary/10' : 'text-muted'
           }`}
         >
-          <MoreHorizontal className="w-4 h-4" />
+          <MoreHorizontal className="w-4 h-4 shrink-0" />
           <span>More</span>
         </button>
       </nav>
@@ -4294,22 +4253,22 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       )}
 
       {/* ========================================================================
-          DISH ADD/EDIT MODAL (with Direct Image Upload)
+          DISH ADD/EDIT MODAL (Simple Forms + Photo Upload)
       ======================================================================== */}
       {isDishModalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4 overflow-y-auto">
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-2.5 sm:p-4 overflow-y-auto">
           <form
             onSubmit={handleSaveDish}
-            className="w-full max-w-lg bg-surface rounded-2xl border border-border p-5 space-y-3.5 max-h-[90dvh] overflow-y-auto text-text"
+            className="w-full max-w-lg bg-surface rounded-2xl border border-border p-4 sm:p-5 space-y-4 max-h-[90dvh] overflow-y-auto text-text"
           >
-            <div className="flex items-center justify-between">
-              <h3 className="text-base font-bold text-text">
+            <div className="flex items-center justify-between gap-2">
+              <h3 className="text-base font-bold text-text truncate">
                 {editingDish ? `Edit ${editingDish.name}` : 'Add New Dish'}
               </h3>
               <button
                 type="button"
                 onClick={() => setDishModalOpen(false)}
-                className="p-1 text-muted"
+                className="p-1 text-muted shrink-0 cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -4365,21 +4324,19 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
               </div>
             </div>
 
+            {/* Photo Upload + Preview (no URL typing box) */}
             <div>
-              <label className="block text-xs font-semibold mb-1">
-                Dish Photo (Paste URL or Upload File)
-              </label>
-              <div className="flex items-center gap-2">
-                <input
-                  type="text"
-                  value={dishForm.imageUrl}
-                  onChange={(e) => setDishForm({ ...dishForm, imageUrl: e.target.value })}
-                  placeholder="/assets/images/..."
-                  className="flex-1 min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs"
+              <label className="block text-xs font-semibold mb-1.5">Dish Photo</label>
+              <div className="flex items-center gap-3">
+                <SafeImage
+                  src={dishForm.imageUrl}
+                  alt={dishForm.name || 'Dish preview'}
+                  className="w-20 h-20 rounded-xl object-cover border border-border bg-bg shrink-0"
+                  containerClassName="w-20 h-20 rounded-xl object-cover border border-border bg-bg shrink-0"
                 />
-                <label className="min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs font-bold flex items-center gap-1 cursor-pointer">
-                  <Upload className="w-3.5 h-3.5" />
-                  {isUploadingImage ? '...' : 'Upload'}
+                <label className="flex-1 min-h-[48px] px-4 rounded-xl bg-primary/10 border border-primary/30 text-primary text-xs font-bold flex items-center justify-center gap-2 cursor-pointer hover:bg-primary/15 transition-colors">
+                  <Upload className="w-4 h-4 shrink-0" />
+                  <span>{isUploadingImage ? 'Uploading Photo...' : 'Upload Photo'}</span>
                   <input
                     type="file"
                     accept="image/*"
@@ -4388,7 +4345,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       const f = e.target.files?.[0];
                       if (!f) return;
                       const url = await uploadImageFile(f, 'dish');
-                      if (url) setDishForm({ ...dishForm, imageUrl: url });
+                      if (url) setDishForm((prev) => ({ ...prev, imageUrl: url }));
                     }}
                   />
                 </label>
@@ -4405,48 +4362,258 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
               />
             </div>
 
-            {/* Single Source of Truth: Read-only Home Page placement notice */}
-            {editingDish && (
-              <div className="p-3 rounded-xl bg-primary/10 border border-primary/20 flex flex-wrap items-center justify-between gap-2 text-xs">
+            {/* One-tap Home Page Highlight Chips */}
+            <div className="space-y-1.5">
+              <label className="block text-xs font-semibold">Show on Customer Home Page</label>
+              <div className="flex flex-wrap gap-2">
+                {(
+                  [
+                    { key: 'isBestseller', label: 'Bestseller' },
+                    { key: 'isNewArrival', label: 'New' },
+                    { key: 'isTodaysSpecial', label: "Chef's Special" },
+                    { key: 'isCombo', label: 'Combo' },
+                  ] as const
+                ).map((chip) => {
+                  const active = dishForm[chip.key];
+                  return (
+                    <button
+                      key={chip.key}
+                      type="button"
+                      onClick={() => handleToggleDishChip(chip.key)}
+                      className={`min-h-[36px] px-3 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer ${
+                        active
+                          ? 'bg-primary text-primary-contrast border-primary'
+                          : 'bg-bg text-text border-border hover:bg-surface'
+                      }`}
+                    >
+                      {active && <Check className="w-3.5 h-3.5 shrink-0" />}
+                      <span>{chip.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Simple Sizes / Portions Editor */}
+            <div className="space-y-2 pt-1 border-t border-border">
+              <div className="flex items-center justify-between gap-2">
                 <div>
-                  <span className="font-bold text-text">Appears in Home Sections: </span>
-                  <span className="text-primary font-semibold">
-                    {(itemHomeSectionNamesMap[editingDish.id] || []).join(', ') ||
-                      'None (Standard Menu only)'}
-                  </span>
+                  <label className="block text-xs font-semibold">Sizes / Portions</label>
+                  <p className="text-[11px] text-muted">First row is selected by default</p>
                 </div>
                 <button
                   type="button"
-                  onClick={() => {
-                    setDishModalOpen(false);
-                    setActiveSection('storefront');
-                    setStorefrontSubTab('homepage');
-                  }}
-                  className="text-[11px] font-bold underline text-primary cursor-pointer"
+                  onClick={() =>
+                    setDishForm((prev) => ({
+                      ...prev,
+                      variants: [
+                        ...prev.variants,
+                        {
+                          id: generateClientSideId('var'),
+                          name: '',
+                          price: String(prev.basePrice || ''),
+                          inStock: true,
+                        },
+                      ],
+                    }))
+                  }
+                  className="px-2.5 py-1.5 rounded-xl bg-primary/10 text-primary text-xs font-bold flex items-center gap-1 cursor-pointer shrink-0"
                 >
-                  Manage in Home Page Manager →
+                  <Plus className="w-3.5 h-3.5" />
+                  Add size
                 </button>
               </div>
-            )}
 
-            <div>
-              <label className="block text-xs font-semibold mb-1">Variants (JSON)</label>
-              <textarea
-                rows={2}
-                value={dishForm.variantsJson}
-                onChange={(e) => setDishForm({ ...dishForm, variantsJson: e.target.value })}
-                className="w-full p-2 rounded-xl border border-border bg-bg text-xs font-mono"
-              />
+              {dishForm.variants.length > 0 && (
+                <div className="space-y-2">
+                  {dishForm.variants.map((variant, idx) => (
+                    <div
+                      key={variant.id}
+                      className="p-2.5 rounded-xl border border-border bg-bg space-y-2"
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <input
+                          type="text"
+                          value={variant.name}
+                          onChange={(e) =>
+                            setDishForm((prev) => ({
+                              ...prev,
+                              variants: prev.variants.map((v, i) =>
+                                i === idx ? { ...v, name: e.target.value } : v
+                              ),
+                            }))
+                          }
+                          placeholder="Size name (e.g. Half, Full)"
+                          className="flex-1 min-w-0 min-h-[36px] px-2.5 rounded-lg border border-border bg-surface text-xs"
+                        />
+                        <input
+                          type="number"
+                          min={0}
+                          value={variant.price}
+                          onChange={(e) =>
+                            setDishForm((prev) => ({
+                              ...prev,
+                              variants: prev.variants.map((v, i) =>
+                                i === idx ? { ...v, price: e.target.value } : v
+                              ),
+                            }))
+                          }
+                          placeholder="Price"
+                          className="w-20 sm:w-24 min-h-[36px] px-2.5 rounded-lg border border-border bg-surface text-xs shrink-0"
+                        />
+                      </div>
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-1.5">
+                          {idx === 0 && (
+                            <span className="px-2 py-0.5 rounded-md bg-primary/15 text-primary text-[10px] font-bold">
+                              Default
+                            </span>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setDishForm((prev) => ({
+                                ...prev,
+                                variants: prev.variants.map((v, i) =>
+                                  i === idx ? { ...v, inStock: !v.inStock } : v
+                                ),
+                              }))
+                            }
+                            className={`px-2.5 py-1 rounded-lg text-[11px] font-bold cursor-pointer ${
+                              variant.inStock
+                                ? 'bg-emerald-500/15 text-emerald-600'
+                                : 'bg-surface border border-border text-muted'
+                            }`}
+                          >
+                            {variant.inStock ? 'In Stock' : 'Out of Stock'}
+                          </button>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setDishForm((prev) => ({
+                              ...prev,
+                              variants: prev.variants.filter((_, i) => i !== idx),
+                            }))
+                          }
+                          className="p-1.5 rounded-lg border border-red-500/30 text-red-600 hover:bg-red-500/10 cursor-pointer"
+                          title="Remove size"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
-            <div>
-              <label className="block text-xs font-semibold mb-1">Add-ons (JSON)</label>
-              <textarea
-                rows={2}
-                value={dishForm.addonsJson}
-                onChange={(e) => setDishForm({ ...dishForm, addonsJson: e.target.value })}
-                className="w-full p-2 rounded-xl border border-border bg-bg text-xs font-mono"
-              />
+            {/* Simple Add-ons / Extras Editor */}
+            <div className="space-y-2 pt-1 border-t border-border">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <label className="block text-xs font-semibold">Add-ons &amp; Extras</label>
+                  <p className="text-[11px] text-muted">Optional extras customers can add</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setDishForm((prev) => ({
+                      ...prev,
+                      addons: [
+                        ...prev.addons,
+                        {
+                          id: generateClientSideId('add'),
+                          name: '',
+                          price: '',
+                          isVeg: prev.isVeg,
+                          inStock: true,
+                        },
+                      ],
+                    }))
+                  }
+                  className="px-2.5 py-1.5 rounded-xl bg-primary/10 text-primary text-xs font-bold flex items-center gap-1 cursor-pointer shrink-0"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  Add extra
+                </button>
+              </div>
+
+              {dishForm.addons.length > 0 && (
+                <div className="space-y-2">
+                  {dishForm.addons.map((addon, idx) => (
+                    <div
+                      key={addon.id}
+                      className="p-2.5 rounded-xl border border-border bg-bg space-y-2"
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <input
+                          type="text"
+                          value={addon.name}
+                          onChange={(e) =>
+                            setDishForm((prev) => ({
+                              ...prev,
+                              addons: prev.addons.map((a, i) =>
+                                i === idx ? { ...a, name: e.target.value } : a
+                              ),
+                            }))
+                          }
+                          placeholder="Add-on name (e.g. Extra Cheese)"
+                          className="flex-1 min-w-0 min-h-[36px] px-2.5 rounded-lg border border-border bg-surface text-xs"
+                        />
+                        <input
+                          type="number"
+                          min={0}
+                          value={addon.price}
+                          onChange={(e) =>
+                            setDishForm((prev) => ({
+                              ...prev,
+                              addons: prev.addons.map((a, i) =>
+                                i === idx ? { ...a, price: e.target.value } : a
+                              ),
+                            }))
+                          }
+                          placeholder="Extra price"
+                          className="w-20 sm:w-24 min-h-[36px] px-2.5 rounded-lg border border-border bg-surface text-xs shrink-0"
+                        />
+                      </div>
+                      <div className="flex items-center justify-between gap-2">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setDishForm((prev) => ({
+                              ...prev,
+                              addons: prev.addons.map((a, i) =>
+                                i === idx ? { ...a, inStock: !a.inStock } : a
+                              ),
+                            }))
+                          }
+                          className={`px-2.5 py-1 rounded-lg text-[11px] font-bold cursor-pointer ${
+                            addon.inStock
+                              ? 'bg-emerald-500/15 text-emerald-600'
+                              : 'bg-surface border border-border text-muted'
+                          }`}
+                        >
+                          {addon.inStock ? 'In Stock' : 'Out of Stock'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setDishForm((prev) => ({
+                              ...prev,
+                              addons: prev.addons.filter((_, i) => i !== idx),
+                            }))
+                          }
+                          className="p-1.5 rounded-lg border border-red-500/30 text-red-600 hover:bg-red-500/10 cursor-pointer"
+                          title="Remove add-on"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             <div className="flex justify-end gap-2 pt-2">
@@ -4472,10 +4639,10 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
           MANUAL PHONE ORDER MODAL
       ======================================================================== */}
       {manualOrderModalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4 overflow-y-auto">
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-2.5 sm:p-4 overflow-y-auto">
           <form
             onSubmit={handleCreateManualOrder}
-            className="w-full max-w-lg bg-surface rounded-2xl border border-border p-5 space-y-3.5 max-h-[90dvh] overflow-y-auto text-text"
+            className="w-full max-w-lg bg-surface rounded-2xl border border-border p-4 sm:p-5 space-y-3.5 max-h-[90dvh] overflow-y-auto text-text"
           >
             <div className="flex items-center justify-between">
               <h3 className="text-base font-bold text-text">Create Manual Phone Order</h3>
@@ -4631,13 +4798,13 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
           CANCEL / REJECT ORDER WITH REASON TEMPLATE MODAL
       ======================================================================== */}
       {cancelReasonModalOrder && (
-        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
-          <div className="w-full max-w-md bg-surface rounded-2xl border border-border p-5 space-y-3.5 text-text">
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-2.5 sm:p-4">
+          <div className="w-full max-w-md bg-surface rounded-2xl border border-border p-4 sm:p-5 space-y-3.5 text-text">
             <h3 className="text-base font-bold">
               Cancel / Reject Order {cancelReasonModalOrder.orderNumber}
             </h3>
             <p className="text-xs text-muted">
-              Select a standardized cancellation template for the customer and audit log:
+              Choose a reason for cancelling this order:
             </p>
             <div className="flex flex-wrap gap-1.5">
               {[
@@ -4702,10 +4869,10 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
           CHANGE PASSWORD MODAL
       ======================================================================== */}
       {passwordModalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-2.5 sm:p-4">
           <form
             onSubmit={handleChangeMyPassword}
-            className="w-full max-w-md bg-surface rounded-2xl border border-border p-5 space-y-3.5 text-text"
+            className="w-full max-w-md bg-surface rounded-2xl border border-border p-4 sm:p-5 space-y-3.5 text-text"
           >
             <div className="flex items-center justify-between">
               <h3 className="text-base font-bold text-text">Change My Password</h3>
@@ -4762,7 +4929,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
       {/* Owner Reset Another User's Password Modal */}
       {resetPassModalUser && (
-        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-2.5 sm:p-4">
           <form
             onSubmit={async (e) => {
               e.preventDefault();
@@ -4777,10 +4944,10 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
               if (res.ok) {
                 setResetPassModalUser(null);
                 await fetchBootstrap();
-                showToast('Password reset & active sessions revoked');
+                showToast('Password updated');
               }
             }}
-            className="w-full max-w-md bg-surface rounded-2xl border border-border p-5 space-y-3.5 text-text"
+            className="w-full max-w-md bg-surface rounded-2xl border border-border p-4 sm:p-5 space-y-3.5 text-text"
           >
             <h3 className="text-base font-bold text-text">
               Reset Password for {resetPassModalUser.email}

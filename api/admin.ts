@@ -1262,8 +1262,36 @@ export default async function handler(req: Request, res: Response) {
       }
 
       const existingIdx = db.menuItems.findIndex((m) => m.id === item.id);
+      const dishId = existingIdx >= 0 ? db.menuItems[existingIdx].id : `item_${Date.now()}`;
+
+      const normalizedVariants = Array.isArray(item.variants)
+        ? item.variants
+            .filter((v) => v && String(v.name || '').trim().length > 0)
+            .map((v, idx) => ({
+              id: v.id || `var_${dishId}_${idx}_${crypto.randomBytes(2).toString('hex')}`,
+              itemId: dishId,
+              name: String(v.name).trim(),
+              price: Math.max(0, Number(v.price) || 0),
+              inStock: v.inStock !== false,
+            }))
+        : undefined;
+
+      const normalizedAddons = Array.isArray(item.addons)
+        ? item.addons
+            .filter((a) => a && String(a.name || '').trim().length > 0)
+            .map((a, idx) => ({
+              id: a.id || `add_${dishId}_${idx}_${crypto.randomBytes(2).toString('hex')}`,
+              itemId: dishId,
+              name: String(a.name).trim(),
+              price: Math.max(0, Number(a.price) || 0),
+              isVeg: a.isVeg !== false,
+              inStock: a.inStock !== false,
+            }))
+        : undefined;
+
+      let savedItem: MenuItem;
       if (existingIdx >= 0) {
-        db.menuItems[existingIdx] = {
+        savedItem = {
           ...db.menuItems[existingIdx],
           name: String(item.name).trim(),
           categoryId: String(item.categoryId),
@@ -1273,18 +1301,28 @@ export default async function handler(req: Request, res: Response) {
           isVeg: item.isVeg !== undefined ? Boolean(item.isVeg) : db.menuItems[existingIdx].isVeg,
           inStock:
             item.inStock !== undefined ? Boolean(item.inStock) : db.menuItems[existingIdx].inStock,
+          isBestseller:
+            item.isBestseller !== undefined
+              ? Boolean(item.isBestseller)
+              : db.menuItems[existingIdx].isBestseller,
+          isTodaysSpecial:
+            item.isTodaysSpecial !== undefined
+              ? Boolean(item.isTodaysSpecial)
+              : db.menuItems[existingIdx].isTodaysSpecial,
+          isNewArrival:
+            item.isNewArrival !== undefined
+              ? Boolean(item.isNewArrival)
+              : db.menuItems[existingIdx].isNewArrival,
           spiceLevel: item.spiceLevel || db.menuItems[existingIdx].spiceLevel,
           prepTimeMins: Number(item.prepTimeMins) || db.menuItems[existingIdx].prepTimeMins,
-          variants: Array.isArray(item.variants)
-            ? item.variants
-            : db.menuItems[existingIdx].variants,
-          addons: Array.isArray(item.addons) ? item.addons : db.menuItems[existingIdx].addons,
+          variants: normalizedVariants ?? db.menuItems[existingIdx].variants,
+          addons: normalizedAddons ?? db.menuItems[existingIdx].addons,
         };
-        await rtdb.ref(`menuItems/${db.menuItems[existingIdx].id}`).set(db.menuItems[existingIdx]);
+        db.menuItems[existingIdx] = savedItem;
+        await rtdb.ref(`menuItems/${savedItem.id}`).set(savedItem);
       } else {
-        const newId = `item_${Date.now()}`;
-        const created: MenuItem = {
-          id: newId,
+        savedItem = {
+          id: dishId,
           categoryId: item.categoryId,
           name: String(item.name).trim(),
           description: item.description || '',
@@ -1293,17 +1331,17 @@ export default async function handler(req: Request, res: Response) {
           isVeg: item.isVeg !== false,
           inStock: item.inStock !== false,
           showOnHome: true,
-          isBestseller: false,
-          isTodaysSpecial: false,
-          isNewArrival: false,
+          isBestseller: Boolean(item.isBestseller),
+          isTodaysSpecial: Boolean(item.isTodaysSpecial),
+          isNewArrival: Boolean(item.isNewArrival),
           spiceLevel: item.spiceLevel || 'Medium',
           prepTimeMins: Number(item.prepTimeMins) || 25,
           salesCount: 0,
-          variants: Array.isArray(item.variants) ? item.variants : [],
-          addons: Array.isArray(item.addons) ? item.addons : [],
+          variants: normalizedVariants ?? [],
+          addons: normalizedAddons ?? [],
         };
-        db.menuItems.push(created);
-        await rtdb.ref(`menuItems/${created.id}`).set(created);
+        db.menuItems.push(savedItem);
+        await rtdb.ref(`menuItems/${savedItem.id}`).set(savedItem);
       }
 
       clearHomeCache();
@@ -1314,7 +1352,7 @@ export default async function handler(req: Request, res: Response) {
         `Saved menu item ${item.name}`,
         clientIp
       );
-      res.json({ menuItems: db.menuItems });
+      res.json({ menuItems: db.menuItems, item: savedItem });
       return;
     }
 
@@ -1329,6 +1367,9 @@ export default async function handler(req: Request, res: Response) {
       }
       const { field, value } = req.body || {};
       if (field === 'inStock') found.inStock = Boolean(value);
+      if (field === 'isBestseller') found.isBestseller = Boolean(value);
+      if (field === 'isTodaysSpecial') found.isTodaysSpecial = Boolean(value);
+      if (field === 'isNewArrival') found.isNewArrival = Boolean(value);
 
       await rtdb.ref(`menuItems/${found.id}`).set(found);
       clearHomeCache();
@@ -1389,9 +1430,20 @@ export default async function handler(req: Request, res: Response) {
             .filter((s) => s.sectionType === 'TODAYS_SPECIAL')
             .flatMap((s) => s.itemIds)
         );
+        const hasNewArrivalsSection = db.homeSections.some(
+          (s) => s.sectionType === 'NEW_ARRIVALS'
+        );
+        const newIds = new Set(
+          db.homeSections
+            .filter((s) => s.sectionType === 'NEW_ARRIVALS')
+            .flatMap((s) => s.itemIds)
+        );
         for (const m of db.menuItems) {
           m.isBestseller = bestIds.has(m.id);
           m.isTodaysSpecial = specialIds.has(m.id);
+          if (hasNewArrivalsSection) {
+            m.isNewArrival = newIds.has(m.id);
+          }
         }
       }
       await persistFullStateToFirebase();
