@@ -29,8 +29,10 @@ import { DeliveryPartnerView } from './components/DeliveryPartnerView.tsx';
 import { AdminPortal } from './components/AdminPortal.tsx';
 import { OfflineIndicator } from './components/PWAInstallBanner.tsx';
 import {
+  applyShopBrandingToDocument,
   applyStorefrontThemeToDocument,
   DEFAULT_STOREFRONT_THEME,
+  getCachedShopName,
   normalizeImageUrl,
   optimizeAssetUrl,
 } from './utils/themeTokens.ts';
@@ -58,13 +60,13 @@ export default function App() {
   );
   const [lang, setLang] = useState<'en' | 'hi'>(() => guestAuthLayer.getGuestLanguage());
 
-  const [headerMeta, setHeaderMeta] = useState({
-    shopName: 'Aangan Artisanal Kitchen',
+  const [headerMeta, setHeaderMeta] = useState(() => ({
+    shopName: getCachedShopName() || 'Food Ordering',
     isOpen: true,
     busyMode: false,
     opensAtText: '11:00 AM',
     logoUrl: '',
-  });
+  }));
 
   const [headerAddressLabel, setHeaderAddressLabel] = useState<string>(() => {
     const p = guestAuthLayer.getGuestProfile();
@@ -121,7 +123,18 @@ export default function App() {
     }
   }, [activeView, storefrontTheme, guestThemeMode]);
 
-  // Subscribe to Firebase Realtime Database publicStatus node for live shop open/busy status
+  // Apply shopName to document title & meta tags for customer and tracking views
+  useEffect(() => {
+    if (activeView === 'customer') {
+      applyShopBrandingToDocument(headerMeta.shopName);
+    } else if (activeView === 'tracking') {
+      applyShopBrandingToDocument(headerMeta.shopName, {
+        title: `${headerMeta.shopName} — Order Tracking`,
+      });
+    }
+  }, [activeView, headerMeta.shopName]);
+
+  // Subscribe to Firebase Realtime Database publicStatus node for live shop open/busy/theme status
   useEffect(() => {
     const unsub = subscribeToPublicShopStatus({
       onStatus: (status) => {
@@ -131,6 +144,9 @@ export default function App() {
           isOpen: status.isOpen,
           busyMode: status.busyMode,
         }));
+        if (status.theme) {
+          setStorefrontTheme(status.theme);
+        }
       },
     });
     return () => unsub();

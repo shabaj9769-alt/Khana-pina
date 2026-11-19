@@ -14,6 +14,7 @@ export type AdminRole = 'owner' | 'manager' | 'staff';
 
 export type ThemeMode = 'light' | 'dark' | 'auto';
 export type StorefrontThemePresetId =
+  | 'zomato-red'
   | 'classic-amber'
   | 'spice-red'
   | 'forest-green'
@@ -413,6 +414,7 @@ export interface PublicShopStatus {
   opensAtText: string;
   holidaysNote: string;
   allowPreOrdersWhenClosed: boolean;
+  theme?: StorefrontThemeConfig;
   updatedAt: string;
 }
 

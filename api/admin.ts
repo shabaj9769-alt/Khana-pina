@@ -67,6 +67,7 @@ const DeliverySlabSchema = z.object({
 const StorefrontThemeSchema = z.object({
   mode: z.enum(['light', 'dark', 'auto']),
   presetId: z.enum([
+    'zomato-red',
     'classic-amber',
     'spice-red',
     'forest-green',
@@ -79,8 +80,8 @@ const StorefrontThemeSchema = z.object({
   accentColor: z.string().trim().max(32),
   fontPair: z.enum(['fraunces-jakarta', 'playfair-inter', 'poppins-only']),
   radiusScale: z.enum(['sharp', 'rounded', 'pill']),
-  logoUrl: z.string().trim().max(500).optional().default(''),
-  pwaThemeColor: z.string().trim().max(32).optional().default('#1C1917'),
+  logoUrl: z.string().trim().max(500000).optional().default(''),
+  pwaThemeColor: z.string().trim().max(32).optional().default('#E23744'),
 });
 
 const ShopSettingsUpdateSchema = z
@@ -92,6 +93,7 @@ const ShopSettingsUpdateSchema = z
     busyMode: z.boolean().optional(),
     weeklyTimings: z.string().trim().max(150).optional(),
     opensAtText: z.string().trim().max(80).optional(),
+    heroSubtitle: z.string().trim().max(500).optional(),
     allowPreOrdersWhenClosed: z.boolean().optional(),
     holidaysNote: z.string().trim().max(250).optional(),
     minOrderAmount: z.number().min(0).max(10000).optional(),
@@ -167,6 +169,7 @@ export default async function handler(req: Request, res: Response) {
     if (method === 'GET' && subPath === '/auth-config') {
       const rzpCfg = getRazorpayConfig();
       res.json({
+        shopName: db.settings.shopName,
         demoMode: isDemoModeEnabled(),
         razorpayMode: rzpCfg.mode,
         razorpayConfigured: isRazorpayConfigured(),

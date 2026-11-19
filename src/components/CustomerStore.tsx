@@ -42,7 +42,7 @@ import {
 } from '../types.ts';
 import { guestAuthLayer } from '../auth/guestAuthLayer.ts';
 import { calculateHaversineKm } from '../utils/haversine.ts';
-import { optimizeAssetUrl, normalizeImageUrl } from '../utils/themeTokens.ts';
+import { getCachedShopName, optimizeAssetUrl, normalizeImageUrl } from '../utils/themeTokens.ts';
 import { SafeImage } from './SafeImage.tsx';
 
 interface ResolvedHomeSection extends HomeSection {
@@ -563,7 +563,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
     try {
       setLoading(true);
       setLoadError(null);
-      const res = await fetch('/api/home');
+      const res = await fetch('/api/home', { cache: 'no-store' });
       const data = await res.json();
       if (res.ok) {
         setHomeData(data);
@@ -997,7 +997,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
       key: checkoutData.keyId,
       amount: checkoutData.amountPaise,
       currency: 'INR',
-      name: homeData?.settings.shopName || 'Aangan Artisanal Kitchen',
+      name: homeData?.settings.shopName || getCachedShopName() || 'Food Ordering',
       description: `Order ${checkoutData.order.orderNumber}`,
       order_id: checkoutData.razorpayOrderId,
       prefill: {
@@ -2790,7 +2790,8 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                 </div>
               </div>
               <p className="text-[14px] text-muted leading-relaxed break-words pt-1">
-                {settings.heroSubtitle || 'Aangan Artisanal Kitchen brings authentic slow-cooked dum biryani, smoky tandoori kebabs, and rich artisanal curries crafted with heirloom spices and passion. Every meal is freshly prepared in our single-shop kitchen to deliver unmatched taste and quality right to your doorstep.'}
+                {settings.heroSubtitle ||
+                  `${settings.shopName} brings freshly prepared artisanal dishes crafted with heirloom spices and passion. Every meal is freshly prepared in our single-shop kitchen to deliver unmatched taste and quality right to your doorstep.`}
               </p>
             </div>
 

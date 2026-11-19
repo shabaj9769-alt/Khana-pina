@@ -9,6 +9,7 @@ import paymentsHandler from './api/payments.ts';
 import trackHandler from './api/track.ts';
 import riderHandler from './api/rider.ts';
 import adminHandler from './api/admin.ts';
+import manifestHandler from './api/manifest.ts';
 
 import {
   calculateAuthoritativeBill,
@@ -95,6 +96,8 @@ async function startServer() {
   app.all('/api/track/*', (req, res) => trackHandler(req, res));
   app.all('/api/rider/*', (req, res) => riderHandler(req, res));
   app.all('/api/admin/*', (req, res) => adminHandler(req, res));
+  app.all('/api/manifest', (req, res) => manifestHandler(req, res));
+  app.all('/manifest.webmanifest', (req, res) => manifestHandler(req, res));
 
   if (!IS_PROD) {
     const vite = await createViteServer({
@@ -113,7 +116,7 @@ async function startServer() {
   app.listen(PORT, '0.0.0.0', () => {
     const rzpCfg = getRazorpayConfig();
     console.log(
-      `Aangan Artisanal Kitchen Server (Vercel Serverless + Firebase RTDB) running on http://0.0.0.0:${PORT} (RAZORPAY_MODE=${rzpCfg.mode}, DEMO_MODE=${isDemoModeEnabled()})`
+      `${db.settings.shopName} Server (Vercel Serverless + Firebase RTDB) running on http://0.0.0.0:${PORT} (RAZORPAY_MODE=${rzpCfg.mode}, DEMO_MODE=${isDemoModeEnabled()})`
     );
   });
 }

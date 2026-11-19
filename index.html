@@ -3,17 +3,19 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Aangan Artisanal Kitchen — Direct Food Delivery</title>
-    <meta name="description" content="Single-shop artisanal Indian kitchen and direct food delivery PWA with guest checkout, Haversine delivery zone validation, Razorpay double-verified payments, real-time Firebase order tracking, and full Admin & Home Page Manager." />
-    <meta property="og:title" content="Aangan Artisanal Kitchen — Direct Food Delivery" />
-    <meta property="og:description" content="Single-shop artisanal Indian kitchen and direct food delivery PWA with guest checkout, Haversine delivery zone validation, Razorpay double-verified payments, real-time Firebase order tracking, and full Admin & Home Page Manager." />
+    <title>Food Ordering</title>
+    <meta name="description" content="Direct food ordering, delivery zone validation, secure payments, and real-time order tracking." />
+    <meta property="og:title" content="Food Ordering" />
+    <meta property="og:description" content="Direct food ordering, delivery zone validation, secure payments, and real-time order tracking." />
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="theme-color" content="#1C1917" />
+    <meta name="theme-color" content="#E23744" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
-    <meta name="apple-mobile-web-app-title" content="Aangan" />
+    <meta name="apple-mobile-web-app-title" content="Food Ordering" />
+    <meta name="application-name" content="Food Ordering" />
+    <link rel="manifest" href="/api/manifest" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <link rel="icon" type="image/svg+xml" href="/icon.svg" />
     <link rel="preload" as="image" href="/src/assets/images/hero_artisanal_feast_1793975537331.webp" type="image/webp" fetchpriority="high" />
@@ -23,6 +25,29 @@
     <script>
       (function () {
         try {
+          var cachedShopName = localStorage.getItem('storefront_shop_name_v1');
+          if (cachedShopName && cachedShopName.trim()) {
+            var name = cachedShopName.trim();
+            var p = window.location.pathname || '';
+            var h = window.location.hash || '';
+            if (p.indexOf('/admin') === 0) {
+              document.title = name + ' Admin';
+            } else if (p.indexOf('/rider') === 0) {
+              document.title = name + ' — Rider';
+            } else if (p.indexOf('/track/') === 0 || h.indexOf('#/order/') === 0) {
+              document.title = name + ' — Order Tracking';
+            } else {
+              document.title = name;
+            }
+            var appleMeta = document.querySelector('meta[name="apple-mobile-web-app-title"]');
+            if (appleMeta) appleMeta.setAttribute('content', name);
+            var ogMeta = document.querySelector('meta[property="og:title"]');
+            if (ogMeta) ogMeta.setAttribute('content', name);
+            var appMeta = document.querySelector('meta[name="application-name"]');
+            if (appMeta) appMeta.setAttribute('content', name);
+          }
+        } catch (e) {}
+        try {
           var raw = localStorage.getItem('aangan_theme_cache_v1');
           if (!raw) return;
           var t = JSON.parse(raw);
@@ -31,6 +56,10 @@
           else root.classList.remove('dark');
           if (t.bg) root.style.setProperty('--color-bg', t.bg);
           if (t.surface) root.style.setProperty('--color-surface', t.surface);
+          if (t.softTint) {
+            root.style.setProperty('--color-soft-tint', t.softTint);
+            root.style.setProperty('--aangan-soft-tint', t.softTint);
+          }
           if (t.text) root.style.setProperty('--color-text', t.text);
           if (t.muted) root.style.setProperty('--color-muted', t.muted);
           if (t.border) root.style.setProperty('--color-border', t.border);

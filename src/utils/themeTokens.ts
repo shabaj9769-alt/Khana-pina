@@ -27,7 +27,7 @@ export interface ThemePresetDefinition {
 
 export const STOREFRONT_THEME_PRESETS: ThemePresetDefinition[] = [
   {
-    id: 'zomato-red' as StorefrontThemePresetId,
+    id: 'zomato-red',
     label: 'Zomato Red',
     description: 'Bold appetite-first crimson (#E23744) with crisp white surfaces and fresh veg green (#1BA672)',
     defaultMode: 'light',
@@ -138,7 +138,7 @@ export const STOREFRONT_THEME_PRESETS: ThemePresetDefinition[] = [
 
 export const DEFAULT_STOREFRONT_THEME: StorefrontThemeConfig = {
   mode: 'light',
-  presetId: 'zomato-red' as StorefrontThemePresetId,
+  presetId: 'zomato-red',
   primaryColor: '#E23744',
   accentColor: '#1BA672',
   fontPair: 'fraunces-jakarta',
@@ -146,6 +146,35 @@ export const DEFAULT_STOREFRONT_THEME: StorefrontThemeConfig = {
   logoUrl: '',
   pwaThemeColor: '#E23744',
 };
+
+export function normalizeThemeConfig(
+  rawTheme?: Partial<StorefrontThemeConfig> | null
+): StorefrontThemeConfig {
+  const merged: StorefrontThemeConfig = {
+    ...DEFAULT_STOREFRONT_THEME,
+    ...(rawTheme || {}),
+  };
+
+  if (merged.presetId === 'classic-amber') {
+    const primaryUpper = (rawTheme?.primaryColor || '').trim().toUpperCase();
+    const accentUpper = (rawTheme?.accentColor || '').trim().toUpperCase();
+    const isUncustomizedClassicAmber =
+      (!primaryUpper || primaryUpper === '#B45309') &&
+      (!accentUpper || accentUpper === '#D97706');
+
+    if (isUncustomizedClassicAmber) {
+      return {
+        ...merged,
+        presetId: 'zomato-red',
+        primaryColor: DEFAULT_STOREFRONT_THEME.primaryColor,
+        accentColor: DEFAULT_STOREFRONT_THEME.accentColor,
+        pwaThemeColor: DEFAULT_STOREFRONT_THEME.pwaThemeColor,
+      };
+    }
+  }
+
+  return merged;
+}
 
 export const FONT_PAIR_OPTIONS: {
   id: StorefrontFontPair;
@@ -241,17 +270,11 @@ export function resolveEffectiveDark(mode: ThemeMode): boolean {
   return false;
 }
 
-export function applyStorefrontThemeToDocument(
+function resolveStorefrontThemeTokens(
   themeConfig: StorefrontThemeConfig,
   guestModeOverride?: ThemeMode | null
-): void {
-  if (typeof document === 'undefined') return;
-  const cfg = { ...DEFAULT_STOREFRONT_THEME, ...themeConfig };
-
-  // Remap legacy 'classic-amber' database records to the new default 'zomato-red' preset
-  const isLegacyDefault =
-    (cfg.presetId as string) === 'classic-amber' ||
-    (cfg.presetId as string) === 'zomato-red';
+) {
+  const cfg = normalizeThemeConfig(themeConfig);
 
   const preset =
     STOREFRONT_THEME_PRESETS.find((p) => p.id === cfg.presetId) || STOREFRONT_THEME_PRESETS[0];
@@ -259,25 +282,11 @@ export function applyStorefrontThemeToDocument(
   const effectiveMode = guestModeOverride || cfg.mode || preset.defaultMode;
   const isDark = resolveEffectiveDark(effectiveMode);
 
-  const root = document.documentElement;
-  if (isDark) {
-    root.classList.add('dark');
-  } else {
-    root.classList.remove('dark');
-  }
-
-  const rawPrimary =
-    isLegacyDefault && cfg.primaryColor.toUpperCase() === '#B45309'
-      ? '#E23744'
-      : cfg.primaryColor;
-
+  const rawPrimary = cfg.primaryColor || preset.primaryColor;
   const primary =
     isDark && rawPrimary.toLowerCase() === '#18181b' ? '#F4F4F5' : rawPrimary;
   const primaryContrast = getAccessibleContrastColor(primary);
-  const accent =
-    isLegacyDefault && cfg.accentColor?.toUpperCase() === '#D97706'
-      ? '#1BA672'
-      : cfg.accentColor || preset.accentColor;
+  const accent = cfg.accentColor || preset.accentColor;
 
   const bg = isDark ? preset.darkBg : preset.lightBg;
   const surface = isDark ? preset.darkSurface : preset.lightSurface;
@@ -288,9 +297,88 @@ export function applyStorefrontThemeToDocument(
   const fontDef =
     FONT_PAIR_OPTIONS.find((f) => f.id === cfg.fontPair) || FONT_PAIR_OPTIONS[0];
   const radius = RADIUS_SCALE_MAP[cfg.radiusScale] || RADIUS_SCALE_MAP.rounded;
+  const softTint = isDark
+    ? `color-mix(in srgb, ${primary} 16%, ${surface})`
+    : `color-mix(in srgb, ${primary} 8%, ${surface})`;
+
+  return {
+    cfg,
+    isDark,
+    bg,
+    surface,
+    softTint,
+    text,
+    muted,
+    border,
+    primary,
+    primaryContrast,
+    accent,
+    radius,
+    fontDef,
+  };
+}
+
+export function cacheStorefrontTheme(
+  themeConfig: StorefrontThemeConfig,
+  guestModeOverride?: ThemeMode | null
+): void {
+  if (typeof localStorage === 'undefined') return;
+  const resolved = resolveStorefrontThemeTokens(themeConfig, guestModeOverride);
+  try {
+    localStorage.setItem(
+      'aangan_theme_cache_v1',
+      JSON.stringify({
+        bg: resolved.bg,
+        surface: resolved.surface,
+        softTint: resolved.softTint,
+        text: resolved.text,
+        muted: resolved.muted,
+        border: resolved.border,
+        primary: resolved.primary,
+        primaryContrast: resolved.primaryContrast,
+        accent: resolved.accent,
+        radius: resolved.radius,
+        displayFont: resolved.fontDef.displayFont,
+        bodyFont: resolved.fontDef.bodyFont,
+        isDark: resolved.isDark,
+      })
+    );
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+export function applyStorefrontThemeToDocument(
+  themeConfig: StorefrontThemeConfig,
+  guestModeOverride?: ThemeMode | null
+): void {
+  if (typeof document === 'undefined') return;
+  const resolved = resolveStorefrontThemeTokens(themeConfig, guestModeOverride);
+  const {
+    cfg,
+    isDark,
+    bg,
+    surface,
+    softTint,
+    text,
+    muted,
+    border,
+    primary,
+    primaryContrast,
+    accent,
+    radius,
+    fontDef,
+  } = resolved;
+
+  const root = document.documentElement;
+  if (isDark) {
+    root.classList.add('dark');
+  } else {
+    root.classList.remove('dark');
+  }
 
   // On-demand load secondary theme font pairs only when selected by admin
-  if (typeof document !== 'undefined' && cfg.fontPair !== 'fraunces-jakarta') {
+  if (cfg.fontPair !== 'fraunces-jakarta') {
     const linkId = `aangan-dynamic-font-${cfg.fontPair}`;
     if (!document.getElementById(linkId)) {
       const link = document.createElement('link');
@@ -303,10 +391,6 @@ export function applyStorefrontThemeToDocument(
       document.head.appendChild(link);
     }
   }
-
-  const softTint = isDark
-    ? `color-mix(in srgb, ${primary} 16%, ${surface})`
-    : `color-mix(in srgb, ${primary} 8%, ${surface})`;
 
   root.style.setProperty('--color-bg', bg);
   root.style.setProperty('--color-surface', surface);
@@ -327,27 +411,54 @@ export function applyStorefrontThemeToDocument(
     metaTheme.setAttribute('content', primary);
   }
 
+  cacheStorefrontTheme(themeConfig, guestModeOverride);
+}
+
+const SHOP_NAME_CACHE_KEY = 'storefront_shop_name_v1';
+
+export function getCachedShopName(): string {
+  if (typeof localStorage === 'undefined') return '';
   try {
-    localStorage.setItem(
-      'aangan_theme_cache_v1',
-      JSON.stringify({
-        bg,
-        surface,
-        text,
-        muted,
-        border,
-        primary,
-        primaryContrast,
-        accent,
-        radius,
-        displayFont: fontDef.displayFont,
-        bodyFont: fontDef.bodyFont,
-        isDark,
-      })
-    );
+    return (localStorage.getItem(SHOP_NAME_CACHE_KEY) || '').trim();
+  } catch {
+    return '';
+  }
+}
+
+export function setCachedShopName(shopName: string): void {
+  const clean = (shopName || '').trim();
+  if (!clean || typeof localStorage === 'undefined') return;
+  try {
+    localStorage.setItem(SHOP_NAME_CACHE_KEY, clean);
   } catch {
     // Ignore storage errors
   }
+}
+
+function upsertMetaTag(attrName: 'name' | 'property', attrValue: string, content: string): void {
+  if (typeof document === 'undefined') return;
+  let el = document.querySelector(`meta[${attrName}="${attrValue}"]`);
+  if (!el) {
+    el = document.createElement('meta');
+    el.setAttribute(attrName, attrValue);
+    document.head.appendChild(el);
+  }
+  el.setAttribute('content', content);
+}
+
+export function applyShopBrandingToDocument(
+  shopName: string,
+  options?: { title?: string }
+): void {
+  const clean = (shopName || '').trim();
+  if (!clean) return;
+  setCachedShopName(clean);
+  if (typeof document === 'undefined') return;
+
+  document.title = options?.title ? options.title : clean;
+  upsertMetaTag('name', 'apple-mobile-web-app-title', clean);
+  upsertMetaTag('property', 'og:title', clean);
+  upsertMetaTag('name', 'application-name', clean);
 }
 
 export function applyAdminOrRiderThemeToDocument(

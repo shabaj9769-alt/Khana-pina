@@ -69,6 +69,9 @@ import {
   getContrastRatio,
   getAccessibleContrastColor,
   applyAdminOrRiderThemeToDocument,
+  applyShopBrandingToDocument,
+  cacheStorefrontTheme,
+  getCachedShopName,
 } from '../utils/themeTokens';
 import { subscribeToAdminOrders } from '../utils/firebaseClient';
 
@@ -121,6 +124,9 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const [adminAccentColor, setAdminAccentColor] = useState<string>(() => {
     return localStorage.getItem('aangan_admin_accent_color') || '#D9480F';
   });
+  const [publicShopName, setPublicShopName] = useState<string>(
+    () => getCachedShopName() || 'Food Ordering'
+  );
 
   // Navigation State (8 clean sections)
   const [activeSection, setActiveSection] = useState<AdminTopSection>('orders');
@@ -353,6 +359,15 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     setTimeout(() => setToastMsg(null), 3200);
   };
 
+  const displayShopName = shopSettings?.shopName || publicShopName || 'Food Ordering';
+  const shopInitial = (displayShopName.trim().charAt(0) || 'S').toUpperCase();
+
+  useEffect(() => {
+    applyShopBrandingToDocument(displayShopName, {
+      title: `${displayShopName} Admin`,
+    });
+  }, [displayShopName]);
+
   // Apply Admin Personal Theme to Document
   useEffect(() => {
     applyAdminOrRiderThemeToDocument(adminThemeMode, adminAccentColor);
@@ -466,9 +481,13 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       if (data.firebaseClientConfig) {
         setFirebaseClientConfig(data.firebaseClientConfig);
       }
+      if (data.settings?.shopName) {
+        setPublicShopName(data.settings.shopName);
+      }
       if (data.settings?.theme) {
         setThemeDraft(data.settings.theme);
         setPreviewModeOverride(data.settings.theme.mode === 'dark' ? 'dark' : 'light');
+        cacheStorefrontTheme(data.settings.theme);
       }
       if (data.currentUser) {
         setAdminUser(data.currentUser);
@@ -488,13 +507,22 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     }
   };
 
-  // Verify existing cookie session on mount
+  // Verify existing cookie session on mount & fetch live shop name for login screen
   useEffect(() => {
     (async () => {
       try {
-        const res = await fetch('/api/admin/me', { credentials: 'include' });
-        if (res.ok) {
-          const data = await res.json();
+        const [meRes, cfgRes] = await Promise.all([
+          fetch('/api/admin/me', { credentials: 'include' }),
+          fetch('/api/admin/auth-config', { cache: 'no-store' }).catch(() => null),
+        ]);
+        if (cfgRes && cfgRes.ok) {
+          const cfgData = await cfgRes.json().catch(() => null);
+          if (cfgData?.shopName) {
+            setPublicShopName(cfgData.shopName);
+          }
+        }
+        if (meRes.ok) {
+          const data = await meRes.json();
           setAdminUser(data.user);
           setAdminRole(data.user.role);
           if (data.firebaseCustomToken) {
@@ -770,25 +798,30 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       const res = await adminFetch('/api/admin/settings', {
         method: 'PUT',
         body: JSON.stringify({
-          settings: settingsPatch ? { ...shopSettings, ...settingsPatch } : undefined,
+          settings: settingsPatch,
           deliveryZone: zonePatch ? { ...deliveryZone, ...zonePatch } : undefined,
         }),
       });
       if (!res.ok) {
-        const err = await res.json();
-        showToast(err.error || 'Could not save');
+        const err = await res.json().catch(() => ({}));
+        showToast(err.error || `Could not save (HTTP ${res.status})`);
         return;
       }
       const data = await res.json();
       setShopSettings(data.settings);
       setDeliveryZone(data.deliveryZone);
+      if (data.settings?.shopName) {
+        setPublicShopName(data.settings.shopName);
+      }
       if (data.settings?.theme) {
         setThemeDraft(data.settings.theme);
+        setPreviewModeOverride(data.settings.theme.mode === 'dark' ? 'dark' : 'light');
+        cacheStorefrontTheme(data.settings.theme);
       }
       triggerStoreRefresh();
       showToast('Saved');
-    } catch {
-      showToast('Could not save');
+    } catch (err) {
+      showToast(err instanceof Error && err.message ? err.message : 'Network error while saving');
     }
   };
 
@@ -1354,11 +1387,11 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       <div className="min-h-[100dvh] w-full flex items-center justify-center bg-bg px-4 py-8 text-text">
         <div className="w-full max-w-md bg-surface rounded-2xl border border-border shadow-sm p-6 sm:p-8">
           <div className="flex items-center gap-3 mb-6">
-            <div className="w-11 h-11 rounded-xl bg-primary flex items-center justify-center text-primary-contrast font-bold text-lg">
-              A
+            <div className="w-11 h-11 rounded-xl bg-primary flex items-center justify-center text-primary-contrast font-bold text-lg shrink-0">
+              {shopInitial}
             </div>
-            <div>
-              <h1 className="text-lg font-bold text-text">Aangan Kitchen Admin</h1>
+            <div className="min-w-0">
+              <h1 className="text-lg font-bold text-text truncate">{displayShopName} Admin</h1>
               <p className="text-xs text-muted">Authorized Staff & Management Portal</p>
             </div>
           </div>
@@ -1385,7 +1418,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 required
                 value={loginEmail}
                 onChange={(e) => setLoginEmail(e.target.value)}
-                placeholder="name@aangan.in"
+                placeholder="owner@restaurant.in"
                 className="w-full min-h-[44px] px-3.5 rounded-xl border border-border bg-bg text-sm text-text focus:outline-none focus:border-primary"
               />
             </div>
@@ -1478,11 +1511,11 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         <div className="p-4 border-b border-border flex items-center justify-between gap-2">
           <div className="flex items-center gap-2.5 min-w-0">
             <div className="w-9 h-9 rounded-xl bg-primary text-primary-contrast flex items-center justify-center font-bold shrink-0">
-              A
+              {shopInitial}
             </div>
             <div className="min-w-0">
               <h2 className="font-bold text-sm text-text truncate">
-                {shopSettings?.shopName || 'Aangan Kitchen'}
+                {displayShopName}
               </h2>
               <p className="text-[11px] text-muted truncate">
                 {adminUser.name} • {formatRoleLabel(adminUser.role)}
@@ -1586,11 +1619,11 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         <header className="sticky top-0 z-30 bg-surface border-b border-border px-2.5 sm:px-6 py-2.5 flex flex-wrap items-center justify-between gap-2 min-w-0">
           <div className="flex items-center gap-2 min-w-0 flex-1">
             <div className="lg:hidden w-8 h-8 rounded-lg bg-primary text-primary-contrast flex items-center justify-center font-bold text-sm shrink-0">
-              A
+              {shopInitial}
             </div>
             <div className="min-w-0">
               <h1 className="text-sm sm:text-base font-bold text-text truncate">
-                {shopSettings?.shopName || 'Aangan Kitchen'}
+                {displayShopName}
               </h1>
               <p className="text-[11px] text-muted hidden sm:block">
                 {formatRoleLabel(adminRole)} • Kitchen Admin
@@ -2877,6 +2910,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                                   primaryColor: preset.primaryColor,
                                   accentColor: preset.accentColor,
                                   mode: preset.defaultMode,
+                                  pwaThemeColor: preset.primaryColor,
                                 });
                                 setPreviewModeOverride(
                                   preset.defaultMode === 'dark' ? 'dark' : 'light'
@@ -2921,7 +2955,11 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                             type="color"
                             value={themeDraft.primaryColor}
                             onChange={(e) =>
-                              setThemeDraft({ ...themeDraft, primaryColor: e.target.value })
+                              setThemeDraft({
+                                ...themeDraft,
+                                primaryColor: e.target.value,
+                                pwaThemeColor: e.target.value,
+                              })
                             }
                             className="w-10 h-10 rounded-lg border border-border cursor-pointer"
                           />
@@ -2929,7 +2967,11 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                             type="text"
                             value={themeDraft.primaryColor}
                             onChange={(e) =>
-                              setThemeDraft({ ...themeDraft, primaryColor: e.target.value })
+                              setThemeDraft({
+                                ...themeDraft,
+                                primaryColor: e.target.value,
+                                pwaThemeColor: e.target.value,
+                              })
                             }
                             className="flex-1 min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs font-mono"
                           />
@@ -3062,7 +3104,14 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
                     <button
                       type="button"
-                      onClick={() => handleUpdateShopSettings({ theme: themeDraft })}
+                      onClick={() =>
+                        handleUpdateShopSettings({
+                          theme: {
+                            ...themeDraft,
+                            pwaThemeColor: themeDraft.primaryColor || themeDraft.pwaThemeColor,
+                          },
+                        })
+                      }
                       className="w-full min-h-[44px] rounded-xl bg-primary text-primary-contrast font-bold text-xs cursor-pointer shadow-sm"
                     >
                       Save & Publish Storefront Theme
@@ -3158,7 +3207,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                                     borderRadius: radPx,
                                   }}
                                 >
-                                  A
+                                  {shopInitial}
                                 </div>
                               )}
                               <span className="font-bold text-xs">{shopSettings.shopName}</span>

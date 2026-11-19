@@ -64,6 +64,7 @@ export default async function handler(req: Request, res: Response) {
       });
 
       res.json({
+        shopName: db.settings.shopName,
         rider,
         orders: assignedOrders,
         firebaseCustomToken,

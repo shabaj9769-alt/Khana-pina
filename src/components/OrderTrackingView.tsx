@@ -24,6 +24,7 @@ import {
   ReviewRecord,
 } from '../types.ts';
 import { subscribeToCustomerTracking } from '../utils/firebaseClient.ts';
+import { applyShopBrandingToDocument, getCachedShopName } from '../utils/themeTokens.ts';
 
 interface OrderTrackingViewProps {
   trackingToken: string;
@@ -139,6 +140,14 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
   useEffect(() => {
     fetchTrackingData();
   }, [trackingToken]);
+
+  useEffect(() => {
+    if (shopInfo?.shopName) {
+      applyShopBrandingToDocument(shopInfo.shopName, {
+        title: `${shopInfo.shopName} — Order Tracking`,
+      });
+    }
+  }, [shopInfo?.shopName]);
 
   // Listen to Firebase Realtime Database path tracking/{trackingToken} via onValue
   useEffect(() => {
@@ -506,7 +515,7 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
           <div className="flex items-start justify-between gap-2 pb-4 border-b border-border">
             <div className="min-w-0 flex-1">
               <h2 className="font-display text-base font-bold text-text truncate">
-                {shopInfo?.shopName || 'Aangan Artisanal Kitchen'}
+                {shopInfo?.shopName || getCachedShopName() || 'Food Ordering'}
               </h2>
               <p className="text-[13px] text-muted truncate">
                 FSSAI Lic No. {shopInfo?.fssaiNumber}

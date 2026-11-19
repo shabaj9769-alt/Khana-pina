@@ -13,7 +13,11 @@ import {
   Truck,
 } from 'lucide-react';
 import { OrderRecord, ThemeMode } from '../types.ts';
-import { applyAdminOrRiderThemeToDocument } from '../utils/themeTokens.ts';
+import {
+  applyAdminOrRiderThemeToDocument,
+  applyShopBrandingToDocument,
+  getCachedShopName,
+} from '../utils/themeTokens.ts';
 import { subscribeToRiderOrders } from '../utils/firebaseClient.ts';
 
 interface DeliveryPartnerViewProps {
@@ -37,6 +41,7 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
   const [firebaseClientConfig, setFirebaseClientConfig] = useState<Record<string, string> | null>(
     null
   );
+  const [shopName, setShopName] = useState<string>(() => getCachedShopName() || 'Food Ordering');
   const [riderName, setRiderName] = useState('Ramesh Pawar');
   const [riderPhone, setRiderPhone] = useState('9876501234');
   const [dailyPin, setDailyPin] = useState<string | undefined>(undefined);
@@ -69,6 +74,12 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
     }
   }, [riderThemeMode]);
 
+  useEffect(() => {
+    applyShopBrandingToDocument(shopName, {
+      title: `${shopName} — Rider`,
+    });
+  }, [shopName]);
+
   const showToast = (msg: string) => {
     setToastMsg(msg);
     setTimeout(() => setToastMsg(null), 3000);
@@ -86,6 +97,9 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
       const res = await fetch(`/api/rider/${encodeURIComponent(token)}`);
       const data = await res.json();
       if (res.ok && data.rider) {
+        if (data.shopName) {
+          setShopName(data.shopName);
+        }
         setRiderId(data.rider.id);
         setRiderName(data.rider.name);
         setRiderPhone(data.rider.phone);

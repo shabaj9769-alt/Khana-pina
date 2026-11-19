@@ -35,7 +35,7 @@ export default async function handler(req: Request, res: Response) {
 
     const cached = getHomeCache();
     if (cached && Date.now() - cached.timestamp < 30_000) {
-      res.setHeader('Cache-Control', 'public, s-maxage=15, stale-while-revalidate=30');
+      res.setHeader('Cache-Control', 'no-store, max-age=0, s-maxage=0');
       res.json(cached.payload);
       return;
     }
@@ -116,7 +116,7 @@ export default async function handler(req: Request, res: Response) {
     };
 
     setHomeCache(payload);
-    res.setHeader('Cache-Control', 'public, s-maxage=15, stale-while-revalidate=30');
+    res.setHeader('Cache-Control', 'no-store, max-age=0, s-maxage=0');
     res.json(payload);
   } catch (err) {
     res.status(500).json({

@@ -28,7 +28,7 @@ import {
   ShopSettings,
   ThemeMode,
 } from '../../src/types.ts';
-import { DEFAULT_STOREFRONT_THEME } from '../../src/utils/themeTokens.ts';
+import { DEFAULT_STOREFRONT_THEME, normalizeThemeConfig } from '../../src/utils/themeTokens.ts';
 import { getRtdb } from './firebaseAdmin.ts';
 import { hashPasswordScrypt, isRazorpayConfigured, parseCookies, verifyJwtRaw } from './security.ts';
 
@@ -814,6 +814,7 @@ export function buildPublicShopStatus(settings: ShopSettings): PublicShopStatus 
     opensAtText: settings.opensAtText || '11:00 AM',
     holidaysNote: settings.holidaysNote || '',
     allowPreOrdersWhenClosed: settings.allowPreOrdersWhenClosed !== false,
+    ...(settings.theme ? { theme: settings.theme } : {}),
     updatedAt: new Date().toISOString(),
   };
 }
@@ -950,7 +951,11 @@ export async function ensureFirebaseSeeded(): Promise<DatabaseState> {
 
   // Hydrate in-memory mirror from Firebase RTDB snapshot
   db.nextOrderSequence = Number(rootVal.counters?.nextOrderSequence || 1046);
-  db.settings = { ...db.settings, ...rootVal.settings };
+  db.settings = {
+    ...db.settings,
+    ...rootVal.settings,
+    theme: normalizeThemeConfig(rootVal.settings?.theme),
+  };
   db.deliveryZone = { ...db.deliveryZone, ...rootVal.deliveryZone };
   db.categories = recordToArray<Category>(rootVal.categories)
     .map((c) => ({

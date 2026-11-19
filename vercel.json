@@ -10,6 +10,8 @@
     { "source": "/api/track/:path*", "destination": "/api/track" },
     { "source": "/api/rider/:path*", "destination": "/api/rider" },
     { "source": "/api/admin/:path*", "destination": "/api/admin" },
+    { "source": "/api/manifest", "destination": "/api/manifest" },
+    { "source": "/manifest.webmanifest", "destination": "/api/manifest" },
     { "source": "/((?!api/).*)", "destination": "/index.html" }
   ]
 }
