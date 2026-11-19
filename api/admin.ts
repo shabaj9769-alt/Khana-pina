@@ -2,7 +2,6 @@ import crypto from 'crypto';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import {
-  AdminRole,
   AdminSessionRecord,
   Coupon,
   DeliveryBoy,
@@ -37,7 +36,6 @@ import {
   verifyTotpCode,
 } from './_lib/security.ts';
 import {
-  AdminUserRecord,
   allocateNextOrderSequenceTx,
   authenticateAdminFromTokenOrCookieAsync,
   BroadcastRecord,
@@ -53,6 +51,7 @@ import {
   isOrderVisibleToKitchen,
   logAudit,
   persistFullStateToFirebase,
+  purgeNonOwnerAdmins,
   recordLoginFailureFirebase,
   syncOrderRealtimePaths,
   toPublicAdminUser,
@@ -174,19 +173,14 @@ function getAdminSubPath(req: Request): string {
 
 async function verifyAdminAuthorized(
   req: Request,
-  res: Response,
-  allowedRoles?: AdminRole[]
+  res: Response
 ): Promise<VerifiedAdminContext | null> {
   const authHeader = req.headers.authorization;
   const bearer = authHeader && authHeader.startsWith('Bearer ') ? authHeader.slice(7) : undefined;
   const verified = await authenticateAdminFromTokenOrCookieAsync(bearer, req.headers.cookie);
 
-  if (!verified) {
+  if (!verified || verified.role !== 'owner') {
     res.status(401).json({ error: 'Admin authentication required or session expired' });
-    return null;
-  }
-  if (allowedRoles && !allowedRoles.includes(verified.role)) {
-    res.status(403).json({ error: `Role '${verified.role}' is not authorized for this action` });
     return null;
   }
   return verified;
@@ -222,6 +216,8 @@ export default async function handler(req: Request, res: Response) {
 
     // 2. POST /api/admin/login (Returns JWT + Firebase Custom Token with claims { role, adminId })
     if (method === 'POST' && subPath === '/login') {
+      await purgeNonOwnerAdmins();
+
       const parsed = z
         .object({
           email: z.string().trim().email(),
@@ -240,7 +236,7 @@ export default async function handler(req: Request, res: Response) {
       if (await isLoginLockedFirebase(cleanEmail, clientIp)) {
         await logAudit(
           cleanEmail,
-          'staff',
+          'owner',
           'ADMIN_LOGIN_LOCKED',
           'Blocked login attempt during 15-minute brute-force lockout window',
           clientIp
@@ -255,13 +251,14 @@ export default async function handler(req: Request, res: Response) {
       const user = db.adminUsers.find((u) => u.email.toLowerCase() === cleanEmail);
       if (
         !user ||
+        user.role !== 'owner' ||
         !user.isActive ||
         !verifyPasswordScrypt(parsed.data.password, user.passwordHash)
       ) {
         const { emailLocked, ipLocked } = await recordLoginFailureFirebase(cleanEmail, clientIp);
         await logAudit(
           cleanEmail,
-          user?.role || 'staff',
+          'owner',
           'ADMIN_LOGIN_FAILED',
           `Failed login attempt${emailLocked || ipLocked ? ' (LOCKOUT TRIGGERED)' : ''}`,
           clientIp
@@ -386,7 +383,9 @@ export default async function handler(req: Request, res: Response) {
         res.status(401).json({ error: 'Invalid or expired refresh token' });
         return;
       }
-      const user = db.adminUsers.find((u) => u.id === payload.sub && u.isActive);
+      const user = db.adminUsers.find(
+        (u) => u.id === payload.sub && u.isActive && u.role === 'owner'
+      );
       const session = db.adminSessions.find(
         (s) =>
           s.id === payload.sid &&
@@ -576,7 +575,7 @@ export default async function handler(req: Request, res: Response) {
 
     // 7b. PUT /api/admin/change-email (Owner-only: requires current password, checks uniqueness, revokes all sessions)
     if (method === 'PUT' && subPath === '/change-email') {
-      const admin = await verifyAdminAuthorized(req, res, ['owner']);
+      const admin = await verifyAdminAuthorized(req, res);
       if (!admin) return;
       const parsed = z
         .object({
@@ -634,63 +633,54 @@ export default async function handler(req: Request, res: Response) {
       return;
     }
 
-    // 8. POST /api/admin/users
-    if (method === 'POST' && subPath === '/users') {
-      const admin = await verifyAdminAuthorized(req, res, ['owner']);
+    // 7c. PUT /api/admin/change-name (Updates only the logged-in owner's name in adminUsers/<id>)
+    if (method === 'PUT' && subPath === '/change-name') {
+      const admin = await verifyAdminAuthorized(req, res);
       if (!admin) return;
       const parsed = z
         .object({
-          email: z.string().trim().email(),
-          name: z.string().trim().min(2).max(120),
-          role: z.enum(['owner', 'manager', 'staff']),
-          password: z.string().min(8, 'Initial password must be at least 8 characters'),
+          name: z
+            .string()
+            .trim()
+            .min(2, 'Name must be between 2 and 60 characters')
+            .max(60, 'Name must be between 2 and 60 characters'),
         })
         .safeParse(req.body);
 
       if (!parsed.success) {
-        res.status(400).json({ error: parsed.error.issues[0]?.message || 'Invalid user details' });
+        res.status(400).json({
+          error: parsed.error.issues[0]?.message || 'Name must be between 2 and 60 characters',
+        });
         return;
       }
 
-      const cleanEmail = parsed.data.email.toLowerCase();
-      if (db.adminUsers.some((u) => u.email.toLowerCase() === cleanEmail)) {
-        res.status(400).json({ error: 'An admin user with this email already exists' });
+      const user = db.adminUsers.find((u) => u.id === admin.userId);
+      if (!user) {
+        res.status(404).json({ error: 'Admin user not found' });
         return;
       }
 
-      const newUser: AdminUserRecord = {
-        id: `adm_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
-        email: cleanEmail,
-        name: parsed.data.name,
-        role: parsed.data.role,
-        passwordHash: hashPasswordScrypt(parsed.data.password),
-        isActive: true,
-        mustChangePassword: true,
-        tokenVersion: 1,
-        totpEnabled: false,
-        createdAt: new Date().toISOString(),
-      };
-
-      db.adminUsers.push(newUser);
-      await rtdb.ref(`adminUsers/${newUser.id}`).set(newUser);
+      user.name = parsed.data.name;
+      await rtdb.ref(`adminUsers/${user.id}`).update({ name: user.name });
       await logAudit(
-        admin.email,
-        admin.role,
-        'ADMIN_USER_CREATED',
-        `Created ${newUser.role} account for ${newUser.email}`,
+        user.email,
+        user.role,
+        'ADMIN_NAME_CHANGED',
+        `Updated owner name to ${user.name}`,
         clientIp
       );
-      res.json({ adminUsers: db.adminUsers.map(toPublicAdminUser) });
+
+      res.json({ user: toPublicAdminUser(user) });
       return;
     }
 
-    // 9. POST /api/admin/users/:id/logout-all
+    // 8. POST /api/admin/users/:id/logout-all
     if (method === 'POST' && /^\/users\/[^/]+\/logout-all$/.test(subPath)) {
       const admin = await verifyAdminAuthorized(req, res);
       if (!admin) return;
       const targetId = decodeURIComponent(subPath.split('/')[2]);
-      if (admin.role !== 'owner' && admin.userId !== targetId) {
-        res.status(403).json({ error: 'Only Owner can revoke sessions for other users' });
+      if (admin.userId !== targetId) {
+        res.status(403).json({ error: 'Not authorized for this action' });
         return;
       }
       const target = db.adminUsers.find((u) => u.id === targetId);
@@ -717,92 +707,9 @@ export default async function handler(req: Request, res: Response) {
       return;
     }
 
-    // 10. PATCH /api/admin/users/:id
-    if (method === 'PATCH' && /^\/users\/[^/]+$/.test(subPath)) {
-      const admin = await verifyAdminAuthorized(req, res, ['owner']);
-      if (!admin) return;
-      const targetId = decodeURIComponent(subPath.split('/')[2]);
-      const target = db.adminUsers.find((u) => u.id === targetId);
-      if (!target) {
-        res.status(404).json({ error: 'Admin user not found' });
-        return;
-      }
-
-      const parsed = z
-        .object({
-          role: z.enum(['owner', 'manager', 'staff']).optional(),
-          isActive: z.boolean().optional(),
-          name: z.string().trim().min(2).max(120).optional(),
-          email: z.string().trim().email('Please enter a valid email address').optional(),
-          resetPassword: z.string().min(8).optional(),
-        })
-        .safeParse(req.body);
-
-      if (!parsed.success) {
-        res.status(400).json({ error: parsed.error.issues[0]?.message || 'Invalid update payload' });
-        return;
-      }
-
-      if (target.id === admin.userId && parsed.data.isActive === false) {
-        res.status(400).json({ error: 'You cannot disable your own active Owner account' });
-        return;
-      }
-
-      if (parsed.data.email) {
-        const cleanEmail = parsed.data.email.toLowerCase();
-        if (db.adminUsers.some((u) => u.id !== target.id && u.email.toLowerCase() === cleanEmail)) {
-          res.status(400).json({ error: 'An admin user with this email already exists' });
-          return;
-        }
-        if (cleanEmail !== target.email.toLowerCase()) {
-          target.email = cleanEmail;
-          if (target.id !== admin.userId) {
-            target.tokenVersion += 1;
-            for (const s of db.adminSessions) {
-              if (s.userId === target.id) s.revoked = true;
-            }
-          }
-        }
-      }
-
-      if (parsed.data.role) target.role = parsed.data.role;
-      if (parsed.data.name) target.name = parsed.data.name;
-      if (parsed.data.isActive !== undefined) {
-        target.isActive = parsed.data.isActive;
-        if (!target.isActive) {
-          target.tokenVersion += 1;
-          for (const s of db.adminSessions) {
-            if (s.userId === target.id) s.revoked = true;
-          }
-        }
-      }
-      if (parsed.data.resetPassword) {
-        target.passwordHash = hashPasswordScrypt(parsed.data.resetPassword);
-        target.mustChangePassword = true;
-        target.tokenVersion += 1;
-        for (const s of db.adminSessions) {
-          if (s.userId === target.id) s.revoked = true;
-        }
-      }
-
-      await persistFullStateToFirebase();
-      await logAudit(
-        admin.email,
-        admin.role,
-        'ADMIN_USER_UPDATED',
-        `Updated user ${target.email} (role=${target.role}, active=${target.isActive})`,
-        clientIp
-      );
-      res.json({
-        adminUsers: db.adminUsers.map(toPublicAdminUser),
-        adminSessions: db.adminSessions.filter((s) => !s.revoked),
-      });
-      return;
-    }
-
-    // 11. DELETE /api/admin/sessions/:sessionId
+    // 9. DELETE /api/admin/sessions/:sessionId
     if (method === 'DELETE' && /^\/sessions\/[^/]+$/.test(subPath)) {
-      const admin = await verifyAdminAuthorized(req, res, ['owner']);
+      const admin = await verifyAdminAuthorized(req, res);
       if (!admin) return;
       const sessionId = decodeURIComponent(subPath.split('/')[2]);
       const sess = db.adminSessions.find((s) => s.id === sessionId);
@@ -821,9 +728,9 @@ export default async function handler(req: Request, res: Response) {
       return;
     }
 
-    // 12. TOTP Setup / Verify / Disable
+    // 10. TOTP Setup / Verify / Disable
     if (method === 'POST' && subPath === '/totp/setup') {
-      const admin = await verifyAdminAuthorized(req, res, ['owner']);
+      const admin = await verifyAdminAuthorized(req, res);
       if (!admin) return;
       const user = db.adminUsers.find((u) => u.id === admin.userId);
       if (!user) {
@@ -841,7 +748,7 @@ export default async function handler(req: Request, res: Response) {
     }
 
     if (method === 'POST' && subPath === '/totp/verify') {
-      const admin = await verifyAdminAuthorized(req, res, ['owner']);
+      const admin = await verifyAdminAuthorized(req, res);
       if (!admin) return;
       const user = db.adminUsers.find((u) => u.id === admin.userId);
       if (!user || !user.totpSecret) {
@@ -859,7 +766,7 @@ export default async function handler(req: Request, res: Response) {
         user.email,
         user.role,
         'TOTP_2FA_ENABLED',
-        'Enabled TOTP 2FA on Owner account',
+        'Enabled TOTP 2FA on admin account',
         clientIp
       );
       res.json({ user: toPublicAdminUser(user) });
@@ -867,7 +774,7 @@ export default async function handler(req: Request, res: Response) {
     }
 
     if (method === 'POST' && subPath === '/totp/disable') {
-      const admin = await verifyAdminAuthorized(req, res, ['owner']);
+      const admin = await verifyAdminAuthorized(req, res);
       if (!admin) return;
       const user = db.adminUsers.find((u) => u.id === admin.userId);
       if (!user) {
@@ -881,16 +788,16 @@ export default async function handler(req: Request, res: Response) {
         user.email,
         user.role,
         'TOTP_2FA_DISABLED',
-        'Disabled TOTP 2FA on Owner account',
+        'Disabled TOTP 2FA on admin account',
         clientIp
       );
       res.json({ user: toPublicAdminUser(user) });
       return;
     }
 
-    // 13. POST /api/admin/orders/expire-stale (Requirement 5: Called when Admin panel opens)
+    // 11. POST /api/admin/orders/expire-stale (Requirement 5: Called when Admin panel opens)
     if (method === 'POST' && subPath === '/orders/expire-stale') {
-      const admin = await verifyAdminAuthorized(req, res, ['owner', 'manager', 'staff']);
+      const admin = await verifyAdminAuthorized(req, res);
       if (!admin) return;
       const expired = await expireStaleOrdersLazy();
       res.json({
@@ -900,13 +807,13 @@ export default async function handler(req: Request, res: Response) {
       return;
     }
 
-    // 14. GET /api/admin/bootstrap (Requirement 5 & 8: Runs lazy expiry & filters unpaid RAZORPAY orders from kitchen board)
+    // 12. GET /api/admin/bootstrap (Requirement 5 & 8: Runs lazy expiry & filters unpaid RAZORPAY orders from kitchen board)
     if (method === 'GET' && subPath === '/bootstrap') {
       const admin = await verifyAdminAuthorized(req, res);
       if (!admin) return;
+      await purgeNonOwnerAdmins();
       await expireStaleOrdersLazy();
 
-      const role = admin.role;
       const currentUser = db.adminUsers.find((u) => u.id === admin.userId);
       const rzpCfg = getRazorpayConfig();
       const firebaseCustomToken = await createFirebaseCustomToken(admin.userId, {
@@ -930,19 +837,19 @@ export default async function handler(req: Request, res: Response) {
         menuItems: db.menuItems,
         banners: db.banners,
         homeSections: db.homeSections,
-        coupons: role === 'staff' ? [] : db.coupons,
-        customers: role === 'staff' ? [] : Object.values(db.customers),
+        coupons: db.coupons,
+        customers: Object.values(db.customers),
         // Requirement 8: Unpaid RAZORPAY orders do NOT enter the kitchen board
         orders: db.orders.filter(isOrderVisibleToKitchen),
-        payments: role === 'staff' ? [] : db.payments,
-        refunds: role === 'staff' ? [] : db.refunds,
+        payments: db.payments,
+        refunds: db.refunds,
         deliveryBoys: db.deliveryBoys,
-        reviews: role === 'staff' ? [] : db.reviews,
-        auditLogs: role === 'owner' ? db.auditLogs : [],
-        blockedList: role === 'staff' ? [] : db.blockedList,
-        broadcasts: role === 'staff' ? [] : db.broadcasts,
-        adminUsers: role === 'owner' ? db.adminUsers.map(toPublicAdminUser) : [],
-        adminSessions: role === 'owner' ? db.adminSessions.filter((s) => !s.revoked) : [],
+        reviews: db.reviews,
+        auditLogs: db.auditLogs,
+        blockedList: db.blockedList,
+        broadcasts: db.broadcasts,
+        adminUsers: db.adminUsers.map(toPublicAdminUser),
+        adminSessions: db.adminSessions.filter((s) => !s.revoked),
         broadcastProviderConfigured,
         demoMode: isDemoModeEnabled(),
         razorpayMode: rzpCfg.mode,
@@ -954,7 +861,7 @@ export default async function handler(req: Request, res: Response) {
 
     // 15. POST /api/admin/orders/manual
     if (method === 'POST' && subPath === '/orders/manual') {
-      const admin = await verifyAdminAuthorized(req, res, ['owner', 'manager', 'staff']);
+      const admin = await verifyAdminAuthorized(req, res);
       if (!admin) return;
 
       const parsed = z
@@ -1094,7 +1001,7 @@ export default async function handler(req: Request, res: Response) {
 
     // 16. PATCH /api/admin/orders/:orderId (Requirement 3(d) & 8: Rejects accepting unpaid RAZORPAY order with 400; syncs multi-path)
     if (method === 'PATCH' && /^\/orders\/[^/]+$/.test(subPath)) {
-      const admin = await verifyAdminAuthorized(req, res, ['owner', 'manager', 'staff']);
+      const admin = await verifyAdminAuthorized(req, res);
       if (!admin) return;
       const orderId = decodeURIComponent(subPath.split('/')[2]);
       const order = db.orders.find((o) => o.id === orderId);
@@ -1198,7 +1105,7 @@ export default async function handler(req: Request, res: Response) {
 
     // 17. Categories CRUD
     if (method === 'POST' && subPath === '/categories') {
-      const admin = await verifyAdminAuthorized(req, res, ['owner', 'manager']);
+      const admin = await verifyAdminAuthorized(req, res);
       if (!admin) return;
       const parsed = z
         .object({
@@ -1246,7 +1153,7 @@ export default async function handler(req: Request, res: Response) {
     }
 
     if (method === 'DELETE' && /^\/categories\/[^/]+$/.test(subPath)) {
-      const admin = await verifyAdminAuthorized(req, res, ['owner', 'manager']);
+      const admin = await verifyAdminAuthorized(req, res);
       if (!admin) return;
       const catId = decodeURIComponent(subPath.split('/')[2]);
       const cat = db.categories.find((c) => c.id === catId);
@@ -1270,7 +1177,7 @@ export default async function handler(req: Request, res: Response) {
 
     // 18. Menu Items CRUD & Bulk
     if (method === 'POST' && subPath === '/menu-items/bulk') {
-      const admin = await verifyAdminAuthorized(req, res, ['owner', 'manager']);
+      const admin = await verifyAdminAuthorized(req, res);
       if (!admin) return;
       const { action, itemIds, percentChange, importedItems } = req.body || {};
       const targetSet =
@@ -1374,7 +1281,7 @@ export default async function handler(req: Request, res: Response) {
     }
 
     if (method === 'POST' && subPath === '/menu-items') {
-      const admin = await verifyAdminAuthorized(req, res, ['owner', 'manager']);
+      const admin = await verifyAdminAuthorized(req, res);
       if (!admin) return;
       const item = req.body as Partial<MenuItem>;
       if (!item.name || !item.categoryId) {
@@ -1478,7 +1385,7 @@ export default async function handler(req: Request, res: Response) {
     }
 
     if (method === 'PATCH' && /^\/menu-items\/[^/]+\/toggle$/.test(subPath)) {
-      const admin = await verifyAdminAuthorized(req, res, ['owner', 'manager', 'staff']);
+      const admin = await verifyAdminAuthorized(req, res);
       if (!admin) return;
       const itemId = decodeURIComponent(subPath.split('/')[2]);
       const found = db.menuItems.find((m) => m.id === itemId);
@@ -1506,7 +1413,7 @@ export default async function handler(req: Request, res: Response) {
     }
 
     if (method === 'DELETE' && /^\/menu-items\/[^/]+$/.test(subPath)) {
-      const admin = await verifyAdminAuthorized(req, res, ['owner', 'manager']);
+      const admin = await verifyAdminAuthorized(req, res);
       if (!admin) return;
       const itemId = decodeURIComponent(subPath.split('/')[2]);
       const found = db.menuItems.find((m) => m.id === itemId);
@@ -1533,7 +1440,7 @@ export default async function handler(req: Request, res: Response) {
 
     // 19. PUT /api/admin/home-manager
     if (method === 'PUT' && subPath === '/home-manager') {
-      const admin = await verifyAdminAuthorized(req, res, ['owner', 'manager']);
+      const admin = await verifyAdminAuthorized(req, res);
       if (!admin) return;
       const { banners, homeSections } = req.body || {};
       if (Array.isArray(banners)) {
@@ -1586,7 +1493,7 @@ export default async function handler(req: Request, res: Response) {
 
     // 20. PUT /api/admin/settings (Also updates publicStatus node in Firebase RTDB)
     if (method === 'PUT' && subPath === '/settings') {
-      const admin = await verifyAdminAuthorized(req, res, ['owner', 'manager']);
+      const admin = await verifyAdminAuthorized(req, res);
       if (!admin) return;
       const body = req.body || {};
       const { settings, deliveryZone } = body;
@@ -1650,7 +1557,7 @@ export default async function handler(req: Request, res: Response) {
 
     // 20b. POST /api/admin/resolve-map-link (Safely resolves short Google Maps links to lat/lng)
     if (method === 'POST' && subPath === '/resolve-map-link') {
-      const admin = await verifyAdminAuthorized(req, res, ['owner', 'manager']);
+      const admin = await verifyAdminAuthorized(req, res);
       if (!admin) return;
       const parsed = z
         .object({
@@ -1782,7 +1689,7 @@ export default async function handler(req: Request, res: Response) {
 
     // 21. Coupons CRUD
     if (method === 'POST' && subPath === '/coupons') {
-      const admin = await verifyAdminAuthorized(req, res, ['owner', 'manager']);
+      const admin = await verifyAdminAuthorized(req, res);
       if (!admin) return;
       const parsed = z
         .object({
@@ -1835,7 +1742,7 @@ export default async function handler(req: Request, res: Response) {
     }
 
     if (method === 'DELETE' && /^\/coupons\/[^/]+$/.test(subPath)) {
-      const admin = await verifyAdminAuthorized(req, res, ['owner', 'manager']);
+      const admin = await verifyAdminAuthorized(req, res);
       if (!admin) return;
       const cleanCode = decodeURIComponent(subPath.split('/')[2]).toUpperCase();
       db.coupons = db.coupons.filter((c) => c.code !== cleanCode);
@@ -1854,7 +1761,7 @@ export default async function handler(req: Request, res: Response) {
 
     // 22. Delivery Boys CRUD & Token Regeneration/Revocation
     if (method === 'POST' && subPath === '/delivery-boys') {
-      const admin = await verifyAdminAuthorized(req, res, ['owner', 'manager']);
+      const admin = await verifyAdminAuthorized(req, res);
       if (!admin) return;
       const { name, phone } = req.body || {};
       const cleanPhone = String(phone || '').replace(/\D/g, '');
@@ -1886,7 +1793,7 @@ export default async function handler(req: Request, res: Response) {
     }
 
     if (method === 'POST' && /^\/delivery-boys\/[^/]+\/regenerate-token$/.test(subPath)) {
-      const admin = await verifyAdminAuthorized(req, res, ['owner', 'manager']);
+      const admin = await verifyAdminAuthorized(req, res);
       if (!admin) return;
       const riderId = decodeURIComponent(subPath.split('/')[2]);
       const rider = db.deliveryBoys.find((r) => r.id === riderId);
@@ -1911,7 +1818,7 @@ export default async function handler(req: Request, res: Response) {
     }
 
     if (method === 'POST' && /^\/delivery-boys\/[^/]+\/revoke-token$/.test(subPath)) {
-      const admin = await verifyAdminAuthorized(req, res, ['owner', 'manager']);
+      const admin = await verifyAdminAuthorized(req, res);
       if (!admin) return;
       const riderId = decodeURIComponent(subPath.split('/')[2]);
       const rider = db.deliveryBoys.find((r) => r.id === riderId);
@@ -1934,7 +1841,7 @@ export default async function handler(req: Request, res: Response) {
     }
 
     if (method === 'PATCH' && /^\/delivery-boys\/[^/]+$/.test(subPath)) {
-      const admin = await verifyAdminAuthorized(req, res, ['owner', 'manager']);
+      const admin = await verifyAdminAuthorized(req, res);
       if (!admin) return;
       const riderId = decodeURIComponent(subPath.split('/')[2]);
       const rider = db.deliveryBoys.find((r) => r.id === riderId);
@@ -1970,7 +1877,7 @@ export default async function handler(req: Request, res: Response) {
     }
 
     if (method === 'DELETE' && /^\/delivery-boys\/[^/]+$/.test(subPath)) {
-      const admin = await verifyAdminAuthorized(req, res, ['owner', 'manager']);
+      const admin = await verifyAdminAuthorized(req, res);
       if (!admin) return;
       const riderId = decodeURIComponent(subPath.split('/')[2]);
       const rider = db.deliveryBoys.find((r) => r.id === riderId);
@@ -1993,7 +1900,7 @@ export default async function handler(req: Request, res: Response) {
 
     // 23. POST /api/admin/block
     if (method === 'POST' && subPath === '/block') {
-      const admin = await verifyAdminAuthorized(req, res, ['owner', 'manager']);
+      const admin = await verifyAdminAuthorized(req, res);
       if (!admin) return;
       const parsed = z
         .object({
@@ -2059,7 +1966,7 @@ export default async function handler(req: Request, res: Response) {
 
     // 24. POST /api/admin/payments/:paymentId/refund (Requirement 8: Owner-only, Real Razorpay Refund API, capped at captured amount)
     if (method === 'POST' && /^\/payments\/[^/]+\/refund$/.test(subPath)) {
-      const admin = await verifyAdminAuthorized(req, res, ['owner']);
+      const admin = await verifyAdminAuthorized(req, res);
       if (!admin) return;
       const paymentId = decodeURIComponent(subPath.split('/')[2]);
       const payment = db.payments.find((p) => p.id === paymentId);
@@ -2119,7 +2026,7 @@ export default async function handler(req: Request, res: Response) {
 
     // 25. PATCH /api/admin/reviews/:id
     if (method === 'PATCH' && /^\/reviews\/[^/]+$/.test(subPath)) {
-      const admin = await verifyAdminAuthorized(req, res, ['owner', 'manager']);
+      const admin = await verifyAdminAuthorized(req, res);
       if (!admin) return;
       const reviewId = decodeURIComponent(subPath.split('/')[2]);
       const rev = db.reviews.find((r) => r.id === reviewId);
@@ -2142,7 +2049,7 @@ export default async function handler(req: Request, res: Response) {
 
     // 26. POST /api/admin/broadcast
     if (method === 'POST' && subPath === '/broadcast') {
-      const admin = await verifyAdminAuthorized(req, res, ['owner', 'manager']);
+      const admin = await verifyAdminAuthorized(req, res);
       if (!admin) return;
       if (!broadcastProviderConfigured) {
         res.status(400).json({
@@ -2180,7 +2087,7 @@ export default async function handler(req: Request, res: Response) {
 
     // 27. POST /api/admin/upload-image (Requirement 7: Uploads to Firebase Storage / Cloudinary, saves URL in DB)
     if (method === 'POST' && subPath === '/upload-image') {
-      const admin = await verifyAdminAuthorized(req, res, ['owner', 'manager']);
+      const admin = await verifyAdminAuthorized(req, res);
       if (!admin) return;
       const { dataUrl, filename } = req.body || {};
       if (!dataUrl || typeof dataUrl !== 'string') {
@@ -2224,7 +2131,7 @@ export default async function handler(req: Request, res: Response) {
 
     // 28. GET /api/admin/backup
     if (method === 'GET' && subPath === '/backup') {
-      const admin = await verifyAdminAuthorized(req, res, ['owner']);
+      const admin = await verifyAdminAuthorized(req, res);
       if (!admin) return;
       await logAudit(
         admin.email,

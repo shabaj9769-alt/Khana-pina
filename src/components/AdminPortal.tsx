@@ -57,7 +57,6 @@ import {
   ShopSettings,
   DeliveryZone,
   Coupon,
-  AdminRole,
   CustomerRecord,
   HomeSection,
   Banner,
@@ -117,7 +116,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   // Authentication State (HttpOnly cookie is primary; state tracks current profile + Firebase Custom Token)
   const [authChecking, setAuthChecking] = useState(true);
   const [adminUser, setAdminUser] = useState<AdminUserPublic | null>(null);
-  const [adminRole, setAdminRole] = useState<AdminRole>('owner');
   const [firebaseCustomToken, setFirebaseCustomToken] = useState<string | null>(null);
   const [firebaseClientConfig, setFirebaseClientConfig] = useState<Record<string, string> | null>(
     null
@@ -149,7 +147,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   );
   const [marketingSubTab, setMarketingSubTab] = useState<'coupons' | 'broadcast'>('coupons');
   const [financeSubTab, setFinanceSubTab] = useState<'payments' | 'reports'>('payments');
-  const [settingsSubTab, setSettingsSubTab] = useState<'shop' | 'users'>('shop');
 
   const [navDrawerOpen, setNavDrawerOpen] = useState(false);
   const [notificationDrawerOpen, setNotificationDrawerOpen] = useState(false);
@@ -172,7 +169,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const [banners, setBanners] = useState<Banner[]>([]);
   const [payments, setPayments] = useState<PaymentRecord[]>([]);
   const [refunds, setRefunds] = useState<RefundRecord[]>([]);
-  const [adminUsers, setAdminUsers] = useState<AdminUserPublic[]>([]);
   const [broadcastProviderConfigured, setBroadcastProviderConfigured] = useState(false);
   const [razorpayConfigured, setRazorpayConfigured] = useState<boolean>(false);
   const [broadcastMessage, setBroadcastMessage] = useState('');
@@ -319,29 +315,21 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const [reportStartDate, setReportStartDate] = useState('');
   const [reportEndDate, setReportEndDate] = useState('');
 
-  // User Management & Password Change State
-  const [newUserEmail, setNewUserEmail] = useState('');
-  const [newUserName, setNewUserName] = useState('');
-  const [newUserRole, setNewUserRole] = useState<AdminRole>('staff');
-  const [newUserPassword, setNewUserPassword] = useState('');
+  // Account Settings State (Name, Email, Password)
+  const [nameFormOpen, setNameFormOpen] = useState(false);
+  const [newNameInput, setNewNameInput] = useState('');
+  const [isUpdatingName, setIsUpdatingName] = useState(false);
 
   const [passwordModalOpen, setPasswordModalOpen] = useState(false);
   const [currentPasswordInput, setCurrentPasswordInput] = useState('');
   const [newPasswordInput, setNewPasswordInput] = useState('');
   const [confirmPasswordInput, setConfirmPasswordInput] = useState('');
 
-  const [resetPassModalUser, setResetPassModalUser] = useState<AdminUserPublic | null>(null);
-  const [resetPassNewVal, setResetPassNewVal] = useState('');
-
   const [emailModalOpen, setEmailModalOpen] = useState(false);
   const [newEmailInput, setNewEmailInput] = useState('');
   const [emailCurrentPasswordInput, setEmailCurrentPasswordInput] = useState('');
   const [isUpdatingEmail, setIsUpdatingEmail] = useState(false);
   const [loginSuccessNotice, setLoginSuccessNotice] = useState<string | null>(null);
-
-  const [editStaffModalUser, setEditStaffModalUser] = useState<AdminUserPublic | null>(null);
-  const [editStaffNameVal, setEditStaffNameVal] = useState('');
-  const [editStaffEmailVal, setEditStaffEmailVal] = useState('');
 
   // Delivery Location & Fee State
   const [locationInput, setLocationInput] = useState('');
@@ -499,9 +487,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
     setLocationDetectStatus('invalid');
   };
-
-  const formatRoleLabel = (role: AdminRole) =>
-    role === 'owner' ? 'Owner' : role === 'manager' ? 'Manager' : 'Staff';
 
   const showToast = (msg: string) => {
     setToastMsg(msg);
@@ -675,7 +660,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       }
       if (data.currentUser) {
         setAdminUser(data.currentUser);
-        setAdminRole(data.currentUser.role);
         if (data.currentUser.themeMode) {
           setAdminThemeMode(data.currentUser.themeMode);
         }
@@ -683,7 +667,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
           setAdminAccentColor(data.currentUser.themeAccent);
         }
       }
-      if (data.adminUsers) setAdminUsers(data.adminUsers);
     } catch (e) {
       console.error('Admin bootstrap failed:', e);
     } finally {
@@ -708,7 +691,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         if (meRes.ok) {
           const data = await meRes.json();
           setAdminUser(data.user);
-          setAdminRole(data.user.role);
           if (data.firebaseCustomToken) {
             setFirebaseCustomToken(data.firebaseCustomToken);
           }
@@ -884,7 +866,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         return;
       }
       setAdminUser(data.user);
-      setAdminRole(data.user.role);
       if (data.firebaseCustomToken) {
         setFirebaseCustomToken(data.firebaseCustomToken);
       }
@@ -909,10 +890,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     setAdminUser(null);
     setLoginPassword('');
   };
-
-  // Role Permission Checks
-  const canEditMenu = adminRole === 'owner' || adminRole === 'manager';
-  const canEditSettings = adminRole === 'owner';
 
   // Order Actions
   const handleOrderStatusUpdate = async (
@@ -1638,7 +1615,38 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     showToast('Password updated');
   };
 
-  // Change Owner Email Handler
+  // Change Admin Name Handler
+  const handleChangeMyName = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = newNameInput.trim();
+    if (trimmed.length < 2 || trimmed.length > 60) {
+      showToast('Name must be between 2 and 60 characters');
+      return;
+    }
+    setIsUpdatingName(true);
+    try {
+      const res = await adminFetch('/api/admin/change-name', {
+        method: 'PUT',
+        body: JSON.stringify({ name: trimmed }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showToast(data.error || 'Could not update name');
+        return;
+      }
+      if (data.user) {
+        setAdminUser(data.user);
+      }
+      setNameFormOpen(false);
+      showToast('Name updated');
+    } catch {
+      showToast('Could not update name');
+    } finally {
+      setIsUpdatingName(false);
+    }
+  };
+
+  // Change Email Handler
   const handleChangeMyEmail = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newEmailInput.trim() || !emailCurrentPasswordInput) return;
@@ -1738,7 +1746,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             </div>
             <div className="min-w-0">
               <h1 className="text-lg font-bold text-text truncate">{displayShopName} Admin</h1>
-              <p className="text-xs text-muted">Authorized Staff & Management Portal</p>
+              <p className="text-xs text-muted">Kitchen Admin Portal</p>
             </div>
           </div>
 
@@ -1758,7 +1766,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
           <form onSubmit={handleLogin} className="space-y-4" autoComplete="off">
             <div>
-              <label className="block text-xs font-semibold text-text mb-1.5">Staff Email</label>
+              <label className="block text-xs font-semibold text-text mb-1.5">Admin Email</label>
               <input
                 type="email"
                 required
@@ -1808,8 +1816,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             </button>
           </form>
 
-          <div className="mt-6 pt-4 border-t border-border flex items-center justify-between text-xs text-muted">
-            <span>Staff Sign-In Portal</span>
+          <div className="mt-6 pt-4 border-t border-border flex flex-wrap items-center justify-between gap-2 text-xs text-muted">
+            <span>Admin Sign-In</span>
             <a href="/" className="text-primary font-semibold hover:underline">
               ← Back to Storefront
             </a>
@@ -2265,7 +2273,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             <div className="min-w-0">
               <h2 className="font-bold text-sm text-text truncate">{displayShopName}</h2>
               <p className="text-[11px] text-muted truncate">
-                {adminUser.name} • {formatRoleLabel(adminUser.role)}
+                {adminUser.name}
               </p>
             </div>
           </div>
@@ -2377,7 +2385,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 {displayShopName}
               </h1>
               <p className="text-[11px] text-muted hidden sm:block truncate">
-                {formatRoleLabel(adminRole)} • Kitchen Admin
+                Kitchen Admin
               </p>
             </div>
           </button>
@@ -2391,13 +2399,11 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 aria-checked={shopSettings.isOpen}
                 aria-label="Shop open status"
                 onClick={() =>
-                  canEditMenu &&
                   handleUpdateShopSettings({
                     isOpen: !shopSettings.isOpen,
                   })
                 }
-                disabled={!canEditMenu}
-                className={`min-h-[34px] px-2.5 rounded-full border text-[11px] font-bold flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-60 shrink-0 ${
+                className={`min-h-[34px] px-2.5 rounded-full border text-[11px] font-bold flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 ${
                   shopSettings.isOpen
                     ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border-emerald-500/30'
                     : 'bg-red-500/15 text-red-600 border-red-500/30'
@@ -2472,7 +2478,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         {/* ======================================================================
             MAIN SECTION BODY
         ====================================================================== */}
-        <main className="flex-1 p-3 sm:p-6 max-w-6xl w-full mx-auto space-y-5">
+        <main className="flex-1 min-w-0 p-3 sm:p-6 max-w-6xl w-full mx-auto space-y-5">
           {/* ====================================================================
               0. LIVE DASHBOARD (Default Landing Screen)
           ==================================================================== */}
@@ -2496,14 +2502,12 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                     role="switch"
                     aria-checked={shopSettings.isOpen}
                     aria-label="Toggle shop open or closed"
-                    disabled={!canEditMenu}
                     onClick={() =>
-                      canEditMenu &&
                       handleUpdateShopSettings({
                         isOpen: !shopSettings.isOpen,
                       })
                     }
-                    className={`min-h-[40px] px-3 rounded-full border text-xs font-bold flex items-center gap-2 transition-colors cursor-pointer disabled:opacity-60 shrink-0 ${
+                    className={`min-h-[40px] px-3 rounded-full border text-xs font-bold flex items-center gap-2 transition-colors cursor-pointer shrink-0 ${
                       shopSettings.isOpen
                         ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border-emerald-500/30'
                         : 'bg-red-500/15 text-red-600 border-red-500/30'
@@ -2746,7 +2750,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
           {activeSection === 'menu' && (
             <div className="space-y-5">
               <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2 min-w-0">
                   <button
                     onClick={() => setMenuSubTab('items')}
                     className={`min-h-[40px] px-4 rounded-xl text-xs font-bold cursor-pointer ${
@@ -2769,7 +2773,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   </button>
                 </div>
 
-                {menuSubTab === 'items' && canEditMenu && (
+                {menuSubTab === 'items' && (
                   <button
                     onClick={openCreateDishModal}
                     className="min-h-[40px] px-4 rounded-xl bg-primary text-primary-contrast text-xs font-bold flex items-center gap-1.5 cursor-pointer"
@@ -2783,74 +2787,72 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
               {menuSubTab === 'items' ? (
                 <div className="space-y-4">
                   {/* Bulk Actions Toolbar */}
-                  {canEditMenu && (
-                    <div className="bg-surface rounded-2xl border border-border p-3.5 flex flex-wrap items-center justify-between gap-2 text-xs">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="font-bold text-muted uppercase tracking-wider text-[10px]">
-                          Bulk Tools:
-                        </span>
+                  <div className="bg-surface rounded-2xl border border-border p-3.5 flex flex-wrap items-center justify-between gap-2 text-xs min-w-0">
+                    <div className="flex flex-wrap items-center gap-2 min-w-0">
+                      <span className="font-bold text-muted uppercase tracking-wider text-[10px]">
+                        Bulk Tools:
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => handleBulkMenuAction('MARK_IN_STOCK')}
+                        className="px-2.5 py-1.5 rounded-lg border border-border hover:bg-bg font-semibold cursor-pointer"
+                      >
+                        All In Stock
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleBulkMenuAction('MARK_OUT_OF_STOCK')}
+                        className="px-2.5 py-1.5 rounded-lg border border-border hover:bg-bg font-semibold cursor-pointer"
+                      >
+                        All Out of Stock
+                      </button>
+                      <div className="flex items-center gap-1 border border-border rounded-lg px-2 py-1">
+                        <input
+                          type="number"
+                          value={bulkPercentDelta}
+                          onChange={(e) => setBulkPercentDelta(e.target.value)}
+                          className="w-12 bg-transparent text-xs font-bold text-center focus:outline-none"
+                          aria-label="Bulk price percentage change"
+                        />
+                        <span className="text-muted">%</span>
                         <button
                           type="button"
-                          onClick={() => handleBulkMenuAction('MARK_IN_STOCK')}
-                          className="px-2.5 py-1.5 rounded-lg border border-border hover:bg-bg font-semibold cursor-pointer"
+                          onClick={() =>
+                            handleBulkMenuAction(
+                              'ADJUST_PRICE_PERCENT',
+                              Number(bulkPercentDelta) || 0
+                            )
+                          }
+                          className="px-2 py-0.5 rounded bg-primary text-primary-contrast font-bold text-[11px] cursor-pointer"
                         >
-                          All In Stock
+                          Adjust Prices
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => handleBulkMenuAction('MARK_OUT_OF_STOCK')}
-                          className="px-2.5 py-1.5 rounded-lg border border-border hover:bg-bg font-semibold cursor-pointer"
-                        >
-                          All Out of Stock
-                        </button>
-                        <div className="flex items-center gap-1 border border-border rounded-lg px-2 py-1">
-                          <input
-                            type="number"
-                            value={bulkPercentDelta}
-                            onChange={(e) => setBulkPercentDelta(e.target.value)}
-                            className="w-12 bg-transparent text-xs font-bold text-center focus:outline-none"
-                            aria-label="Bulk price percentage change"
-                          />
-                          <span className="text-muted">%</span>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              handleBulkMenuAction(
-                                'ADJUST_PRICE_PERCENT',
-                                Number(bulkPercentDelta) || 0
-                              )
-                            }
-                            className="px-2 py-0.5 rounded bg-primary text-primary-contrast font-bold text-[11px] cursor-pointer"
-                          >
-                            Adjust Prices
-                          </button>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={handleExportMenuCsv}
-                          className="px-2.5 py-1.5 rounded-lg border border-border hover:bg-bg font-semibold flex items-center gap-1 cursor-pointer"
-                        >
-                          <Download className="w-3.5 h-3.5" />
-                          Export CSV
-                        </button>
-                        <label className="px-2.5 py-1.5 rounded-lg border border-border hover:bg-bg font-semibold flex items-center gap-1 cursor-pointer">
-                          <FileSpreadsheet className="w-3.5 h-3.5" />
-                          Import CSV
-                          <input
-                            type="file"
-                            accept=".csv"
-                            className="hidden"
-                            onChange={(e) => {
-                              const f = e.target.files?.[0];
-                              if (f) handleImportMenuCsv(f);
-                            }}
-                          />
-                        </label>
                       </div>
                     </div>
-                  )}
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={handleExportMenuCsv}
+                        className="px-2.5 py-1.5 rounded-lg border border-border hover:bg-bg font-semibold flex items-center gap-1 cursor-pointer"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        Export CSV
+                      </button>
+                      <label className="px-2.5 py-1.5 rounded-lg border border-border hover:bg-bg font-semibold flex items-center gap-1 cursor-pointer">
+                        <FileSpreadsheet className="w-3.5 h-3.5" />
+                        Import CSV
+                        <input
+                          type="file"
+                          accept=".csv"
+                          className="hidden"
+                          onChange={(e) => {
+                            const f = e.target.files?.[0];
+                            if (f) handleImportMenuCsv(f);
+                          }}
+                        />
+                      </label>
+                    </div>
+                  </div>
 
                   <div className="flex flex-col sm:flex-row gap-2">
                     <div className="relative flex-1">
@@ -2955,23 +2957,21 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                             >
                               {item.inStock ? 'In Stock' : 'Out'}
                             </button>
-                            {canEditMenu && (
-                              <div className="flex items-center gap-1">
-                                <button
-                                  onClick={() => openEditDishModal(item)}
-                                  className="px-2 py-1 rounded-lg border border-border text-xs font-semibold hover:bg-bg cursor-pointer"
-                                >
-                                  Edit
-                                </button>
-                                <button
-                                  onClick={() => handleDeleteDish(item)}
-                                  className="p-1.5 rounded-lg border border-red-500/30 text-red-600 hover:bg-red-500/10 cursor-pointer"
-                                  title="Delete Dish"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </button>
-                              </div>
-                            )}
+                            <div className="flex items-center gap-1">
+                              <button
+                                onClick={() => openEditDishModal(item)}
+                                className="px-2 py-1 rounded-lg border border-border text-xs font-semibold hover:bg-bg cursor-pointer"
+                              >
+                                Edit
+                              </button>
+                              <button
+                                onClick={() => handleDeleteDish(item)}
+                                className="p-1.5 rounded-lg border border-red-500/30 text-red-600 hover:bg-red-500/10 cursor-pointer"
+                                title="Delete Dish"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
                           </div>
                         </div>
                       );
@@ -2981,9 +2981,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
               ) : (
                 /* Categories Sub-tab */
                 <div className="space-y-4">
-                  {canEditMenu && (
-                    <form
-                      onSubmit={async (e) => {
+                  <form
+                    onSubmit={async (e) => {
                         e.preventDefault();
                         if (!newCategoryName.trim()) return;
                         const res = await adminFetch('/api/admin/categories', {
@@ -3026,21 +3025,19 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         Add Category
                       </button>
                     </form>
-                  )}
-
                   <div className="space-y-2">
                     {categories.map((cat) => (
                       <div
                         key={cat.id}
-                        className="bg-surface rounded-xl border border-border p-3.5 flex items-center justify-between gap-2"
+                        className="bg-surface rounded-xl border border-border p-3.5 flex flex-wrap items-center justify-between gap-2 min-w-0"
                       >
                         {editingCategoryId === cat.id ? (
-                          <div className="flex items-center gap-2 flex-1">
+                          <div className="flex flex-wrap items-center gap-2 flex-1 min-w-0">
                             <input
                               type="text"
                               value={editingCategoryName}
                               onChange={(e) => setEditingCategoryName(e.target.value)}
-                              className="flex-1 min-h-[36px] px-3 rounded-lg border border-border bg-bg text-xs"
+                              className="flex-1 min-w-[140px] min-h-[36px] px-3 rounded-lg border border-border bg-bg text-xs"
                             />
                             <button
                               type="button"
@@ -3062,18 +3059,18 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                                   showToast('Saved');
                                 }
                               }}
-                              className="px-3 py-1.5 rounded-lg bg-primary text-primary-contrast text-xs font-bold cursor-pointer"
+                              className="px-3 py-1.5 rounded-lg bg-primary text-primary-contrast text-xs font-bold cursor-pointer shrink-0"
                             >
                               Save
                             </button>
                           </div>
                         ) : (
-                          <div>
-                            <p className="font-bold text-sm text-text">{cat.name}</p>
+                          <div className="min-w-0 flex-1">
+                            <p className="font-bold text-sm text-text break-words">{cat.name}</p>
                             <p className="text-xs text-muted">Sort Order: {cat.sortOrder}</p>
                           </div>
                         )}
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 shrink-0">
                           <button
                             onClick={async () => {
                               const res = await adminFetch('/api/admin/categories', {
@@ -3100,37 +3097,33 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                           >
                             {cat.isActive ? 'Active' : 'Hidden'}
                           </button>
-                          {canEditMenu && (
-                            <>
-                              <button
-                                onClick={() => {
-                                  setEditingCategoryId(cat.id);
-                                  setEditingCategoryName(cat.name);
-                                }}
-                                className="p-1.5 rounded-lg border border-border text-muted hover:text-text cursor-pointer"
-                                title="Edit Category"
-                              >
-                                <Edit3 className="w-3.5 h-3.5" />
-                              </button>
-                              <button
-                                onClick={async () => {
-                                  const res = await adminFetch(`/api/admin/categories/${cat.id}`, {
-                                    method: 'DELETE',
-                                  });
-                                  if (res.ok) {
-                                    const d = await res.json();
-                                    setCategories(d.categories || []);
-                                    triggerStoreRefresh();
-                                    showToast('Removed');
-                                  }
-                                }}
-                                className="p-1.5 rounded-lg border border-red-500/30 text-red-600 hover:bg-red-500/10 cursor-pointer"
-                                title="Delete Category"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
-                            </>
-                          )}
+                          <button
+                            onClick={() => {
+                              setEditingCategoryId(cat.id);
+                              setEditingCategoryName(cat.name);
+                            }}
+                            className="p-1.5 rounded-lg border border-border text-muted hover:text-text cursor-pointer"
+                            title="Edit Category"
+                          >
+                            <Edit3 className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={async () => {
+                              const res = await adminFetch(`/api/admin/categories/${cat.id}`, {
+                                method: 'DELETE',
+                              });
+                              if (res.ok) {
+                                const d = await res.json();
+                                setCategories(d.categories || []);
+                                triggerStoreRefresh();
+                                showToast('Removed');
+                              }
+                            }}
+                            className="p-1.5 rounded-lg border border-red-500/30 text-red-600 hover:bg-red-500/10 cursor-pointer"
+                            title="Delete Category"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
                         </div>
                       </div>
                     ))}
@@ -3253,17 +3246,17 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                           return (
                             <div
                               key={sec.id}
-                              className="rounded-xl border border-border p-3.5 space-y-3 bg-bg"
+                              className="rounded-xl border border-border p-3.5 space-y-3 bg-bg min-w-0"
                             >
-                              <div className="flex items-center justify-between gap-2">
-                                <div>
-                                  <h4 className="font-bold text-sm text-text">{sec.title}</h4>
-                                  <p className="text-xs text-muted">
+                              <div className="flex flex-wrap items-center justify-between gap-2 min-w-0">
+                                <div className="min-w-0 flex-1">
+                                  <h4 className="font-bold text-sm text-text break-words">{sec.title}</h4>
+                                  <p className="text-xs text-muted break-words">
                                     {sec.subtitle} • {(sec.itemIds || []).length} / {sec.maxItems}{' '}
                                     dishes
                                   </p>
                                 </div>
-                                <div className="flex items-center gap-2">
+                                <div className="flex items-center gap-2 shrink-0">
                                   <button
                                     onClick={() => {
                                       const updated = homeSections.map((s) =>
@@ -3359,7 +3352,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       placeholder="Banner Subtitle"
                       className="min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs"
                     />
-                    <div className="flex items-center gap-2.5 min-w-0">
+                    <div className="flex flex-wrap items-center gap-2.5 min-w-0">
                       {newBannerImageUrl ? (
                         <SafeImage
                           src={newBannerImageUrl}
@@ -3368,7 +3361,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                           containerClassName="w-14 h-10 rounded-lg object-cover border border-border shrink-0 bg-bg"
                         />
                       ) : null}
-                      <label className="flex-1 min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer hover:bg-surface">
+                      <label className="flex-1 min-w-[140px] min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer hover:bg-surface">
                         <Upload className="w-3.5 h-3.5" />
                         {isUploadingImage ? 'Uploading...' : newBannerImageUrl ? 'Change Banner Photo' : 'Upload Banner Photo'}
                         <input
@@ -3473,9 +3466,9 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
               {storefrontSubTab === 'theme' && (
                 <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
                   {/* Left 7 Cols: Theme Controls */}
-                  <div className="lg:col-span-7 bg-surface rounded-2xl border border-border p-5 space-y-5">
-                    <div className="flex items-center justify-between gap-2">
-                      <div>
+                  <div className="lg:col-span-7 bg-surface rounded-2xl border border-border p-4 sm:p-5 space-y-5 min-w-0">
+                    <div className="flex flex-wrap items-center justify-between gap-2 min-w-0">
+                      <div className="min-w-0">
                         <h3 className="text-base font-bold text-text">
                           Customer Storefront Theme
                         </h3>
@@ -3489,7 +3482,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                           setThemeDraft(DEFAULT_STOREFRONT_THEME);
                           handleUpdateShopSettings({ theme: DEFAULT_STOREFRONT_THEME });
                         }}
-                        className="px-3 py-1.5 rounded-xl border border-border text-xs font-semibold flex items-center gap-1 hover:bg-bg cursor-pointer"
+                        className="px-3 py-1.5 rounded-xl border border-border text-xs font-semibold flex items-center gap-1 hover:bg-bg cursor-pointer shrink-0"
                       >
                         <RotateCcw className="w-3.5 h-3.5" />
                         Reset to Default
@@ -3584,7 +3577,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         <label className="block text-xs font-bold text-text mb-1.5">
                           Primary Brand Color
                         </label>
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
                           <input
                             type="color"
                             value={themeDraft.primaryColor}
@@ -3595,7 +3588,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                                 pwaThemeColor: e.target.value,
                               })
                             }
-                            className="w-10 h-10 rounded-lg border border-border cursor-pointer"
+                            className="w-10 h-10 rounded-lg border border-border cursor-pointer shrink-0"
                           />
                           <input
                             type="text"
@@ -3607,7 +3600,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                                 pwaThemeColor: e.target.value,
                               })
                             }
-                            className="flex-1 min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs font-mono"
+                            className="flex-1 min-w-0 min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs font-mono"
                           />
                         </div>
                         <p
@@ -3615,7 +3608,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                             wcagPassesAA ? 'text-emerald-600' : 'text-amber-600'
                           }`}
                         >
-                          <ShieldCheck className="w-3.5 h-3.5" />
+                          <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
                           {wcagPassesAA
                             ? 'Easy-to-read button text'
                             : 'Button text color adjusted for readability'}
@@ -3626,14 +3619,14 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         <label className="block text-xs font-bold text-text mb-1.5">
                           Accent / Highlight Color
                         </label>
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
                           <input
                             type="color"
                             value={themeDraft.accentColor}
                             onChange={(e) =>
                               setThemeDraft({ ...themeDraft, accentColor: e.target.value })
                             }
-                            className="w-10 h-10 rounded-lg border border-border cursor-pointer"
+                            className="w-10 h-10 rounded-lg border border-border cursor-pointer shrink-0"
                           />
                           <input
                             type="text"
@@ -3641,7 +3634,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                             onChange={(e) =>
                               setThemeDraft({ ...themeDraft, accentColor: e.target.value })
                             }
-                            className="flex-1 min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs font-mono"
+                            className="flex-1 min-w-0 min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs font-mono"
                           />
                         </div>
                       </div>
@@ -3700,7 +3693,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       <label className="block text-xs font-bold text-text mb-1.5">
                         Store Brand Logo (Optional)
                       </label>
-                      <div className="flex items-center gap-3">
+                      <div className="flex flex-wrap items-center gap-3 min-w-0">
                         {themeDraft.logoUrl ? (
                           <SafeImage
                             src={themeDraft.logoUrl}
@@ -3709,7 +3702,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                             containerClassName="w-12 h-12 rounded-xl object-cover border border-border bg-bg shrink-0"
                           />
                         ) : null}
-                        <label className="flex-1 min-h-[42px] px-4 rounded-xl border border-border bg-bg text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer hover:bg-surface">
+                        <label className="flex-1 min-w-[140px] min-h-[42px] px-4 rounded-xl border border-border bg-bg text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer hover:bg-surface">
                           <Upload className="w-3.5 h-3.5" />
                           {isUploadingImage ? 'Uploading...' : themeDraft.logoUrl ? 'Change Logo' : 'Upload Logo'}
                           <input
@@ -3923,16 +3916,10 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
               )}
 
               {/* ================================================================
-                  4. ABOUT PAGE MANAGER (Owner & Manager)
+                  4. ABOUT PAGE MANAGER
               ================================================================ */}
               {storefrontSubTab === 'about' && (
                 <div className="space-y-4 min-w-0 max-w-full pb-20 lg:pb-6">
-                  {!canEditMenu && (
-                    <div className="p-3 rounded-xl border border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400 text-xs font-semibold">
-                      Only Owner or Manager can edit the About Page.
-                    </div>
-                  )}
-
                   {/* Cover Image, Tagline & Story */}
                   <div className="bg-surface rounded-2xl border border-border p-4 sm:p-5 space-y-4 min-w-0">
                     <div>
@@ -3955,11 +3942,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                             containerClassName="w-24 h-16 rounded-xl object-cover border border-border bg-bg shrink-0"
                           />
                         ) : null}
-                        <label
-                          className={`flex-1 min-w-[160px] min-h-[42px] px-4 rounded-xl border border-border bg-bg text-xs font-bold flex items-center justify-center gap-1.5 hover:bg-surface ${
-                            canEditMenu ? 'cursor-pointer' : 'opacity-60 pointer-events-none'
-                          }`}
-                        >
+                        <label className="flex-1 min-w-[160px] min-h-[42px] px-4 rounded-xl border border-border bg-bg text-xs font-bold flex items-center justify-center gap-1.5 hover:bg-surface cursor-pointer">
                           <Upload className="w-3.5 h-3.5 shrink-0" />
                           <span>
                             {isUploadingImage
@@ -3971,7 +3954,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                           <input
                             type="file"
                             accept="image/*"
-                            disabled={!canEditMenu}
                             className="hidden"
                             onChange={async (e) => {
                               const f = e.target.files?.[0];
@@ -3981,7 +3963,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                             }}
                           />
                         </label>
-                        {aboutDraft.coverImage && canEditMenu && (
+                        {aboutDraft.coverImage && (
                           <button
                             type="button"
                             onClick={() => setAboutDraft((prev) => ({ ...prev, coverImage: '' }))}
@@ -3997,7 +3979,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       <label className="block text-xs font-bold text-text mb-1">Tagline</label>
                       <input
                         type="text"
-                        disabled={!canEditMenu}
                         maxLength={200}
                         value={aboutDraft.tagline || ''}
                         onChange={(e) =>
@@ -4012,7 +3993,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       <label className="block text-xs font-bold text-text mb-1">Our Story</label>
                       <textarea
                         rows={4}
-                        disabled={!canEditMenu}
                         maxLength={5000}
                         value={aboutDraft.story || ''}
                         onChange={(e) =>
@@ -4033,28 +4013,26 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                           Add highlight cards like Kitchen Promise, Ingredients, or Catering.
                         </p>
                       </div>
-                      {canEditMenu && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const nextCard: AboutPageSectionCard = {
-                              id: `about_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-                              title: '',
-                              text: '',
-                              emoji: '',
-                              sortOrder: aboutDraft.sections.length + 1,
-                            };
-                            setAboutDraft((prev) => ({
-                              ...prev,
-                              sections: [...prev.sections, nextCard],
-                            }));
-                          }}
-                          className="min-h-[38px] px-3.5 rounded-xl bg-primary text-primary-contrast text-xs font-bold flex items-center gap-1.5 shrink-0 cursor-pointer"
-                        >
-                          <Plus className="w-3.5 h-3.5" />
-                          <span>Add card</span>
-                        </button>
-                      )}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const nextCard: AboutPageSectionCard = {
+                            id: `about_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+                            title: '',
+                            text: '',
+                            emoji: '',
+                            sortOrder: aboutDraft.sections.length + 1,
+                          };
+                          setAboutDraft((prev) => ({
+                            ...prev,
+                            sections: [...prev.sections, nextCard],
+                          }));
+                        }}
+                        className="min-h-[38px] px-3.5 rounded-xl bg-primary text-primary-contrast text-xs font-bold flex items-center gap-1.5 shrink-0 cursor-pointer"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>Add card</span>
+                      </button>
                     </div>
 
                     {aboutDraft.sections.length === 0 ? (
@@ -4072,86 +4050,84 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                               <span className="text-[11px] font-bold text-muted">
                                 Card {idx + 1}
                               </span>
-                              {canEditMenu && (
-                                <div className="flex items-center gap-1 shrink-0">
-                                  <button
-                                    type="button"
-                                    disabled={idx === 0}
-                                    aria-label="Move card up"
-                                    onClick={() => {
-                                      if (idx === 0) return;
-                                      const copy = [...aboutDraft.sections];
-                                      [copy[idx - 1], copy[idx]] = [copy[idx], copy[idx - 1]];
-                                      setAboutDraft((prev) => ({
-                                        ...prev,
-                                        sections: copy.map((c, i) => ({
-                                          ...c,
-                                          sortOrder: i + 1,
-                                        })),
-                                      }));
-                                    }}
-                                    className="w-8 h-8 rounded-lg border border-border bg-surface flex items-center justify-center text-text disabled:opacity-40 cursor-pointer"
-                                  >
-                                    <ArrowUp className="w-3.5 h-3.5" />
-                                  </button>
-                                  <button
-                                    type="button"
-                                    disabled={idx === aboutDraft.sections.length - 1}
-                                    aria-label="Move card down"
-                                    onClick={() => {
-                                      if (idx === aboutDraft.sections.length - 1) return;
-                                      const copy = [...aboutDraft.sections];
-                                      [copy[idx], copy[idx + 1]] = [copy[idx + 1], copy[idx]];
-                                      setAboutDraft((prev) => ({
-                                        ...prev,
-                                        sections: copy.map((c, i) => ({
-                                          ...c,
-                                          sortOrder: i + 1,
-                                        })),
-                                      }));
-                                    }}
-                                    className="w-8 h-8 rounded-lg border border-border bg-surface flex items-center justify-center text-text disabled:opacity-40 cursor-pointer"
-                                  >
-                                    <ArrowDown className="w-3.5 h-3.5" />
-                                  </button>
-                                  {confirmDeleteAboutCardId === card.id ? (
-                                    <div className="flex items-center gap-1 ml-1">
-                                      <button
-                                        type="button"
-                                        onClick={() => {
-                                          const filtered = aboutDraft.sections
-                                            .filter((c) => c.id !== card.id)
-                                            .map((c, i) => ({ ...c, sortOrder: i + 1 }));
-                                          setAboutDraft((prev) => ({
-                                            ...prev,
-                                            sections: filtered,
-                                          }));
-                                          setConfirmDeleteAboutCardId(null);
-                                        }}
-                                        className="px-2 py-1 rounded-lg bg-red-600 text-white text-[11px] font-bold cursor-pointer"
-                                      >
-                                        Confirm
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={() => setConfirmDeleteAboutCardId(null)}
-                                        className="px-2 py-1 rounded-lg border border-border bg-surface text-[11px] font-semibold cursor-pointer"
-                                      >
-                                        Cancel
-                                      </button>
-                                    </div>
-                                  ) : (
+                              <div className="flex items-center gap-1 shrink-0">
+                                <button
+                                  type="button"
+                                  disabled={idx === 0}
+                                  aria-label="Move card up"
+                                  onClick={() => {
+                                    if (idx === 0) return;
+                                    const copy = [...aboutDraft.sections];
+                                    [copy[idx - 1], copy[idx]] = [copy[idx], copy[idx - 1]];
+                                    setAboutDraft((prev) => ({
+                                      ...prev,
+                                      sections: copy.map((c, i) => ({
+                                        ...c,
+                                        sortOrder: i + 1,
+                                      })),
+                                    }));
+                                  }}
+                                  className="w-8 h-8 rounded-lg border border-border bg-surface flex items-center justify-center text-text disabled:opacity-40 cursor-pointer"
+                                >
+                                  <ArrowUp className="w-3.5 h-3.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={idx === aboutDraft.sections.length - 1}
+                                  aria-label="Move card down"
+                                  onClick={() => {
+                                    if (idx === aboutDraft.sections.length - 1) return;
+                                    const copy = [...aboutDraft.sections];
+                                    [copy[idx], copy[idx + 1]] = [copy[idx + 1], copy[idx]];
+                                    setAboutDraft((prev) => ({
+                                      ...prev,
+                                      sections: copy.map((c, i) => ({
+                                        ...c,
+                                        sortOrder: i + 1,
+                                      })),
+                                    }));
+                                  }}
+                                  className="w-8 h-8 rounded-lg border border-border bg-surface flex items-center justify-center text-text disabled:opacity-40 cursor-pointer"
+                                >
+                                  <ArrowDown className="w-3.5 h-3.5" />
+                                </button>
+                                {confirmDeleteAboutCardId === card.id ? (
+                                  <div className="flex items-center gap-1 ml-1">
                                     <button
                                       type="button"
-                                      aria-label="Delete card"
-                                      onClick={() => setConfirmDeleteAboutCardId(card.id)}
-                                      className="w-8 h-8 rounded-lg border border-red-500/30 text-red-600 hover:bg-red-500/10 flex items-center justify-center cursor-pointer"
+                                      onClick={() => {
+                                        const filtered = aboutDraft.sections
+                                          .filter((c) => c.id !== card.id)
+                                          .map((c, i) => ({ ...c, sortOrder: i + 1 }));
+                                        setAboutDraft((prev) => ({
+                                          ...prev,
+                                          sections: filtered,
+                                        }));
+                                        setConfirmDeleteAboutCardId(null);
+                                      }}
+                                      className="px-2 py-1 rounded-lg bg-red-600 text-white text-[11px] font-bold cursor-pointer"
                                     >
-                                      <Trash2 className="w-3.5 h-3.5" />
+                                      Confirm
                                     </button>
-                                  )}
-                                </div>
-                              )}
+                                    <button
+                                      type="button"
+                                      onClick={() => setConfirmDeleteAboutCardId(null)}
+                                      className="px-2 py-1 rounded-lg border border-border bg-surface text-[11px] font-semibold cursor-pointer"
+                                    >
+                                      Cancel
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    aria-label="Delete card"
+                                    onClick={() => setConfirmDeleteAboutCardId(card.id)}
+                                    className="w-8 h-8 rounded-lg border border-red-500/30 text-red-600 hover:bg-red-500/10 flex items-center justify-center cursor-pointer"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
+                              </div>
                             </div>
 
                             <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
@@ -4161,7 +4137,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                                 </label>
                                 <input
                                   type="text"
-                                  disabled={!canEditMenu}
                                   maxLength={8}
                                   value={card.emoji || ''}
                                   onChange={(e) => {
@@ -4183,7 +4158,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                                 </label>
                                 <input
                                   type="text"
-                                  disabled={!canEditMenu}
                                   maxLength={120}
                                   value={card.title}
                                   onChange={(e) => {
@@ -4207,7 +4181,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                               </label>
                               <textarea
                                 rows={2}
-                                disabled={!canEditMenu}
                                 maxLength={1500}
                                 value={card.text}
                                 onChange={(e) => {
@@ -4245,7 +4218,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         </label>
                         <input
                           type="text"
-                          disabled={!canEditMenu}
                           maxLength={200}
                           value={aboutDraft.openingHours || ''}
                           onChange={(e) =>
@@ -4262,7 +4234,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         </label>
                         <textarea
                           rows={2}
-                          disabled={!canEditMenu}
                           maxLength={500}
                           value={aboutDraft.address || ''}
                           onChange={(e) =>
@@ -4279,7 +4250,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         </label>
                         <input
                           type="text"
-                          disabled={!canEditMenu}
                           maxLength={32}
                           value={aboutDraft.supportPhone || ''}
                           onChange={(e) =>
@@ -4296,7 +4266,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         </label>
                         <input
                           type="text"
-                          disabled={!canEditMenu}
                           maxLength={32}
                           value={aboutDraft.whatsappNumber || ''}
                           onChange={(e) =>
@@ -4313,7 +4282,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         </label>
                         <input
                           type="url"
-                          disabled={!canEditMenu}
                           maxLength={500}
                           value={aboutDraft.mapLink || ''}
                           onChange={(e) =>
@@ -4334,7 +4302,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                           </label>
                           <input
                             type="url"
-                            disabled={!canEditMenu}
                             maxLength={300}
                             value={aboutDraft.socialLinks?.instagram || ''}
                             onChange={(e) =>
@@ -4357,7 +4324,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                           </label>
                           <input
                             type="url"
-                            disabled={!canEditMenu}
                             maxLength={300}
                             value={aboutDraft.socialLinks?.facebook || ''}
                             onChange={(e) =>
@@ -4380,7 +4346,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                           </label>
                           <input
                             type="url"
-                            disabled={!canEditMenu}
                             maxLength={300}
                             value={aboutDraft.socialLinks?.youtube || ''}
                             onChange={(e) =>
@@ -4401,63 +4366,61 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   </div>
 
                   {/* Sticky Save Button */}
-                  {canEditMenu && (
-                    <div className="sticky bottom-4 z-20 bg-surface/95 backdrop-blur-xs border border-border rounded-2xl p-3 shadow-md">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const normalizeUrl = (raw?: string) => {
-                            const t = (raw || '').trim();
-                            if (!t) return '';
-                            if (/^https?:\/\//i.test(t)) return t;
-                            if (/^(javascript|data|vbscript):/i.test(t)) return '';
-                            return `https://${t}`;
-                          };
+                  <div className="sticky bottom-4 z-20 bg-surface/95 backdrop-blur-xs border border-border rounded-2xl p-3 shadow-md">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const normalizeUrl = (raw?: string) => {
+                          const t = (raw || '').trim();
+                          if (!t) return '';
+                          if (/^https?:\/\//i.test(t)) return t;
+                          if (/^(javascript|data|vbscript):/i.test(t)) return '';
+                          return `https://${t}`;
+                        };
 
-                          const cleanedCards: AboutPageSectionCard[] = [];
-                          for (let i = 0; i < aboutDraft.sections.length; i++) {
-                            const c = aboutDraft.sections[i];
-                            const title = c.title.trim();
-                            const text = c.text.trim();
-                            const emoji = (c.emoji || '').trim();
-                            if (!title && !text && !emoji) continue;
-                            if (!title || !text) {
-                              showToast(`Please fill both title and text for Card ${i + 1}`);
-                              return;
-                            }
-                            cleanedCards.push({
-                              id: c.id,
-                              title,
-                              text,
-                              emoji,
-                              sortOrder: cleanedCards.length + 1,
-                            });
+                        const cleanedCards: AboutPageSectionCard[] = [];
+                        for (let i = 0; i < aboutDraft.sections.length; i++) {
+                          const c = aboutDraft.sections[i];
+                          const title = c.title.trim();
+                          const text = c.text.trim();
+                          const emoji = (c.emoji || '').trim();
+                          if (!title && !text && !emoji) continue;
+                          if (!title || !text) {
+                            showToast(`Please fill both title and text for Card ${i + 1}`);
+                            return;
                           }
+                          cleanedCards.push({
+                            id: c.id,
+                            title,
+                            text,
+                            emoji,
+                            sortOrder: cleanedCards.length + 1,
+                          });
+                        }
 
-                          const payload: AboutPageConfig = {
-                            tagline: (aboutDraft.tagline || '').trim(),
-                            story: (aboutDraft.story || '').trim(),
-                            coverImage: (aboutDraft.coverImage || '').trim(),
-                            sections: cleanedCards,
-                            openingHours: (aboutDraft.openingHours || '').trim(),
-                            address: (aboutDraft.address || '').trim(),
-                            supportPhone: (aboutDraft.supportPhone || '').trim(),
-                            whatsappNumber: (aboutDraft.whatsappNumber || '').trim(),
-                            mapLink: normalizeUrl(aboutDraft.mapLink),
-                            socialLinks: {
-                              instagram: normalizeUrl(aboutDraft.socialLinks?.instagram),
-                              facebook: normalizeUrl(aboutDraft.socialLinks?.facebook),
-                              youtube: normalizeUrl(aboutDraft.socialLinks?.youtube),
-                            },
-                          };
-                          handleUpdateShopSettings({ aboutPage: payload });
-                        }}
-                        className="w-full min-h-[44px] rounded-xl bg-primary text-primary-contrast font-bold text-xs cursor-pointer shadow-sm"
-                      >
-                        Save
-                      </button>
-                    </div>
-                  )}
+                        const payload: AboutPageConfig = {
+                          tagline: (aboutDraft.tagline || '').trim(),
+                          story: (aboutDraft.story || '').trim(),
+                          coverImage: (aboutDraft.coverImage || '').trim(),
+                          sections: cleanedCards,
+                          openingHours: (aboutDraft.openingHours || '').trim(),
+                          address: (aboutDraft.address || '').trim(),
+                          supportPhone: (aboutDraft.supportPhone || '').trim(),
+                          whatsappNumber: (aboutDraft.whatsappNumber || '').trim(),
+                          mapLink: normalizeUrl(aboutDraft.mapLink),
+                          socialLinks: {
+                            instagram: normalizeUrl(aboutDraft.socialLinks?.instagram),
+                            facebook: normalizeUrl(aboutDraft.socialLinks?.facebook),
+                            youtube: normalizeUrl(aboutDraft.socialLinks?.youtube),
+                          },
+                        };
+                        handleUpdateShopSettings({ aboutPage: payload });
+                      }}
+                      className="w-full min-h-[44px] rounded-xl bg-primary text-primary-contrast font-bold text-xs cursor-pointer shadow-sm"
+                    >
+                      Save
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
@@ -4500,7 +4463,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
           ==================================================================== */}
           {activeSection === 'marketing' && (
             <div className="space-y-4">
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 <button
                   onClick={() => setMarketingSubTab('coupons')}
                   className={`min-h-[40px] px-4 rounded-xl text-xs font-bold cursor-pointer ${
@@ -4525,72 +4488,70 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
               {marketingSubTab === 'coupons' ? (
                 <div className="space-y-4">
-                  {canEditMenu && (
-                    <form
-                      onSubmit={async (e) => {
-                        e.preventDefault();
-                        if (!newCouponCode.trim()) return;
-                        const res = await adminFetch('/api/admin/coupons', {
-                          method: 'POST',
-                          body: JSON.stringify({
-                            code: newCouponCode.trim().toUpperCase(),
-                            description:
-                              newCouponDescription.trim() || `${newCouponDiscount}% OFF`,
-                            discountType: newCouponType,
-                            discountValue: Number(newCouponDiscount),
-                            minOrderAmount: Number(newCouponMinOrder),
-                            maxDiscount: Number(newCouponMaxDiscount),
-                            isActive: true,
-                          }),
-                        });
-                        if (res.ok) {
-                          const d = await res.json();
-                          setCoupons(d.coupons || []);
-                          setNewCouponCode('');
-                          setNewCouponDescription('');
-                          triggerStoreRefresh();
-                          showToast('Saved');
-                        }
-                      }}
-                      className="bg-surface rounded-2xl border border-border p-4 grid grid-cols-1 sm:grid-cols-3 gap-2"
+                  <form
+                    onSubmit={async (e) => {
+                      e.preventDefault();
+                      if (!newCouponCode.trim()) return;
+                      const res = await adminFetch('/api/admin/coupons', {
+                        method: 'POST',
+                        body: JSON.stringify({
+                          code: newCouponCode.trim().toUpperCase(),
+                          description:
+                            newCouponDescription.trim() || `${newCouponDiscount}% OFF`,
+                          discountType: newCouponType,
+                          discountValue: Number(newCouponDiscount),
+                          minOrderAmount: Number(newCouponMinOrder),
+                          maxDiscount: Number(newCouponMaxDiscount),
+                          isActive: true,
+                        }),
+                      });
+                      if (res.ok) {
+                        const d = await res.json();
+                        setCoupons(d.coupons || []);
+                        setNewCouponCode('');
+                        setNewCouponDescription('');
+                        triggerStoreRefresh();
+                        showToast('Saved');
+                      }
+                    }}
+                    className="bg-surface rounded-2xl border border-border p-4 grid grid-cols-1 sm:grid-cols-3 gap-2"
+                  >
+                    <input
+                      type="text"
+                      required
+                      value={newCouponCode}
+                      onChange={(e) => setNewCouponCode(e.target.value)}
+                      placeholder="CODE (e.g. AANGAN20)"
+                      className="min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs uppercase font-mono"
+                    />
+                    <input
+                      type="text"
+                      value={newCouponDescription}
+                      onChange={(e) => setNewCouponDescription(e.target.value)}
+                      placeholder="Description"
+                      className="min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs"
+                    />
+                    <button
+                      type="submit"
+                      className="min-h-[40px] px-4 rounded-xl bg-primary text-primary-contrast text-xs font-bold cursor-pointer"
                     >
-                      <input
-                        type="text"
-                        required
-                        value={newCouponCode}
-                        onChange={(e) => setNewCouponCode(e.target.value)}
-                        placeholder="CODE (e.g. AANGAN20)"
-                        className="min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs uppercase font-mono"
-                      />
-                      <input
-                        type="text"
-                        value={newCouponDescription}
-                        onChange={(e) => setNewCouponDescription(e.target.value)}
-                        placeholder="Description"
-                        className="min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs"
-                      />
-                      <button
-                        type="submit"
-                        className="min-h-[40px] px-4 rounded-xl bg-primary text-primary-contrast text-xs font-bold cursor-pointer"
-                      >
-                        + Add Coupon
-                      </button>
-                    </form>
-                  )}
+                      + Add Coupon
+                    </button>
+                  </form>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     {coupons.map((cp) => (
                       <div
                         key={cp.code}
-                        className="bg-surface rounded-xl border border-border p-3.5 flex items-center justify-between gap-2"
+                        className="bg-surface rounded-xl border border-border p-3.5 flex flex-wrap items-center justify-between gap-2 min-w-0"
                       >
-                        <div>
-                          <p className="font-mono font-bold text-sm text-primary">{cp.code}</p>
-                          <p className="text-xs text-muted">
+                        <div className="min-w-0 flex-1">
+                          <p className="font-mono font-bold text-sm text-primary break-words">{cp.code}</p>
+                          <p className="text-xs text-muted break-words">
                             {cp.description} • Min ₹{cp.minOrderAmount}
                           </p>
                         </div>
-                        <div className="flex items-center gap-1.5">
+                        <div className="flex items-center gap-1.5 shrink-0">
                           <button
                             onClick={async () => {
                               const res = await adminFetch('/api/admin/coupons', {
@@ -4615,25 +4576,23 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                           >
                             {cp.isActive ? 'On' : 'Off'}
                           </button>
-                          {canEditMenu && (
-                            <button
-                              onClick={async () => {
-                                const res = await adminFetch(`/api/admin/coupons/${cp.code}`, {
-                                  method: 'DELETE',
-                                });
-                                if (res.ok) {
-                                  const d = await res.json();
-                                  setCoupons(d.coupons || []);
-                                  triggerStoreRefresh();
-                                  showToast('Removed');
-                                }
-                              }}
-                              className="p-1.5 rounded-lg border border-red-500/30 text-red-600 hover:bg-red-500/10 cursor-pointer"
-                              title="Delete Coupon"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          )}
+                          <button
+                            onClick={async () => {
+                              const res = await adminFetch(`/api/admin/coupons/${cp.code}`, {
+                                method: 'DELETE',
+                              });
+                              if (res.ok) {
+                                const d = await res.json();
+                                setCoupons(d.coupons || []);
+                                triggerStoreRefresh();
+                                showToast('Removed');
+                              }
+                            }}
+                            className="p-1.5 rounded-lg border border-red-500/30 text-red-600 hover:bg-red-500/10 cursor-pointer"
+                            title="Delete Coupon"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
                         </div>
                       </div>
                     ))}
@@ -4641,10 +4600,10 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 </div>
               ) : (
                 <div className="bg-surface rounded-2xl border border-border p-4 space-y-3">
-                  <div className="flex items-center justify-between">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
                     <h3 className="text-sm font-bold text-text">WhatsApp / SMS Offer Broadcast</h3>
                     <span
-                      className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold ${
+                      className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold shrink-0 ${
                         broadcastProviderConfigured
                           ? 'bg-emerald-500/15 text-emerald-600'
                           : 'bg-amber-500/15 text-amber-600'
@@ -4691,10 +4650,10 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
               6. DELIVERY SECTION (Shop Location & Radius + Delivery Riders)
           ==================================================================== */}
           {activeSection === 'delivery' && (
-            <div className="space-y-5">
+            <div className="space-y-5 min-w-0">
               {/* Top Card: Shop Location & Delivery Area */}
               {shopSettings && deliveryZone && (
-                <div className="bg-surface rounded-2xl border border-border p-4 space-y-4">
+                <div className="bg-surface rounded-2xl border border-border p-4 space-y-4 min-w-0 w-full">
                   <div>
                     <h2 className="text-sm sm:text-base font-bold text-text">
                       Shop Location &amp; Delivery Area
@@ -4708,7 +4667,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   <div className="space-y-2">
                     <button
                       type="button"
-                      disabled={!canEditMenu || isGettingGps}
+                      disabled={isGettingGps}
                       onClick={handleUseCurrentLocation}
                       className="w-full min-h-[46px] px-4 rounded-xl bg-primary/10 border border-primary/30 text-primary text-xs sm:text-sm font-bold flex items-center justify-center gap-2 hover:bg-primary/15 transition-colors cursor-pointer disabled:opacity-60"
                     >
@@ -4882,31 +4841,34 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   </div>
 
                   {/* Saved Location Summary Card */}
-                  <div className="p-3.5 rounded-xl border border-border bg-bg space-y-2.5 text-xs">
-                    <div className="flex items-start gap-2.5 min-w-0">
-                      <div className="w-8 h-8 rounded-lg bg-primary/15 text-primary flex items-center justify-center shrink-0 mt-0.5">
+                  <div className="p-3.5 rounded-xl border border-border bg-bg flex flex-col gap-2.5 text-xs w-full min-w-0">
+                    {/* Top row: pin icon + full address */}
+                    <div className="flex items-start gap-2.5 w-full min-w-0">
+                      <div className="w-8 h-8 rounded-lg bg-primary/15 text-primary flex items-center justify-center shrink-0">
                         <MapPin className="w-4 h-4" />
                       </div>
-                      <div className="min-w-0 flex-1 space-y-1">
-                        <p className="font-bold text-text break-words">
-                          {deliveryZone.shopAddress || 'Shop address not set'}
+                      <p className="flex-1 min-w-0 font-bold text-text break-words whitespace-normal leading-relaxed pt-1">
+                        {deliveryZone.shopAddress || 'Shop address not set'}
+                      </p>
+                    </div>
+
+                    {/* Details & radius line on full width */}
+                    <div className="w-full min-w-0 space-y-1">
+                      {shopSettings.cityArea?.trim() && (
+                        <p className="text-xs text-text font-semibold break-words whitespace-normal">
+                          City / Area: {shopSettings.cityArea.trim()}
                         </p>
-                        {shopSettings.cityArea?.trim() && (
-                          <p className="text-xs text-text font-semibold break-words">
-                            City / Area: {shopSettings.cityArea.trim()}
-                          </p>
-                        )}
-                        <p className="text-[11px] text-muted break-words">
-                          Coordinates: {deliveryZone.shopLat}, {deliveryZone.shopLng}
-                        </p>
-                        <p className="text-[11px] text-muted">
-                          Delivery within {deliveryZone.radiusKm} km of this pin
-                        </p>
-                      </div>
+                      )}
+                      <p className="text-[11px] text-muted break-words whitespace-normal">
+                        Coordinates: {deliveryZone.shopLat}, {deliveryZone.shopLng}
+                      </p>
+                      <p className="text-[11px] text-muted whitespace-normal">
+                        Delivery within {deliveryZone.radiusKm} km of this pin
+                      </p>
                     </div>
 
                     {/* Open in Maps button on its own row */}
-                    <div className="pt-1 border-t border-border/60">
+                    <div className="pt-2 border-t border-border/60 w-full min-w-0">
                       <a
                         href={`https://www.google.com/maps/search/?api=1&query=${deliveryZone.shopLat},${deliveryZone.shopLng}`}
                         target="_blank"
@@ -5002,54 +4964,52 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                     </div>
                   </div>
 
-                  {canEditMenu && (
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        const trimmedAddress = (deliveryZone.shopAddress || '').trim();
-                        if (trimmedAddress.length < 2) {
-                          showToast('Please enter your shop address');
-                          return;
-                        }
-                        const latNum = parseFloat(manualLat);
-                        const lngNum = parseFloat(manualLng);
-                        if (isNaN(latNum) || latNum < -90 || latNum > 90) {
-                          showToast('Latitude must be between -90 and 90');
-                          return;
-                        }
-                        if (isNaN(lngNum) || lngNum < -180 || lngNum > 180) {
-                          showToast('Longitude must be between -180 and 180');
-                          return;
-                        }
-                        const roundedLat = Number(latNum.toFixed(6));
-                        const roundedLng = Number(lngNum.toFixed(6));
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const trimmedAddress = (deliveryZone.shopAddress || '').trim();
+                      if (trimmedAddress.length < 2) {
+                        showToast('Please enter your shop address');
+                        return;
+                      }
+                      const latNum = parseFloat(manualLat);
+                      const lngNum = parseFloat(manualLng);
+                      if (isNaN(latNum) || latNum < -90 || latNum > 90) {
+                        showToast('Latitude must be between -90 and 90');
+                        return;
+                      }
+                      if (isNaN(lngNum) || lngNum < -180 || lngNum > 180) {
+                        showToast('Longitude must be between -180 and 180');
+                        return;
+                      }
+                      const roundedLat = Number(latNum.toFixed(6));
+                      const roundedLng = Number(lngNum.toFixed(6));
 
-                        await handleUpdateShopSettings(
-                          {
-                            cityArea: (shopSettings.cityArea || '').trim(),
-                            minOrderAmount: Math.max(0, Number(shopSettings.minOrderAmount) || 0),
-                            gstPercent: Math.max(0, Math.min(28, Number(shopSettings.gstPercent) || 0)),
-                            deliverySlabs: [
-                              {
-                                maxKm: Math.max(1, Number(deliveryZone.radiusKm) || 1),
-                                fee: Math.max(0, Number(deliveryFeeInput) || 0),
-                              },
-                            ],
-                          },
-                          {
-                            shopLat: roundedLat,
-                            shopLng: roundedLng,
-                            shopAddress: trimmedAddress,
-                            radiusKm: deliveryZone.radiusKm,
-                          }
-                        );
-                        showToast('Saved');
-                      }}
-                      className="min-h-[42px] px-5 rounded-xl bg-primary text-primary-contrast text-xs font-bold cursor-pointer"
-                    >
-                      Save
-                    </button>
-                  )}
+                      await handleUpdateShopSettings(
+                        {
+                          cityArea: (shopSettings.cityArea || '').trim(),
+                          minOrderAmount: Math.max(0, Number(shopSettings.minOrderAmount) || 0),
+                          gstPercent: Math.max(0, Math.min(28, Number(shopSettings.gstPercent) || 0)),
+                          deliverySlabs: [
+                            {
+                              maxKm: Math.max(1, Number(deliveryZone.radiusKm) || 1),
+                              fee: Math.max(0, Number(deliveryFeeInput) || 0),
+                            },
+                          ],
+                        },
+                        {
+                          shopLat: roundedLat,
+                          shopLng: roundedLng,
+                          shopAddress: trimmedAddress,
+                          radiusKm: deliveryZone.radiusKm,
+                        }
+                      );
+                      showToast('Saved');
+                    }}
+                    className="min-h-[42px] px-5 rounded-xl bg-primary text-primary-contrast text-xs font-bold cursor-pointer"
+                  >
+                    Save
+                  </button>
                 </div>
               )}
 
@@ -5061,52 +5021,50 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   </h3>
                 </div>
 
-                {canEditMenu && (
-                  <form
-                    onSubmit={async (e) => {
-                      e.preventDefault();
-                      if (!newRiderName.trim() || !newRiderPhone.trim()) return;
-                      const res = await adminFetch('/api/admin/delivery-boys', {
-                        method: 'POST',
-                        body: JSON.stringify({
-                          name: newRiderName.trim(),
-                          phone: newRiderPhone.trim(),
-                        }),
-                      });
-                      if (res.ok) {
-                        const d = await res.json();
-                        setDeliveryBoys(d.deliveryBoys || []);
-                        setNewRiderName('');
-                        setNewRiderPhone('');
-                        showToast('Saved');
-                      }
-                    }}
-                    className="bg-surface rounded-2xl border border-border p-4 grid grid-cols-1 sm:grid-cols-3 gap-2"
+                <form
+                  onSubmit={async (e) => {
+                    e.preventDefault();
+                    if (!newRiderName.trim() || !newRiderPhone.trim()) return;
+                    const res = await adminFetch('/api/admin/delivery-boys', {
+                      method: 'POST',
+                      body: JSON.stringify({
+                        name: newRiderName.trim(),
+                        phone: newRiderPhone.trim(),
+                      }),
+                    });
+                    if (res.ok) {
+                      const d = await res.json();
+                      setDeliveryBoys(d.deliveryBoys || []);
+                      setNewRiderName('');
+                      setNewRiderPhone('');
+                      showToast('Saved');
+                    }
+                  }}
+                  className="bg-surface rounded-2xl border border-border p-4 grid grid-cols-1 sm:grid-cols-3 gap-2"
+                >
+                  <input
+                    type="text"
+                    required
+                    value={newRiderName}
+                    onChange={(e) => setNewRiderName(e.target.value)}
+                    placeholder="Rider Full Name"
+                    className="min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs"
+                  />
+                  <input
+                    type="tel"
+                    required
+                    value={newRiderPhone}
+                    onChange={(e) => setNewRiderPhone(e.target.value)}
+                    placeholder="Phone Number (10 digits)"
+                    className="min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs"
+                  />
+                  <button
+                    type="submit"
+                    className="min-h-[40px] px-4 rounded-xl bg-primary text-primary-contrast text-xs font-bold cursor-pointer"
                   >
-                    <input
-                      type="text"
-                      required
-                      value={newRiderName}
-                      onChange={(e) => setNewRiderName(e.target.value)}
-                      placeholder="Rider Full Name"
-                      className="min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs"
-                    />
-                    <input
-                      type="tel"
-                      required
-                      value={newRiderPhone}
-                      onChange={(e) => setNewRiderPhone(e.target.value)}
-                      placeholder="Phone Number (10 digits)"
-                      className="min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs"
-                    />
-                    <button
-                      type="submit"
-                      className="min-h-[40px] px-4 rounded-xl bg-primary text-primary-contrast text-xs font-bold cursor-pointer"
-                    >
-                      + Add Rider
-                    </button>
-                  </form>
-                )}
+                    + Add Rider
+                  </button>
+                </form>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   {deliveryBoys.map((rider) => {
@@ -5122,8 +5080,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         key={rider.id}
                         className="bg-surface rounded-2xl border border-border p-4 space-y-3 min-w-0"
                       >
-                        <div className="flex items-start justify-between gap-2 min-w-0">
-                          <div className="min-w-0">
+                        <div className="flex flex-wrap items-start justify-between gap-2 min-w-0">
+                          <div className="min-w-0 flex-1">
                             <h3 className="font-bold text-sm text-text break-words">{rider.name}</h3>
                             <p className="text-xs text-muted">
                               {rider.phone} • {rider.activeOrders} active runs
@@ -5157,25 +5115,23 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                             >
                               {isRiderActive ? 'Active' : 'Inactive'}
                             </button>
-                            {canEditMenu && (
-                              <button
-                                onClick={async () => {
-                                  const res = await adminFetch(
-                                    `/api/admin/delivery-boys/${rider.id}`,
-                                    { method: 'DELETE' }
-                                  );
-                                  if (res.ok) {
-                                    const d = await res.json();
-                                    setDeliveryBoys(d.deliveryBoys || []);
-                                    showToast('Removed');
-                                  }
-                                }}
-                                className="p-1.5 rounded-lg border border-red-500/30 text-red-600 hover:bg-red-500/10 cursor-pointer"
-                                title="Delete Rider"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
-                            )}
+                            <button
+                              onClick={async () => {
+                                const res = await adminFetch(
+                                  `/api/admin/delivery-boys/${rider.id}`,
+                                  { method: 'DELETE' }
+                                );
+                                if (res.ok) {
+                                  const d = await res.json();
+                                  setDeliveryBoys(d.deliveryBoys || []);
+                                  showToast('Removed');
+                                }
+                              }}
+                              className="p-1.5 rounded-lg border border-red-500/30 text-red-600 hover:bg-red-500/10 cursor-pointer"
+                              title="Delete Rider"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
                           </div>
                         </div>
 
@@ -5243,7 +5199,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
           ==================================================================== */}
           {activeSection === 'finance' && (
             <div className="space-y-4">
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 <button
                   onClick={() => setFinanceSubTab('payments')}
                   className={`min-h-[40px] px-4 rounded-xl text-xs font-bold cursor-pointer ${
@@ -5298,18 +5254,18 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       return (
                         <div
                           key={p.id}
-                          className="p-3 rounded-xl border border-border flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
+                          className="p-3 rounded-xl border border-border flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs min-w-0"
                         >
-                          <div>
-                            <p className="font-bold text-text">
+                          <div className="min-w-0 flex-1">
+                            <p className="font-bold text-text break-words">
                               {p.orderNumber} • ₹{p.amount} ({p.gateway === 'COD' ? 'COD' : 'Online'})
                             </p>
-                            <p className="text-muted">
+                            <p className="text-muted break-words">
                               Status: {p.status}{' '}
                               {existingRefund ? `• Refunded ₹${existingRefund.amount}` : ''}
                             </p>
                           </div>
-                          {p.status !== 'REFUNDED' && canEditSettings && (
+                          {p.status !== 'REFUNDED' && (
                             p.gateway === 'RAZORPAY' && !razorpayConfigured ? (
                               <span className="text-muted italic text-[11px]">
                                 Online refunds unavailable
@@ -5395,7 +5351,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         </button>
                       ))}
                       {reportRange === 'CUSTOM' && (
-                        <div className="flex items-center gap-1.5 text-xs">
+                        <div className="flex flex-wrap items-center gap-1.5 text-xs">
                           <input
                             type="date"
                             value={reportStartDate}
@@ -5413,7 +5369,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       )}
                     </div>
 
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <button
                         type="button"
                         onClick={() => {
@@ -5532,38 +5488,44 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
           )}
 
           {/* ====================================================================
-              8. SETTINGS SECTION (My Account + Shop Info + Staff Accounts)
+              8. SETTINGS SECTION (My Account + Shop Info)
           ==================================================================== */}
           {activeSection === 'settings' && (
-            <div className="space-y-4">
-              {/* My Account Card (visible to all logged-in users) */}
-              <div className="bg-surface rounded-2xl border border-border p-4 space-y-3">
-                <div className="flex flex-wrap items-center justify-between gap-2 min-w-0">
+            <div className="space-y-4 min-w-0">
+              {/* My Account Card */}
+              <div className="bg-surface rounded-2xl border border-border p-4 space-y-3 min-w-0">
+                <div className="flex flex-col gap-3 min-w-0">
                   <div className="min-w-0">
                     <h3 className="text-sm font-bold text-text">My Account</h3>
-                    <div className="flex flex-wrap items-center gap-2 mt-1">
-                      <span className="text-xs font-bold text-text break-words">{adminUser.name}</span>
-                      <span className="px-2 py-0.5 rounded-full bg-bg border border-border text-[11px] font-semibold text-text">
-                        {formatRoleLabel(adminUser.role)}
-                      </span>
-                    </div>
+                    <p className="text-xs font-bold text-text break-words mt-1">
+                      {adminUser.name}
+                    </p>
                     <p className="text-xs text-muted break-all mt-0.5">{adminUser.email}</p>
                   </div>
-                  <div className="flex flex-wrap items-center gap-2 shrink-0">
-                    {canEditSettings && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setNewEmailInput('');
-                          setEmailCurrentPasswordInput('');
-                          setEmailModalOpen(true);
-                        }}
-                        className="min-h-[38px] px-3.5 rounded-xl border border-border text-xs font-semibold hover:bg-bg flex items-center gap-1.5 cursor-pointer"
-                      >
-                        <Mail className="w-3.5 h-3.5 text-muted" />
-                        Change Email
-                      </button>
-                    )}
+                  <div className="flex flex-wrap items-center gap-2 w-full min-w-0">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setNewNameInput(adminUser.name || '');
+                        setNameFormOpen((prev) => !prev);
+                      }}
+                      className="min-h-[38px] px-3.5 rounded-xl border border-border text-xs font-semibold hover:bg-bg inline-flex items-center gap-1.5 max-w-full cursor-pointer"
+                    >
+                      <Edit3 className="w-3.5 h-3.5 text-muted shrink-0" />
+                      <span>Change Name</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setNewEmailInput('');
+                        setEmailCurrentPasswordInput('');
+                        setEmailModalOpen(true);
+                      }}
+                      className="min-h-[38px] px-3.5 rounded-xl border border-border text-xs font-semibold hover:bg-bg inline-flex items-center gap-1.5 max-w-full cursor-pointer"
+                    >
+                      <Mail className="w-3.5 h-3.5 text-muted shrink-0" />
+                      <span>Change Email</span>
+                    </button>
                     <button
                       type="button"
                       onClick={() => {
@@ -5572,44 +5534,60 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         setConfirmPasswordInput('');
                         setPasswordModalOpen(true);
                       }}
-                      className="min-h-[38px] px-3.5 rounded-xl border border-border text-xs font-semibold hover:bg-bg flex items-center gap-1.5 cursor-pointer"
+                      className="min-h-[38px] px-3.5 rounded-xl border border-border text-xs font-semibold hover:bg-bg inline-flex items-center gap-1.5 max-w-full cursor-pointer"
                     >
-                      <KeyRound className="w-3.5 h-3.5 text-muted" />
-                      Change Password
+                      <KeyRound className="w-3.5 h-3.5 text-muted shrink-0" />
+                      <span>Change Password</span>
                     </button>
                   </div>
                 </div>
+
+                {nameFormOpen && (
+                  <form
+                    onSubmit={handleChangeMyName}
+                    className="pt-3 border-t border-border space-y-2.5 min-w-0"
+                  >
+                    <div>
+                      <label
+                        htmlFor="owner-name-input"
+                        className="block text-xs font-semibold text-muted mb-1"
+                      >
+                        Your name
+                      </label>
+                      <input
+                        id="owner-name-input"
+                        type="text"
+                        required
+                        minLength={2}
+                        maxLength={60}
+                        value={newNameInput}
+                        onChange={(e) => setNewNameInput(e.target.value)}
+                        placeholder="Your name"
+                        className="w-full min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs text-text"
+                      />
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="submit"
+                        disabled={isUpdatingName}
+                        className="min-h-[38px] px-4 rounded-xl bg-primary text-primary-contrast text-xs font-bold cursor-pointer disabled:opacity-60"
+                      >
+                        {isUpdatingName ? 'Saving...' : 'Save'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setNameFormOpen(false)}
+                        className="min-h-[38px] px-3.5 rounded-xl border border-border text-xs font-semibold cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </form>
+                )}
               </div>
 
-              {canEditMenu && (
-                <div className="flex flex-wrap gap-2">
-                  <button
-                    onClick={() => setSettingsSubTab('shop')}
-                    className={`min-h-[40px] px-4 rounded-xl text-xs font-bold cursor-pointer ${
-                      settingsSubTab === 'shop'
-                        ? 'bg-primary text-primary-contrast'
-                        : 'bg-surface border border-border text-text'
-                    }`}
-                  >
-                    Shop Info
-                  </button>
-                  {canEditSettings && (
-                    <button
-                      onClick={() => setSettingsSubTab('users')}
-                      className={`min-h-[40px] px-4 rounded-xl text-xs font-bold cursor-pointer ${
-                        settingsSubTab === 'users'
-                          ? 'bg-primary text-primary-contrast'
-                          : 'bg-surface border border-border text-text'
-                      }`}
-                    >
-                      Staff Accounts
-                    </button>
-                  )}
-                </div>
-              )}
-
-              {canEditMenu && settingsSubTab === 'shop' && shopSettings && (
-                <div className="bg-surface rounded-2xl border border-border p-4 space-y-4">
+              {shopSettings && (
+                <div className="bg-surface rounded-2xl border border-border p-4 space-y-4 min-w-0">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <h3 className="text-sm font-bold text-text">
                       Shop Details, Timings & Pre-Orders
@@ -5752,146 +5730,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   </div>
                 </div>
               )}
-
-              {/* OWNER STAFF ACCOUNTS MANAGEMENT */}
-              {settingsSubTab === 'users' && canEditSettings && (
-                <div className="space-y-6">
-                  {/* Add Staff / Manager Account */}
-                  <div className="bg-surface rounded-2xl border border-border p-4 space-y-4">
-                    <h3 className="text-sm font-bold text-text">Add Staff Account</h3>
-                    <form
-                      onSubmit={async (e) => {
-                        e.preventDefault();
-                        const res = await adminFetch('/api/admin/users', {
-                          method: 'POST',
-                          body: JSON.stringify({
-                            email: newUserEmail.trim(),
-                            name: newUserName.trim(),
-                            role: newUserRole,
-                            password: newUserPassword,
-                          }),
-                        });
-                        const d = await res.json();
-                        if (!res.ok) {
-                          showToast(d.error || 'Could not add staff account');
-                          return;
-                        }
-                        setNewUserEmail('');
-                        setNewUserName('');
-                        setNewUserPassword('');
-                        await fetchBootstrap();
-                        showToast('Saved');
-                      }}
-                      className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2"
-                    >
-                      <input
-                        type="text"
-                        required
-                        value={newUserName}
-                        onChange={(e) => setNewUserName(e.target.value)}
-                        placeholder="Full Name"
-                        className="min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs"
-                      />
-                      <input
-                        type="email"
-                        required
-                        value={newUserEmail}
-                        onChange={(e) => setNewUserEmail(e.target.value)}
-                        placeholder="Email address"
-                        className="min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs"
-                      />
-                      <select
-                        aria-label="Staff Role"
-                        value={newUserRole}
-                        onChange={(e) => setNewUserRole(e.target.value as AdminRole)}
-                        className="min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs"
-                      >
-                        <option value="staff">Staff — Orders only</option>
-                        <option value="manager">Manager — Menu &amp; Orders</option>
-                        <option value="owner">Owner — Full Access</option>
-                      </select>
-                      <input
-                        type="password"
-                        required
-                        value={newUserPassword}
-                        onChange={(e) => setNewUserPassword(e.target.value)}
-                        placeholder="Password (min 8 chars)"
-                        className="min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs"
-                      />
-                      <button
-                        type="submit"
-                        className="min-h-[40px] px-4 rounded-xl bg-primary text-primary-contrast text-xs font-bold cursor-pointer"
-                      >
-                        + Add Staff
-                      </button>
-                    </form>
-
-                    {/* Existing Staff List */}
-                    <div className="space-y-2 pt-2">
-                      {adminUsers.map((u) => (
-                        <div
-                          key={u.id}
-                          className="p-3 rounded-xl border border-border flex flex-wrap items-center justify-between gap-2 text-xs min-w-0"
-                        >
-                          <div className="min-w-0 flex-1 space-y-0.5">
-                            <div className="flex flex-wrap items-center gap-2 min-w-0">
-                              <p className="font-bold text-text break-words">{u.name}</p>
-                              <span className="px-2 py-0.5 rounded-full bg-bg border border-border text-[11px] font-semibold text-text">
-                                {formatRoleLabel(u.role)}
-                              </span>
-                            </div>
-                            <p className="text-muted break-all">{u.email}</p>
-                          </div>
-                          <div className="flex flex-wrap items-center gap-2 shrink-0">
-                            {u.id !== adminUser.id && (
-                              <>
-                                <button
-                                  onClick={async () => {
-                                    const res = await adminFetch(`/api/admin/users/${u.id}`, {
-                                      method: 'PATCH',
-                                      body: JSON.stringify({ isActive: !u.isActive }),
-                                    });
-                                    if (res.ok) {
-                                      await fetchBootstrap();
-                                      showToast('Saved');
-                                    }
-                                  }}
-                                  className={`px-2.5 py-1.5 rounded-lg font-bold cursor-pointer ${
-                                    !u.isActive
-                                      ? 'bg-red-500/15 text-red-600'
-                                      : 'bg-emerald-500/15 text-emerald-600'
-                                  }`}
-                                >
-                                  {!u.isActive ? 'Blocked' : 'Active'}
-                                </button>
-                                <button
-                                  onClick={() => {
-                                    setEditStaffModalUser(u);
-                                    setEditStaffNameVal(u.name);
-                                    setEditStaffEmailVal(u.email);
-                                  }}
-                                  className="px-2.5 py-1.5 rounded-lg border border-border font-semibold hover:bg-bg cursor-pointer"
-                                >
-                                  Edit
-                                </button>
-                              </>
-                            )}
-                            <button
-                              onClick={() => {
-                                setResetPassModalUser(u);
-                                setResetPassNewVal('');
-                              }}
-                              className="px-2.5 py-1.5 rounded-lg border border-border font-semibold hover:bg-bg cursor-pointer"
-                            >
-                              Reset Password
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              )}
             </div>
           )}
         </main>
@@ -5947,9 +5785,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
               <p className="text-xs font-bold text-text truncate">{adminUser.name}</p>
               <p className="text-[11px] text-muted truncate">{adminUser.email}</p>
             </div>
-            <span className="px-2 py-0.5 rounded-full bg-primary/15 text-primary text-[10px] font-bold uppercase shrink-0">
-              {formatRoleLabel(adminUser.role)}
-            </span>
           </div>
 
           {/* Scrollable Body: All Pages + Quick Controls */}
@@ -6302,7 +6137,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             {/* Actions */}
             {renderOrderStatusActionButtons(selectedOrderDetails)}
 
-            <div className="flex items-center justify-end gap-2 pt-1">
+            <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
               <button
                 type="button"
                 onClick={() => setKotOrder(selectedOrderDetails)}
@@ -7001,7 +6836,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       )}
 
       {/* ========================================================================
-          CHANGE EMAIL MODAL (Owner only)
+          CHANGE EMAIL MODAL
       ======================================================================== */}
       {emailModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-2.5 sm:p-4">
@@ -7038,7 +6873,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
               placeholder="Current password"
               className="w-full min-h-[42px] px-3 rounded-xl border border-border bg-bg text-xs"
             />
-            <div className="flex justify-end gap-2">
+            <div className="flex flex-wrap justify-end gap-2">
               <button
                 type="button"
                 onClick={() => setEmailModalOpen(false)}
@@ -7052,135 +6887,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 className="px-4 py-2 rounded-xl bg-primary text-primary-contrast text-xs font-bold cursor-pointer disabled:opacity-60"
               >
                 {isUpdatingEmail ? 'Saving...' : 'Update Email'}
-              </button>
-            </div>
-          </form>
-        </div>
-      )}
-
-      {/* Owner Edit Staff Name & Email Modal */}
-      {editStaffModalUser && (
-        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-2.5 sm:p-4">
-          <form
-            onSubmit={async (e) => {
-              e.preventDefault();
-              if (!editStaffNameVal.trim() || !editStaffEmailVal.trim()) return;
-              const res = await adminFetch(`/api/admin/users/${editStaffModalUser.id}`, {
-                method: 'PATCH',
-                body: JSON.stringify({
-                  name: editStaffNameVal.trim(),
-                  email: editStaffEmailVal.trim(),
-                }),
-              });
-              const d = await res.json();
-              if (!res.ok) {
-                showToast(d.error || 'Could not update account');
-                return;
-              }
-              setEditStaffModalUser(null);
-              await fetchBootstrap();
-              showToast('Saved');
-            }}
-            className="w-full max-w-md bg-surface rounded-2xl border border-border p-4 sm:p-5 space-y-3.5 text-text"
-          >
-            <div className="flex items-center justify-between">
-              <h3 className="text-base font-bold text-text">
-                Edit {formatRoleLabel(editStaffModalUser.role)} Account
-              </h3>
-              <button
-                type="button"
-                onClick={() => setEditStaffModalUser(null)}
-                className="p-1 text-muted cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-muted mb-1">Full Name</label>
-              <input
-                type="text"
-                required
-                value={editStaffNameVal}
-                onChange={(e) => setEditStaffNameVal(e.target.value)}
-                className="w-full min-h-[42px] px-3 rounded-xl border border-border bg-bg text-xs"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-muted mb-1">Email</label>
-              <input
-                type="email"
-                required
-                value={editStaffEmailVal}
-                onChange={(e) => setEditStaffEmailVal(e.target.value)}
-                className="w-full min-h-[42px] px-3 rounded-xl border border-border bg-bg text-xs"
-              />
-            </div>
-            <div className="flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setEditStaffModalUser(null)}
-                className="px-4 py-2 rounded-xl border border-border text-xs font-semibold cursor-pointer"
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                className="px-4 py-2 rounded-xl bg-primary text-primary-contrast text-xs font-bold cursor-pointer"
-              >
-                Save
-              </button>
-            </div>
-          </form>
-        </div>
-      )}
-
-      {/* Owner Reset Another User's Password Modal */}
-      {resetPassModalUser && (
-        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-2.5 sm:p-4">
-          <form
-            onSubmit={async (e) => {
-              e.preventDefault();
-              if (resetPassNewVal.length < 8) {
-                showToast('Password must be at least 8 characters');
-                return;
-              }
-              const res = await adminFetch(`/api/admin/users/${resetPassModalUser.id}`, {
-                method: 'PATCH',
-                body: JSON.stringify({ resetPassword: resetPassNewVal }),
-              });
-              if (res.ok) {
-                setResetPassModalUser(null);
-                await fetchBootstrap();
-                showToast('Password updated');
-              }
-            }}
-            className="w-full max-w-md bg-surface rounded-2xl border border-border p-4 sm:p-5 space-y-3.5 text-text"
-          >
-            <h3 className="text-base font-bold text-text">
-              Reset Password for {resetPassModalUser.email}
-            </h3>
-            <input
-              type="password"
-              required
-              minLength={8}
-              value={resetPassNewVal}
-              onChange={(e) => setResetPassNewVal(e.target.value)}
-              placeholder="New temporary password (min 8 chars)"
-              className="w-full min-h-[42px] px-3 rounded-xl border border-border bg-bg text-xs"
-            />
-            <div className="flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setResetPassModalUser(null)}
-                className="px-4 py-2 rounded-xl border border-border text-xs font-semibold cursor-pointer"
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                className="px-4 py-2 rounded-xl bg-primary text-primary-contrast text-xs font-bold cursor-pointer"
-              >
-                Reset Password
               </button>
             </div>
           </form>
@@ -7214,7 +6920,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             {kotOrder.orderNotes && (
               <div className="p-2 bg-bg rounded font-bold">Kitchen Note: {kotOrder.orderNotes}</div>
             )}
-            <div className="flex justify-end gap-2 pt-3 border-t border-dashed border-border">
+            <div className="flex flex-wrap justify-end gap-2 pt-3 border-t border-dashed border-border">
               <button
                 type="button"
                 onClick={() => setKotOrder(null)}
@@ -7236,7 +6942,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
       {/* Toast Notification */}
       {toastMsg && (
-        <div className="fixed bottom-5 right-4 z-50 bg-text text-bg px-4 py-3 rounded-xl shadow-lg text-xs font-semibold">
+        <div className="fixed bottom-5 right-4 max-w-[calc(100vw-2rem)] z-50 bg-text text-bg px-4 py-3 rounded-xl shadow-lg text-xs font-semibold break-words">
           {toastMsg}
         </div>
       )}

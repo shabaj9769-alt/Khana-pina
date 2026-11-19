@@ -10,7 +10,7 @@ export type OrderStatus =
 
 export type PaymentMethod = 'RAZORPAY' | 'COD';
 export type PaymentStatus = 'PENDING' | 'PAID' | 'FAILED' | 'REFUNDED' | 'FLAGGED' | 'LATE_CAPTURE';
-export type AdminRole = 'owner' | 'manager' | 'staff';
+export type AdminRole = 'owner';
 
 export type ThemeMode = 'light' | 'dark' | 'auto';
 export type StorefrontThemePresetId =

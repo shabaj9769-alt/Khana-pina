@@ -721,32 +721,8 @@ export function getInitialDatabaseState(): DatabaseState {
         id: 'adm_owner',
         email: 'owner@aangan.in',
         passwordHash: hashPasswordScrypt('admin123'),
-        name: 'Chef Vikramaditya (Owner)',
+        name: 'Owner',
         role: 'owner',
-        isActive: true,
-        mustChangePassword: true,
-        tokenVersion: 1,
-        totpEnabled: false,
-        createdAt: nowIso,
-      },
-      {
-        id: 'adm_manager',
-        email: 'manager@aangan.in',
-        passwordHash: hashPasswordScrypt('manager123'),
-        name: 'Ananya Nair (Manager)',
-        role: 'manager',
-        isActive: true,
-        mustChangePassword: true,
-        tokenVersion: 1,
-        totpEnabled: false,
-        createdAt: nowIso,
-      },
-      {
-        id: 'adm_staff',
-        email: 'staff@aangan.in',
-        passwordHash: hashPasswordScrypt('staff123'),
-        name: 'Kitchen Dispatch (Staff)',
-        role: 'staff',
         isActive: true,
         mustChangePassword: true,
         tokenVersion: 1,
@@ -1462,6 +1438,38 @@ export interface VerifiedAdminContext {
   mustChangePassword: boolean;
 }
 
+export async function purgeNonOwnerAdmins(): Promise<void> {
+  const rtdb = getRtdb();
+  const removedIds = new Set<string>(['adm_manager', 'adm_staff']);
+  for (const u of db.adminUsers) {
+    if (u.id === 'adm_manager' || u.id === 'adm_staff' || u.role !== 'owner') {
+      removedIds.add(u.id);
+    }
+  }
+
+  const updates: Record<string, null> = {};
+  for (const id of removedIds) {
+    updates[`adminUsers/${id}`] = null;
+  }
+
+  for (const s of db.adminSessions) {
+    if (removedIds.has(s.userId) || s.role !== 'owner') {
+      updates[`adminSessions/${s.id}`] = null;
+    }
+  }
+
+  db.adminUsers = db.adminUsers.filter(
+    (u) => !removedIds.has(u.id) && u.role === 'owner'
+  );
+  db.adminSessions = db.adminSessions.filter(
+    (s) => !removedIds.has(s.userId) && s.role === 'owner'
+  );
+
+  if (Object.keys(updates).length > 0) {
+    await rtdb.ref().update(updates);
+  }
+}
+
 export async function authenticateAdminFromTokenOrCookieAsync(
   rawToken?: string,
   cookieHeader?: string
@@ -1474,7 +1482,9 @@ export async function authenticateAdminFromTokenOrCookieAsync(
   const payload = verifyJwtRaw(candidate);
   if (!payload || payload.type !== 'access') return null;
 
-  const user = db.adminUsers.find((u) => u.id === payload.sub && u.isActive);
+  const user = db.adminUsers.find(
+    (u) => u.id === payload.sub && u.isActive && u.role === 'owner'
+  );
   if (!user) return null;
   if (user.tokenVersion !== payload.tv) return null;
 
