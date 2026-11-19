@@ -29,26 +29,21 @@ interface DeliveryPartnerViewProps {
   initialToken?: string;
 }
 
-const DEMO_RIDERS = [
-  { name: 'Ramesh Pawar', token: 'rider_token_ramesh_01', phone: '9876501234' },
-  { name: 'Imran Shaikh', token: 'rider_token_imran_02', phone: '9876505678' },
-];
-
 // Only enabled if explicitly passed ?dev_otp=1 in URL query string
 const DEV_MODE_SHOW_OTP =
   typeof window !== 'undefined' &&
   new URLSearchParams(window.location.search).get('dev_otp') === '1';
 
 export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initialToken }) => {
-  const [activeToken, setActiveToken] = useState(initialToken || DEMO_RIDERS[0].token);
+  const [activeToken, setActiveToken] = useState(initialToken || '');
   const [riderId, setRiderId] = useState<string>('');
   const [riderCustomToken, setRiderCustomToken] = useState<string | null>(null);
   const [firebaseClientConfig, setFirebaseClientConfig] = useState<Record<string, string> | null>(
     null
   );
   const [shopName, setShopName] = useState<string>(() => getCachedShopName() || 'Food Ordering');
-  const [riderName, setRiderName] = useState('Ramesh Pawar');
-  const [riderPhone, setRiderPhone] = useState('9876501234');
+  const [riderName, setRiderName] = useState('');
+  const [riderPhone, setRiderPhone] = useState('');
   const [dailyPin, setDailyPin] = useState<string | undefined>(undefined);
   const [authError, setAuthError] = useState<string | null>(null);
   const [isOnline, setIsOnline] = useState(true);
@@ -92,7 +87,7 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
 
   const fetchRiderOrders = async (token: string) => {
     if (!token) {
-      setAuthError('Missing rider link token. Open the link shared by the kitchen manager.');
+      setAuthError('Rider link missing. Apne admin se naya rider link maango.');
       setLoading(false);
       return;
     }
@@ -232,7 +227,7 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
     .filter((o) => o.paymentMethod === 'COD')
     .reduce((sum, o) => sum + o.grandTotal, 0);
 
-  const firstName = (riderName || 'Ramesh').split(' ')[0];
+  const firstName = riderName ? riderName.split(' ')[0] : 'Rider';
 
   return (
     <div className="min-h-[100dvh] w-full max-w-[100vw] overflow-x-clip bg-bg text-text pb-safe transition-colors duration-200">
@@ -248,9 +243,15 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
                 Hi, {firstName}
               </h1>
               <p className="text-[12px] text-muted tabular-nums flex flex-wrap gap-x-2">
-                <span className="whitespace-nowrap">+91 {riderPhone}</span>
+                {riderPhone && <span className="whitespace-nowrap">+91 {riderPhone}</span>}
                 <span>
-                  {dailyPin ? `· Daily PIN: ${dailyPin}` : '· Link-only rider portal'}
+                  {dailyPin
+                    ? riderPhone
+                      ? `· Daily PIN: ${dailyPin}`
+                      : `Daily PIN: ${dailyPin}`
+                    : riderPhone
+                    ? '· Link-only rider portal'
+                    : 'Link-only rider portal'}
                 </span>
               </p>
             </div>
@@ -317,28 +318,7 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
           </div>
         )}
 
-        {/* Rider Switcher Pill Strip (only shown when no fixed token or in demo preview) */}
-        {!initialToken && (
-          <div className="flex flex-wrap items-center justify-between gap-2 bg-surface rounded-theme p-3 shadow-2xs border border-border">
-            <span className="text-[12px] font-medium text-muted">Demo Rider Link:</span>
-            <div className="flex flex-wrap items-center gap-1.5 min-w-0">
-              {DEMO_RIDERS.map((r) => (
-                <button
-                  key={r.token}
-                  type="button"
-                  onClick={() => setActiveToken(r.token)}
-                  className={`min-h-[36px] px-3 rounded-lg text-[12px] font-semibold whitespace-nowrap transition-colors duration-200 cursor-pointer ${
-                    activeToken === r.token
-                      ? 'bg-primary text-primary-contrast'
-                      : 'bg-bg text-text hover:opacity-90'
-                  }`}
-                >
-                  {r.name}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
+
 
         {/* Daily Summary Card: Deliveries Done & Cash Collected */}
         <section className="grid grid-cols-2 gap-3 min-w-0">
