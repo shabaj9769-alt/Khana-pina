@@ -1,4 +1,4 @@
-import { OrderRecord } from '../../src/types.ts';
+import type { OrderRecord } from '../../src/types.ts';
 import { getRtdb } from './firebaseAdmin.ts';
 
 const MAX_TELEGRAM_LEN = 3800;

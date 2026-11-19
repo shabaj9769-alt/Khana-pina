@@ -1380,7 +1380,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       inStock: true,
       spiceLevel: 'Medium',
       prepTimeMins: 25,
-      imageUrl: '/assets/images/dish_butter_chicken_1793975541967.jpg',
+      imageUrl: '/assets/images/dish_butter_chicken_1793975541967.webp',
       variants: [],
       addons: [],
       isBestseller: false,
@@ -1604,7 +1604,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         spiceLevel: (cols[6] as 'Mild' | 'Medium' | 'Fiery') || 'Medium',
         prepTimeMins: Number(cols[7]) || 25,
         description: (cols[8] || 'Artisanal preparation').replace(/^"|"$/g, ''),
-        imageUrl: cols[9] || '/assets/images/dish_butter_chicken_1793975541967.jpg',
+        imageUrl: cols[9] || '/assets/images/dish_butter_chicken_1793975541967.webp',
       };
     });
     const res = await adminFetch('/api/admin/menu-items/bulk', {
@@ -4115,7 +4115,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         value={newBannerImageUrl}
                         onChange={setNewBannerImageUrl}
                         alt="Banner preview"
-                        defaultPreviewUrl="/assets/images/hero_artisanal_feast_1793975537331.jpg"
+                        defaultPreviewUrl="/assets/images/hero_artisanal_feast_1793975537331.webp"
                         previewClassName="w-24 h-14 rounded-lg object-cover border border-border shrink-0 bg-bg"
                         allowClear
                       />
@@ -4134,7 +4134,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                           ctaText: newBannerCta || 'Order Now',
                           imageUrl:
                             newBannerImageUrl.trim() ||
-                            '/assets/images/hero_artisanal_feast_1793975537331.jpg',
+                            '/assets/images/hero_artisanal_feast_1793975537331.webp',
                           linkType: 'CATEGORY',
                           linkTarget: categories[0]?.id || 'cat_biryani',
                           sortOrder: banners.length + 1,

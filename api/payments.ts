@@ -14,6 +14,8 @@ import {
   isRazorpayConfigured,
 } from './_lib/security.ts';
 
+import { db, ensureFirebaseSeeded } from './_lib/store.ts';
+
 // Disable automatic body parsing on Vercel so /api/payments/webhook can verify HMAC over the exact raw stream
 export const config = {
   api: {
@@ -27,9 +29,17 @@ async function getParsedBodyIfNeeded(req: Request): Promise<any> {
   }
   const raw = await readRawRequestBody(req);
   if (!raw.length) return {};
+  const rawText = raw.toString('utf8');
   try {
-    return JSON.parse(raw.toString('utf8'));
+    return JSON.parse(rawText);
   } catch {
+    if (rawText.includes('=')) {
+      const parsed: Record<string, string> = {};
+      new URLSearchParams(rawText).forEach((val, key) => {
+        parsed[key] = val;
+      });
+      return parsed;
+    }
     return {};
   }
 }
@@ -37,13 +47,55 @@ async function getParsedBodyIfNeeded(req: Request): Promise<any> {
 export default async function handler(req: Request, res: Response) {
   if (applyCorsAndSecurityHeaders(req, res)) return;
 
-  if (req.method !== 'POST') {
+  const rawPath = (req.originalUrl || req.url || '').split('?')[0].replace(/\/+$/, '');
+  const isCallback = rawPath.endsWith('/callback');
+  if (req.method !== 'POST' && !(isCallback && req.method === 'GET')) {
     res.status(405).json({ error: 'Method not allowed' });
     return;
   }
 
-  const rawPath = (req.originalUrl || req.url || '').split('?')[0].replace(/\/+$/, '');
   const clientIp = getClientIp(req);
+  await ensureFirebaseSeeded();
+
+  // POST /api/payments/callback or GET /api/payments/callback
+  // Standard Razorpay redirect flow for mobile UPI apps / cards / nets
+  if (isCallback) {
+    const body = await getParsedBodyIfNeeded(req);
+    const query = req.query || {};
+    const razorpayPaymentId = String(
+      body?.razorpay_payment_id || query?.razorpay_payment_id || body?.razorpayPaymentId || ''
+    ).trim();
+    const razorpayOrderId = String(
+      body?.razorpay_order_id || query?.razorpay_order_id || body?.razorpayOrderId || ''
+    ).trim();
+    const razorpaySignature = String(
+      body?.razorpay_signature || query?.razorpay_signature || body?.razorpaySignature || ''
+    ).trim();
+
+    let targetOrder = db.orders.find((o) => razorpayOrderId && o.razorpayOrderId === razorpayOrderId);
+
+    if (razorpayPaymentId && razorpayOrderId && razorpaySignature) {
+      const result = await verifyRazorpayPaymentAuthoritative({
+        razorpayOrderId,
+        razorpayPaymentId,
+        razorpaySignature,
+        clientIp,
+      });
+
+      if ('payload' in result && result.payload?.order) {
+        targetOrder = result.payload.order;
+      }
+    }
+
+    if (targetOrder) {
+      // SECURITY: Redirect URL contains ONLY trackingToken — no status or amount in query params
+      res.redirect(302, `/#/order/${encodeURIComponent(targetOrder.trackingToken)}`);
+      return;
+    }
+
+    res.redirect(302, '/');
+    return;
+  }
 
   if (rawPath.endsWith('/create-test-signature')) {
     const cfg = getRazorpayConfig();

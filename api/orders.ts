@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
-import { OrderRecord, PaymentMethod, PaymentRecord } from '../src/types.ts';
+import type { OrderRecord, PaymentMethod, PaymentRecord } from '../src/types.ts';
 import { getRtdb, isStrictProductionOrLiveMode } from './_lib/firebaseAdmin.ts';
 import { createRazorpayGatewayOrder } from './_lib/razorpay.ts';
 import {
@@ -282,6 +282,45 @@ export default async function handler(req: Request, res: Response) {
         .slice(0, 30);
       const matched = db.orders.filter((o) => safeTokens.includes(o.trackingToken));
       res.json({ orders: matched });
+      return;
+    }
+
+    // 4b. POST /api/orders/switch-to-cod
+    if (req.method === 'POST' && path.endsWith('/orders/switch-to-cod')) {
+      const { trackingToken } = req.body || {};
+      if (!trackingToken || typeof trackingToken !== 'string') {
+        res.status(400).json({ error: 'Tracking token is required' });
+        return;
+      }
+      const order = db.orders.find((o) => o.trackingToken === trackingToken);
+      if (!order) {
+        res.status(404).json({ error: 'Order not found' });
+        return;
+      }
+      if (order.status === 'CANCELLED' || order.status === 'REJECTED') {
+        res.status(400).json({ error: 'Order has already been cancelled.' });
+        return;
+      }
+      if (order.paymentStatus === 'PAID') {
+        res.status(400).json({ error: 'Order has already been paid online.' });
+        return;
+      }
+      if (!db.settings.codEnabled) {
+        res.status(400).json({ error: 'Cash on Delivery is currently disabled by the kitchen.' });
+        return;
+      }
+
+      order.paymentMethod = 'COD';
+      order.updatedAt = new Date().toISOString();
+
+      const rtdb = getRtdb();
+      await rtdb.ref(`orders/${order.id}`).set(order);
+      await syncOrderRealtimePaths(order);
+      refreshHydrationCache();
+
+      await notifyTelegramNewOrder(order);
+
+      res.json({ ok: true, order });
       return;
     }
 

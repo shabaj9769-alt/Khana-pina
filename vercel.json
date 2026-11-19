@@ -2,11 +2,13 @@
   "version": 2,
   "regions": ["sin1"],
   "rewrites": [
+    { "source": "/api/health", "destination": "/api/health" },
     { "source": "/api/home", "destination": "/api/home" },
     { "source": "/api/checkout/:path*", "destination": "/api/orders" },
     { "source": "/api/guest/:path*", "destination": "/api/orders" },
     { "source": "/api/orders", "destination": "/api/orders" },
     { "source": "/api/orders/:path*", "destination": "/api/orders" },
+    { "source": "/api/payments", "destination": "/api/payments" },
     { "source": "/api/payments/:path*", "destination": "/api/payments" },
     { "source": "/api/track/:path*", "destination": "/api/track" },
     { "source": "/api/rider/:path*", "destination": "/api/rider" },
@@ -14,5 +16,11 @@
     { "source": "/api/manifest", "destination": "/api/manifest" },
     { "source": "/manifest.webmanifest", "destination": "/api/manifest" },
     { "source": "/((?!api/).*)", "destination": "/index.html" }
+  ],
+  "crons": [
+    {
+      "path": "/api/admin/orders/expire-stale",
+      "schedule": "*/5 * * * *"
+    }
   ]
 }

@@ -1,5 +1,5 @@
 import type { Request, Response } from 'express';
-import { MenuItem } from '../src/types.ts';
+import type { MenuItem } from '../src/types.ts';
 import {
   applyCorsAndSecurityHeaders,
   getClientIp,

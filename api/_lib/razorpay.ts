@@ -14,7 +14,7 @@ import {
   verifyAndIncrementMenuStockSalesTx,
 } from './store.ts';
 import { notifyTelegramCancelledOrder, notifyTelegramNewOrder } from './telegram.ts';
-import { OrderRecord, PaymentRecord, RefundRecord } from '../../src/types.ts';
+import type { OrderRecord, PaymentRecord, RefundRecord } from '../../src/types.ts';
 
 export interface RazorpayGatewayPaymentEntity {
   id: string;
@@ -520,6 +520,21 @@ export async function processRazorpayWebhookAuthoritative(params: {
     }
   }
 
+  const HANDLED_EVENTS = ['payment.captured', 'order.paid', 'payment.failed', 'refund.processed'];
+  if (!HANDLED_EVENTS.includes(event)) {
+    console.log(
+      `[Razorpay Webhook] Received unhandled event: "${event}" (eventId: ${eventId || 'n/a'}). Acknowledging with 200 to prevent gateway retries.`
+    );
+    return {
+      status: 200,
+      payload: {
+        status: 'ignored_unhandled_event',
+        event,
+        message: `Event ${event} acknowledged and ignored to prevent retries.`,
+      },
+    };
+  }
+
   // Extract entity from standard Razorpay nested structure `payload.payment.entity` (or legacy flat demo structure)
   const paymentEntity = parsedBody.payload?.payment?.entity || parsedBody.payload;
   const orderEntity = parsedBody.payload?.order?.entity;
@@ -553,7 +568,17 @@ export async function processRazorpayWebhookAuthoritative(params: {
   );
 
   if (!order || !payment) {
-    return { status: 404, error: 'Matching Razorpay order not found' };
+    console.warn(
+      `[Razorpay Webhook] No matching order found for event: "${event}" (order_id: ${rzpOrderId || 'n/a'}, payment_id: ${rzpPaymentId || 'n/a'}). Acknowledging with 200.`
+    );
+    return {
+      status: 200,
+      payload: {
+        status: 'order_not_found_acknowledged',
+        event,
+        message: 'No matching order found; acknowledged with 200 to prevent gateway retries.',
+      },
+    };
   }
 
   if (eventId) {

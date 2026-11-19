@@ -17,7 +17,8 @@ import {
   syncOrderRealtimePaths,
 } from './_lib/store.ts';
 import { notifyTelegramDeliveredOrder } from './_lib/telegram.ts';
-import { DeliveryBoy } from '../src/types.ts';
+import { notifyCustomerOrderStatus } from './_lib/customerNotifier.ts';
+import type { DeliveryBoy } from '../src/types.ts';
 
 function toPublicDeliveryBoy(r: DeliveryBoy) {
   const { passwordHash, ...rest } = r;
@@ -253,6 +254,7 @@ export default async function handler(req: Request, res: Response) {
       refreshHydrationCache();
 
       await notifyTelegramDeliveredOrder(order, rider.name || 'Rider');
+      void notifyCustomerOrderStatus(order, 'DELIVERED');
 
       res.json({ order });
       return;

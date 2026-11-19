@@ -11,6 +11,7 @@ import trackHandler from './api/track.ts';
 import riderHandler from './api/rider.ts';
 import adminHandler from './api/admin.ts';
 import manifestHandler from './api/manifest.ts';
+import healthHandler from './api/health.ts';
 
 import {
   calculateAuthoritativeBill,
@@ -85,15 +86,20 @@ async function startServer() {
       next();
       return;
     }
-    express.json({ limit: '5mb' })(req, res, next);
+    express.json({ limit: '5mb' })(req, res, (err) => {
+      if (err) return next(err);
+      express.urlencoded({ extended: true, limit: '5mb' })(req, res, next);
+    });
   });
 
   // Mount Vercel Serverless Function handlers
+  app.all('/api/health', (req, res) => healthHandler(req, res));
   app.all('/api/home', (req, res) => homeHandler(req, res));
   app.all('/api/checkout/*', (req, res) => ordersHandler(req, res));
   app.all('/api/guest/*', (req, res) => ordersHandler(req, res));
   app.all('/api/orders', (req, res) => ordersHandler(req, res));
   app.all('/api/orders/*', (req, res) => ordersHandler(req, res));
+  app.all('/api/payments', (req, res) => paymentsHandler(req, res));
   app.all('/api/payments/*', (req, res) => paymentsHandler(req, res));
   app.all('/api/track/*', (req, res) => trackHandler(req, res));
   app.all('/api/rider/*', (req, res) => riderHandler(req, res));

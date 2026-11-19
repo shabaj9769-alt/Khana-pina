@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 import type { Request, Response } from 'express';
-import { AdminRole } from '../../src/types.ts';
+import type { AdminRole } from '../../src/types.ts';
 import { isStrictProductionOrLiveMode } from './firebaseAdmin.ts';
 
 // =============================================================================

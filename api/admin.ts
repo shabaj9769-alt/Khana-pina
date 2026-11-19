@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
-import {
+import type {
   AdminSessionRecord,
   Coupon,
   DeliveryBoy,
@@ -21,6 +21,7 @@ import {
   uploadImageToCloudOrStorage,
 } from './_lib/firebaseAdmin.ts';
 import { processRazorpayRefundAuthoritative } from './_lib/razorpay.ts';
+import { notifyCustomerOrderStatus } from './_lib/customerNotifier.ts';
 import {
   ACCESS_TTL_SEC,
   applyCorsAndSecurityHeaders,
@@ -42,7 +43,6 @@ import {
 import {
   allocateNextOrderSequenceTx,
   authenticateAdminFromTokenOrCookieAsync,
-  BroadcastRecord,
   buildPublicShopStatus,
   calculateAuthoritativeBill,
   cleanupDemoRecordsFromRtdb,
@@ -66,8 +66,8 @@ import {
   refreshHydrationCache,
   syncOrderRealtimePaths,
   toPublicAdminUser,
-  VerifiedAdminContext,
 } from './_lib/store.ts';
+import type { BroadcastRecord, VerifiedAdminContext } from './_lib/store.ts';
 import {
   notifyTelegramCancelledOrder,
   notifyTelegramDeliveredOrder,
@@ -735,6 +735,30 @@ export default async function handler(req: Request, res: Response) {
       return;
     }
 
+    // 8b. POST /api/admin/logout-all (Revokes all active sessions for currently logged in admin)
+    if (method === 'POST' && subPath === '/logout-all') {
+      const admin = await verifyAdminAuthorized(req, res);
+      if (!admin) return;
+      const target = db.adminUsers.find((u) => u.id === admin.userId);
+      if (target) {
+        target.tokenVersion += 1;
+        for (const s of db.adminSessions) {
+          if (s.userId === target.id) s.revoked = true;
+        }
+        await persistFullStateToFirebase();
+      }
+      clearAdminAuthCookies(res);
+      await logAudit(
+        admin.email,
+        admin.role,
+        'LOGOUT_ALL_DEVICES',
+        `Revoked all active sessions for ${admin.email}`,
+        clientIp
+      );
+      res.json({ ok: true, message: 'Logged out of all sessions' });
+      return;
+    }
+
     // 9. DELETE /api/admin/sessions/:sessionId
     if (method === 'DELETE' && /^\/sessions\/[^/]+$/.test(subPath)) {
       const admin = await verifyAdminAuthorized(req, res);
@@ -822,12 +846,24 @@ export default async function handler(req: Request, res: Response) {
       return;
     }
 
-    // 11. POST /api/admin/orders/expire-stale (Requirement 5: Called when Admin panel opens)
-    if (method === 'POST' && subPath === '/orders/expire-stale') {
-      const admin = await verifyAdminAuthorized(req, res);
-      if (!admin) return;
-      const expired = await expireStaleOrdersLazy();
+    // 11. POST or GET /api/admin/orders/expire-stale (Called by Admin Panel or Vercel Cron)
+    if ((method === 'POST' || method === 'GET') && subPath === '/orders/expire-stale') {
+      const cronSecret = process.env.CRON_SECRET || process.env.ADMIN_JWT_SECRET || '';
+      const authHeader = String(req.headers['authorization'] || '').trim();
+      const customCronHeader = String(req.headers['x-cron-secret'] || '').trim();
+      const isCronAuthorized = Boolean(
+        cronSecret &&
+        (authHeader === `Bearer ${cronSecret}` || customCronHeader === cronSecret)
+      );
+
+      if (!isCronAuthorized) {
+        const admin = await verifyAdminAuthorized(req, res);
+        if (!admin) return;
+      }
+
+      const expired = await expireStaleOrdersLazy({ minIntervalMs: 0 });
       res.json({
+        ok: true,
         expiredCount: expired.length,
         orders: db.orders.filter(isOrderVisibleToKitchen),
       });
@@ -1150,6 +1186,9 @@ export default async function handler(req: Request, res: Response) {
       } else if (becameDelivered) {
         await notifyTelegramDeliveredOrder(order, 'Admin');
       }
+
+      // Notify customer via WhatsApp or SMS if configured
+      void notifyCustomerOrderStatus(order, order.status);
 
       res.json({ order });
       return;
@@ -2380,6 +2419,21 @@ export default async function handler(req: Request, res: Response) {
       const buffer = Buffer.from(base64Data, 'base64');
       if (buffer.byteLength > 3 * 1024 * 1024) {
         res.status(400).json({ error: 'Image size must be under 3 MB' });
+        return;
+      }
+
+      const isCloudinaryConfigured = Boolean(
+        (process.env.CLOUDINARY_UPLOAD_URL || '').trim() &&
+        (process.env.CLOUDINARY_UPLOAD_PRESET || '').trim()
+      );
+      const isStorageConfigured = Boolean(
+        process.env.FIREBASE_STORAGE_BUCKET || isCloudinaryConfigured
+      );
+      if (!isStorageConfigured) {
+        res.status(400).json({
+          error:
+            'FIREBASE_STORAGE_BUCKET ya Cloudinary configure nahi hai. Kripya environment variable set karein ya direct photo link paste karein.',
+        });
         return;
       }
 
