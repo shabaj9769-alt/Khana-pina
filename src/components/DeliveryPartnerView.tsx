@@ -238,22 +238,25 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
     <div className="min-h-[100dvh] w-full max-w-[100vw] overflow-x-clip bg-bg text-text pb-safe transition-colors duration-200">
       {/* Simple Top Bar: "Hi, Ramesh" + Night Dark Mode + Online/Offline toggle (NO customer nav) */}
       <header className="sticky top-0 left-0 right-0 w-full max-w-[100vw] z-30 bg-surface border-b border-border py-3 shadow-2xs overflow-x-clip">
-        <div className="w-full max-w-[480px] mx-auto px-4 flex items-center justify-between gap-2 min-w-0">
-          <div className="flex items-center gap-2.5 min-w-0 flex-1">
+        <div className="w-full max-w-[480px] mx-auto px-4 flex flex-wrap sm:flex-nowrap items-center justify-between gap-2 min-w-0">
+          <div className="flex items-center gap-2.5 min-w-0 basis-full sm:basis-auto sm:flex-1">
             <div className="w-10 h-10 rounded-theme bg-primary/15 text-primary flex items-center justify-center shrink-0">
               <Truck className="w-5 h-5" />
             </div>
             <div className="min-w-0 flex-1">
-              <h1 className="text-[18px] sm:text-[20px] font-bold text-text leading-tight break-words">
+              <h1 className="text-[18px] sm:text-[20px] font-bold text-text leading-tight break-normal">
                 Hi, {firstName}
               </h1>
-              <p className="text-[12px] text-muted truncate tabular-nums">
-                +91 {riderPhone} {dailyPin ? `· Daily PIN: ${dailyPin}` : '· Link-only rider portal'}
+              <p className="text-[12px] text-muted tabular-nums flex flex-wrap gap-x-2">
+                <span className="whitespace-nowrap">+91 {riderPhone}</span>
+                <span>
+                  {dailyPin ? `· Daily PIN: ${dailyPin}` : '· Link-only rider portal'}
+                </span>
               </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-1.5 shrink-0">
+          <div className="w-full sm:w-auto flex items-center gap-1.5 shrink-0">
             {/* Night Run Dark Mode Toggle */}
             <button
               type="button"
@@ -279,7 +282,7 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
                 setIsOnline(next);
                 showToast(next ? 'You are now Online for runs' : 'You are now Offline');
               }}
-              className={`min-h-[40px] px-3 rounded-full text-[12px] font-semibold flex items-center gap-1.5 transition-colors duration-200 cursor-pointer whitespace-nowrap shrink-0 border ${
+              className={`order-first sm:order-none mr-auto sm:mr-0 min-h-[40px] px-3 rounded-full text-[12px] font-semibold flex items-center gap-1.5 transition-colors duration-200 cursor-pointer whitespace-nowrap shrink-0 border ${
                 isOnline
                   ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-600'
                   : 'bg-bg border-border text-muted'
@@ -340,13 +343,13 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
         {/* Daily Summary Card: Deliveries Done & Cash Collected */}
         <section className="grid grid-cols-2 gap-3 min-w-0">
           <div className="bg-surface rounded-theme p-4 shadow-2xs border border-border min-w-0">
-            <p className="text-[12px] font-medium text-muted truncate">Deliveries done</p>
+            <p className="text-[12px] font-medium text-muted break-words leading-snug">Deliveries done</p>
             <p className="mt-1 text-[24px] font-bold text-text tabular-nums leading-tight">
               {completedDeliveries.length}
             </p>
           </div>
           <div className="bg-surface rounded-theme p-4 shadow-2xs border border-border min-w-0">
-            <p className="text-[12px] font-medium text-muted truncate">Cash collected</p>
+            <p className="text-[12px] font-medium text-muted break-words leading-snug">Cash collected</p>
             <p className="mt-1 text-[24px] font-bold text-emerald-600 tabular-nums leading-tight">
               ₹{cashCollectedToday.toLocaleString()}
             </p>
@@ -421,8 +424,8 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
                       className="bg-surface rounded-theme p-4 shadow-2xs border border-border space-y-4 min-w-0"
                     >
                       {/* Top Row: Order ID + Amount + Payment Chip */}
-                      <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-border min-w-0">
-                        <div className="min-w-0">
+                      <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-border min-w-0 max-w-full">
+                        <div className="min-w-0 max-w-full">
                           <div className="flex items-center gap-2 min-w-0 flex-wrap">
                             <span className="text-[16px] font-semibold text-text whitespace-nowrap tabular-nums">
                               {order.orderNumber}
@@ -439,12 +442,12 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
                         </div>
 
                         {isCodCollect ? (
-                          <span className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-amber-500/15 text-amber-600 border border-amber-500/30 text-[14px] font-bold tabular-nums whitespace-nowrap">
+                          <span className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-amber-500/15 text-amber-600 border border-amber-500/30 text-[14px] font-bold tabular-nums whitespace-nowrap max-w-full">
                             <Banknote className="w-4 h-4 shrink-0" />
                             <span>Collect ₹{order.grandTotal} cash</span>
                           </span>
                         ) : (
-                          <span className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-emerald-500/15 text-emerald-600 border border-emerald-500/30 text-[14px] font-semibold whitespace-nowrap">
+                          <span className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-emerald-500/15 text-emerald-600 border border-emerald-500/30 text-[14px] font-semibold whitespace-nowrap max-w-full">
                             <ShieldCheck className="w-4 h-4 shrink-0" />
                             <span>Prepaid</span>
                           </span>
@@ -481,7 +484,7 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
                           className="min-h-[48px] px-3 rounded-lg border border-border bg-bg hover:bg-surface text-text text-[14px] font-semibold flex items-center justify-center gap-2 whitespace-nowrap transition-colors duration-200 cursor-pointer min-w-0"
                         >
                           <Phone className="w-4 h-4 text-primary shrink-0" />
-                          <span className="truncate">Call</span>
+                          <span>Call</span>
                         </a>
 
                         <a
@@ -491,14 +494,14 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
                           className="min-h-[48px] px-3 rounded-lg border border-blue-500/30 bg-blue-500/10 hover:bg-blue-500/20 text-blue-600 text-[14px] font-semibold flex items-center justify-center gap-2 whitespace-nowrap transition-colors duration-200 cursor-pointer min-w-0"
                         >
                           <Navigation className="w-4 h-4 shrink-0" />
-                          <span className="truncate">Navigate</span>
+                          <span>Navigate</span>
                         </a>
                       </div>
 
                       {/* Separate Full-Width OTP Block Below */}
                       <div className="pt-4 border-t border-border space-y-3 min-w-0">
-                        <div className="flex items-center justify-between gap-2 min-w-0">
-                          <label className="block text-[14px] font-semibold text-text">
+                        <div className="flex flex-wrap items-center justify-between gap-2 min-w-0">
+                          <label className="block text-[14px] font-semibold text-text break-words">
                             Enter customer&apos;s delivery OTP
                           </label>
                           {DEV_MODE_SHOW_OTP && (
@@ -508,7 +511,7 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
                           )}
                         </div>
 
-                        <div className="flex items-center justify-center sm:justify-start gap-2.5">
+                        <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2.5">
                           {[0, 1, 2, 3].map((idx) => (
                             <input
                               key={idx}
@@ -579,7 +582,7 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
                         <Check className="w-3.5 h-3.5 stroke-[2.5]" />
                       </span>
                       <div className="min-w-0 flex-1">
-                        <p className="text-[14px] font-semibold text-text tabular-nums truncate">
+                        <p className="text-[14px] font-semibold text-text tabular-nums break-words">
                           {order.orderNumber} · {order.customerName}
                         </p>
                         <p className="text-[12px] text-muted tabular-nums break-words">
@@ -605,7 +608,7 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = ({ initia
       {/* Bottom Toast Notification */}
       {toastMsg && (
         <div className="fixed bottom-4 left-4 right-4 z-50 max-w-md mx-auto bg-surface border border-border text-text px-4 py-3 rounded-theme shadow-lg text-[14px] font-medium flex items-center justify-between gap-2">
-          <span className="truncate">{toastMsg}</span>
+          <span className="break-words leading-snug">{toastMsg}</span>
         </div>
       )}
     </div>
