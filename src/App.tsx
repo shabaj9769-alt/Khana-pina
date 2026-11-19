@@ -23,7 +23,14 @@ import {
   UtensilsCrossed,
   X,
 } from 'lucide-react';
-import { CartItem, MenuItem, OrderRecord, StorefrontThemeConfig, ThemeMode } from './types.ts';
+import {
+  CartItem,
+  MenuItem,
+  OrderRecord,
+  OrderStatus,
+  StorefrontThemeConfig,
+  ThemeMode,
+} from './types.ts';
 import { guestAuthLayer } from './auth/guestAuthLayer.ts';
 import { CustomerStore } from './components/CustomerStore.tsx';
 import { OrderTrackingView } from './components/OrderTrackingView.tsx';
@@ -58,6 +65,7 @@ export default function App() {
   const [menuItemsCache, setMenuItemsCache] = useState<MenuItem[]>([]);
   const [reorderNotice, setReorderNotice] = useState<string | null>(null);
   const [loadedTrackingOrder, setLoadedTrackingOrder] = useState<OrderRecord | null>(null);
+  const [knownTrackingStatus, setKnownTrackingStatus] = useState<OrderStatus | null>(null);
   const [copiedTrackingField, setCopiedTrackingField] = useState<'orderId' | 'link' | null>(null);
 
   const [storefrontTheme, setStorefrontTheme] = useState<StorefrontThemeConfig>(DEFAULT_STOREFRONT_THEME);
@@ -91,11 +99,15 @@ export default function App() {
       if (hash.startsWith('#/order/')) {
         const tok = hash.replace('#/order/', '').trim();
         setTrackingToken(tok);
+        setLoadedTrackingOrder(null);
+        setKnownTrackingStatus(null);
         setCartDrawerOpen(false);
         setActiveView('tracking');
       } else if (path.startsWith('/track/')) {
         const tok = path.replace('/track/', '').trim();
         setTrackingToken(tok);
+        setLoadedTrackingOrder(null);
+        setKnownTrackingStatus(null);
         setCartDrawerOpen(false);
         setActiveView('tracking');
       } else if (path.startsWith('/rider')) {
@@ -222,6 +234,8 @@ export default function App() {
   const handleOpenTracking = (token: string, initialOrder?: OrderRecord | null) => {
     setCartDrawerOpen(false);
     setInitialTrackingOrder(initialOrder || null);
+    setLoadedTrackingOrder(null);
+    setKnownTrackingStatus(initialOrder?.status || null);
     setTrackingToken(token);
     navigateView('tracking', `/#/order/${token}`);
     if (typeof window !== 'undefined') {
@@ -780,6 +794,12 @@ export default function App() {
               : loadedTrackingOrder?.trackingToken === trackingToken
               ? loadedTrackingOrder
               : null;
+          const effectiveStatus = knownTrackingStatus ?? matchingOrder?.status ?? null;
+          const showOrderPlacedBanner =
+            Boolean(effectiveStatus) &&
+            effectiveStatus !== 'DELIVERED' &&
+            effectiveStatus !== 'CANCELLED' &&
+            effectiveStatus !== 'REJECTED';
           const trackingShareUrl =
             typeof window !== 'undefined'
               ? `${window.location.origin}/#/order/${trackingToken}`
@@ -788,82 +808,85 @@ export default function App() {
             setCartDrawerOpen(false);
             setInitialTrackingOrder(null);
             setLoadedTrackingOrder(null);
+            setKnownTrackingStatus(null);
             setCustomerSubTab(tab);
             navigateView('customer', '/#/');
           };
           return (
             <div className="w-full max-w-full min-w-0">
-              <div className="w-full max-w-[480px] md:max-w-[1000px] mx-auto px-3.5 sm:px-4 pt-4 print:hidden">
-                <div
-                  role="status"
-                  className="rounded-2xl border border-accent/40 bg-accent/10 p-4 space-y-3"
-                >
-                  <div className="flex items-center gap-3">
-                    <span className="w-9 h-9 rounded-full bg-accent text-white flex items-center justify-center shrink-0 font-bold">
-                      ✓
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <p className="font-display text-lg font-extrabold text-accent">
-                        Order placed!
-                      </p>
-                      <p className="text-sm text-text mt-0.5">
-                        Your order is confirmed and live kitchen tracking is active below.
-                      </p>
+              {showOrderPlacedBanner && (
+                <div className="w-full max-w-[480px] md:max-w-[1000px] mx-auto px-3.5 sm:px-4 pt-4 print:hidden">
+                  <div
+                    role="status"
+                    className="rounded-2xl border border-accent/40 bg-accent/10 p-4 space-y-3"
+                  >
+                    <div className="flex items-center gap-3">
+                      <span className="w-9 h-9 rounded-full bg-accent text-white flex items-center justify-center shrink-0 font-bold">
+                        ✓
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <p className="font-display text-lg font-extrabold text-accent">
+                          Order placed!
+                        </p>
+                        <p className="text-sm text-text mt-0.5">
+                          Your order is confirmed and live kitchen tracking is active below.
+                        </p>
+                      </div>
                     </div>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2 print:hidden">
-                    <button
-                      type="button"
-                      onClick={() => goToStoreSubTab('home')}
-                      className="min-h-[44px] px-3.5 rounded-xl border border-border bg-surface text-[13px] font-semibold text-text whitespace-nowrap inline-flex items-center gap-1.5 cursor-pointer"
-                    >
-                      <Home className="w-4 h-4 shrink-0" />
-                      <span>Home</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => goToStoreSubTab('menu')}
-                      className="min-h-[44px] px-3.5 rounded-xl border border-border bg-surface text-[13px] font-semibold text-text whitespace-nowrap inline-flex items-center gap-1.5 cursor-pointer"
-                    >
-                      <UtensilsCrossed className="w-4 h-4 shrink-0" />
-                      <span>Menu</span>
-                    </button>
-                    {matchingOrder?.orderNumber && (
+                    <div className="flex flex-wrap items-center gap-2 print:hidden">
                       <button
                         type="button"
-                        onClick={() => copyTrackingText(matchingOrder.orderNumber, 'orderId')}
+                        onClick={() => goToStoreSubTab('home')}
                         className="min-h-[44px] px-3.5 rounded-xl border border-border bg-surface text-[13px] font-semibold text-text whitespace-nowrap inline-flex items-center gap-1.5 cursor-pointer"
                       >
-                        {copiedTrackingField === 'orderId' ? (
+                        <Home className="w-4 h-4 shrink-0" />
+                        <span>Home</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => goToStoreSubTab('menu')}
+                        className="min-h-[44px] px-3.5 rounded-xl border border-border bg-surface text-[13px] font-semibold text-text whitespace-nowrap inline-flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <UtensilsCrossed className="w-4 h-4 shrink-0" />
+                        <span>Menu</span>
+                      </button>
+                      {matchingOrder?.orderNumber && (
+                        <button
+                          type="button"
+                          onClick={() => copyTrackingText(matchingOrder.orderNumber, 'orderId')}
+                          className="min-h-[44px] px-3.5 rounded-xl border border-border bg-surface text-[13px] font-semibold text-text whitespace-nowrap inline-flex items-center gap-1.5 cursor-pointer"
+                        >
+                          {copiedTrackingField === 'orderId' ? (
+                            <Check className="w-4 h-4 text-accent shrink-0" />
+                          ) : (
+                            <Copy className="w-4 h-4 shrink-0" />
+                          )}
+                          <span>
+                            {copiedTrackingField === 'orderId' ? 'Copied ✓' : 'Copy Order ID'}
+                          </span>
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => copyTrackingText(trackingShareUrl, 'link')}
+                        className="min-h-[44px] px-3.5 rounded-xl border border-border bg-surface text-[13px] font-semibold text-text whitespace-nowrap inline-flex items-center gap-1.5 cursor-pointer"
+                      >
+                        {copiedTrackingField === 'link' ? (
                           <Check className="w-4 h-4 text-accent shrink-0" />
                         ) : (
                           <Copy className="w-4 h-4 shrink-0" />
                         )}
                         <span>
-                          {copiedTrackingField === 'orderId' ? 'Copied ✓' : 'Copy Order ID'}
+                          {copiedTrackingField === 'link' ? 'Copied ✓' : 'Copy tracking link'}
                         </span>
                       </button>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => copyTrackingText(trackingShareUrl, 'link')}
-                      className="min-h-[44px] px-3.5 rounded-xl border border-border bg-surface text-[13px] font-semibold text-text whitespace-nowrap inline-flex items-center gap-1.5 cursor-pointer"
-                    >
-                      {copiedTrackingField === 'link' ? (
-                        <Check className="w-4 h-4 text-accent shrink-0" />
-                      ) : (
-                        <Copy className="w-4 h-4 shrink-0" />
-                      )}
-                      <span>
-                        {copiedTrackingField === 'link' ? 'Copied ✓' : 'Copy tracking link'}
-                      </span>
-                    </button>
+                    </div>
+                    <p className="text-[12px] text-muted break-words print:hidden">
+                      Order ID ya link save kar lo, OTP wapas dekhne ke kaam aayega.
+                    </p>
                   </div>
-                  <p className="text-[12px] text-muted break-words print:hidden">
-                    Order ID ya link save kar lo, OTP wapas dekhne ke kaam aayega.
-                  </p>
                 </div>
-              </div>
+              )}
               <OrderTrackingView
                 trackingToken={trackingToken}
                 initialOrder={
@@ -872,6 +895,7 @@ export default function App() {
                     : null
                 }
                 onOrderLoaded={(ord) => setLoadedTrackingOrder(ord)}
+                onStatusKnown={(status) => setKnownTrackingStatus(status)}
                 onBackToStore={() => goToStoreSubTab('home')}
                 onReorder={(ord) => handleReorder(ord, menuItemsCache)}
               />

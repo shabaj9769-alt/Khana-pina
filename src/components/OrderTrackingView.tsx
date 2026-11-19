@@ -37,6 +37,7 @@ interface OrderTrackingViewProps {
   trackingToken: string;
   initialOrder?: OrderRecord | null;
   onOrderLoaded?: (order: OrderRecord) => void;
+  onStatusKnown?: (status: OrderStatus) => void;
   onBackToStore: () => void;
   onReorder: (order: OrderRecord) => void;
 }
@@ -98,6 +99,7 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
   trackingToken,
   initialOrder,
   onOrderLoaded,
+  onStatusKnown,
   onBackToStore,
   onReorder,
 }) => {
@@ -196,17 +198,25 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
     }
   }, [shopInfo?.shopName]);
 
+  useEffect(() => {
+    if (order?.status) {
+      onStatusKnown?.(order.status);
+    }
+  }, [order?.status]);
+
   // Listen to Firebase Realtime Database path tracking/{trackingToken} via onValue
   useEffect(() => {
-    if (!trackingToken) return;
+    if (!trackingToken || order?.status === 'DELIVERED') return;
     const unsub = subscribeToCustomerTracking({
       trackingToken,
       onUpdate: (proj) => {
         setLiveProjection(proj);
         if (prevStatusRef.current && prevStatusRef.current !== proj.status) {
           prevStatusRef.current = proj.status;
-          setStatusPulse(true);
-          setTimeout(() => setStatusPulse(false), 600);
+          if (proj.status !== 'DELIVERED') {
+            setStatusPulse(true);
+            setTimeout(() => setStatusPulse(false), 600);
+          }
         }
         setOrder((prev) =>
           prev
@@ -223,7 +233,7 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
       },
     });
     return () => unsub();
-  }, [trackingToken]);
+  }, [trackingToken, order?.status === 'DELIVERED']);
 
   const handleSubmitReview = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -342,6 +352,7 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
   }
 
   const currentStepIndex = STATUS_STEPS.findIndex((s) => s.key === order.status);
+  const isDelivered = order.status === 'DELIVERED';
   const isCancelledOrRejected = order.status === 'CANCELLED' || order.status === 'REJECTED';
 
   const placedAtMs = new Date(order.placedAt).getTime();
@@ -427,18 +438,22 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
       {/* Main Live Status Card with Prominent ETA & Step Tracker */}
       <section
         className={`rounded-2xl border border-border bg-surface p-4 sm:p-6 space-y-5 transition-transform duration-200 ${
-          statusPulse ? 'animate-tick-pop' : ''
+          statusPulse && !isDelivered ? 'animate-tick-pop' : ''
         }`}
       >
         {/* Header: Order Meta + Big ETA + Doorstep OTP */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-border">
+        <div
+          className={`flex flex-col sm:flex-row sm:items-center justify-between gap-4 ${
+            isDelivered ? '' : 'pb-4 border-b border-border'
+          }`}
+        >
           <div className="min-w-0 flex-1 space-y-1">
             <p className="text-[13px] text-muted tabular-nums break-words">
               Order #{order.orderNumber}
               {formatOrderPlacedAt(order.placedAt)
                 ? ` · Ordered ${formatOrderPlacedAt(order.placedAt)}`
                 : ''}
-              {order.scheduledFor && formatOrderTime(order.scheduledFor)
+              {!isDelivered && order.scheduledFor && formatOrderTime(order.scheduledFor)
                 ? ` · Scheduled: ${formatOrderTime(order.scheduledFor)}`
                 : ''}
             </p>
@@ -447,14 +462,24 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
                 ? `Order ${order.status === 'CANCELLED' ? 'Cancelled' : 'Rejected'}`
                 : STATUS_STEPS[Math.max(0, currentStepIndex)]?.label || order.status}
             </h1>
-            {!isCancelledOrRejected && order.status !== 'DELIVERED' && (
+            {isDelivered && order.deliveredAt && formatOrderPlacedAt(order.deliveredAt) && (
+              <p className="text-[13px] text-muted tabular-nums break-normal">
+                Delivered at {formatOrderPlacedAt(order.deliveredAt)}
+              </p>
+            )}
+            {isDelivered && order.deliveryBoyName && (
+              <p className="text-sm text-text break-normal">
+                Delivered by: <span className="font-semibold">{order.deliveryBoyName}</span>
+              </p>
+            )}
+            {!isCancelledOrRejected && !isDelivered && (
               <p className="text-base sm:text-lg font-bold text-primary tabular-nums">
                 Arriving in ~{remainingEtaMins} mins
               </p>
             )}
           </div>
 
-          {!isCancelledOrRejected && (
+          {!isCancelledOrRejected && !isDelivered && (
             <div className="rounded-xl border border-border bg-bg px-4 py-3 flex sm:flex-col items-center sm:items-end justify-between gap-2 shrink-0">
               <div className="flex items-center gap-1.5 text-[13px] text-muted">
                 <KeyRound className="w-3.5 h-3.5 text-primary shrink-0" />
@@ -468,37 +493,38 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
         </div>
 
         {/* Clean Rider Card (Name + Call Button) */}
-        {order.deliveryBoyName && !isCancelledOrRejected && (() => {
+        {order.deliveryBoyName && !isCancelledOrRejected && !isDelivered && (() => {
           const riderPhone = formatRiderIndianPhone(order.deliveryBoyPhone);
           return (
           <div className="rounded-xl border border-border bg-bg p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-            <div className="flex flex-wrap items-center gap-3 min-w-0 flex-1">
+            <div className="flex items-center gap-3 min-w-0 flex-1">
               <div className="w-11 h-11 rounded-xl bg-primary/15 text-primary flex items-center justify-center shrink-0">
                 <Truck className="w-5 h-5" />
               </div>
               <div className="min-w-0 flex-1 space-y-0.5">
-                <p className="text-sm font-bold text-text break-words">
-                  {order.deliveryBoyName} (Delivery Partner)
+                <p className="text-sm font-bold text-text break-normal">
+                  {order.deliveryBoyName}
                 </p>
+                <p className="text-[12px] text-muted break-normal">(Delivery Partner)</p>
                 {riderPhone.display && (
                   <p className="text-[13px] text-muted tabular-nums whitespace-nowrap">
                     {riderPhone.display}
                   </p>
                 )}
-                <p className="text-[12px] text-muted tabular-nums">
+                <p className="text-[12px] text-muted tabular-nums break-normal">
                   {order.distanceKm} km from kitchen
                 </p>
               </div>
-              {riderPhone.tel && (
-                <a
-                  href={`tel:${riderPhone.tel}`}
-                  className="min-h-[44px] px-3.5 rounded-xl bg-accent hover:opacity-90 text-white text-[13px] font-semibold inline-flex items-center gap-1.5 shrink-0 cursor-pointer whitespace-nowrap"
-                >
-                  <Phone className="w-3.5 h-3.5 shrink-0" />
-                  <span>Call rider</span>
-                </a>
-              )}
             </div>
+            {riderPhone.tel && (
+              <a
+                href={`tel:${riderPhone.tel}`}
+                className="w-full sm:w-auto min-h-[44px] px-3.5 rounded-xl bg-accent hover:opacity-90 text-white text-[13px] font-semibold inline-flex items-center justify-center gap-1.5 shrink-0 cursor-pointer whitespace-nowrap"
+              >
+                <Phone className="w-3.5 h-3.5 shrink-0" />
+                <span>Call rider</span>
+              </a>
+            )}
           </div>
           );
         })()}
@@ -513,7 +539,7 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
               </p>
             )}
           </div>
-        ) : (
+        ) : !isDelivered ? (
           <div className="space-y-2.5">
             {STATUS_STEPS.map((step, idx) => {
               const Icon = step.icon;
@@ -524,7 +550,7 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
               return (
                 <div
                   key={step.key}
-                  className={`rounded-xl p-3 border flex items-center justify-between gap-3 transition-colors ${
+                  className={`rounded-xl p-3 border flex items-center justify-between gap-2.5 transition-colors ${
                     isCurrent
                       ? 'border-primary bg-primary/10'
                       : isCompleted
@@ -532,7 +558,7 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
                       : 'border-border bg-surface opacity-55'
                   }`}
                 >
-                  <div className="flex items-center gap-3 min-w-0 flex-1">
+                  <div className="flex items-center gap-2.5 min-w-0 flex-1">
                     <div
                       className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${
                         isCurrent
@@ -546,17 +572,17 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
                     </div>
                     <div className="min-w-0 flex-1 space-y-0.5">
                       <p
-                        className={`text-sm font-semibold leading-snug break-words ${
+                        className={`text-sm font-semibold leading-snug break-normal ${
                           isCurrent ? 'text-primary font-bold' : 'text-text'
                         }`}
                       >
                         {step.label}
                       </p>
-                      <p className="text-[13px] text-muted leading-snug break-words">{step.desc}</p>
+                      <p className="text-[13px] text-muted leading-snug break-normal">{step.desc}</p>
                     </div>
                   </div>
 
-                  <div className="text-right shrink-0 min-w-12">
+                  <div className="text-right shrink-0">
                     {stepTime ? (
                       <span className="text-[13px] font-semibold tabular-nums text-text">
                         {stepTime}
@@ -571,7 +597,7 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
               );
             })}
           </div>
-        )}
+        ) : null}
       </section>
 
       {/* Printable Invoice & Feedback */}

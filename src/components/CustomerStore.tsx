@@ -3653,7 +3653,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                         onClick={() => onOpenTracking(recentOrders[0].trackingToken, recentOrders[0])}
                         className="min-h-[44px] px-3.5 rounded-xl border border-border  bg-surface text-xs font-bold text-text whitespace-nowrap cursor-pointer active:scale-[0.98]"
                       >
-                        Track order
+                        {recentOrders[0].status === 'DELIVERED' ? 'View details' : 'Track order'}
                       </button>
                       <button
                         type="button"
@@ -3860,7 +3860,10 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   <div className="flex items-start justify-between gap-3 min-w-0">
                     <div className="min-w-0 flex-1">
                       <p className="text-[14px] text-muted tabular-nums break-words">
-                        {ord.orderNumber} · <strong className="text-primary">{ord.status}</strong> · OTP: {ord.deliveryOtp}
+                        {ord.orderNumber} · <strong className="text-primary">{ord.status}</strong>
+                        {!['DELIVERED', 'CANCELLED', 'REJECTED'].includes(ord.status)
+                          ? ` · OTP: ${ord.deliveryOtp}`
+                          : ''}
                       </p>
                       {formatOrderPlacedAt(ord.placedAt) && (
                         <p className="text-[12px] text-muted tabular-nums break-words mt-0.5">
@@ -3896,7 +3899,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                       onClick={() => onOpenTracking(ord.trackingToken, ord)}
                       className="flex-1 min-h-[44px] px-4 rounded-xl bg-primary text-primary-contrast text-[14px] font-bold whitespace-nowrap cursor-pointer active:scale-[0.98]"
                     >
-                      Track live
+                      {ord.status === 'DELIVERED' ? 'View details' : 'Track live'}
                     </button>
                   </div>
                 </div>
