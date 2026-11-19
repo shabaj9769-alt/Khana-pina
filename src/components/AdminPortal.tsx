@@ -46,6 +46,8 @@ import {
   ArrowUp,
   ArrowDown,
   Info,
+  ChevronDown,
+  ChevronRight,
 } from 'lucide-react';
 import { SafeImage } from './SafeImage.tsx';
 import {
@@ -103,7 +105,52 @@ type AdminTopSection =
   | 'settings';
 
 type OrdersFolderTab = 'live' | 'advance' | 'delivered' | 'cancelled';
-type OrdersDateFilter = 'TODAY' | 'YESTERDAY' | '7D' | 'ALL';
+
+type DeleteOrdersConfirmation =
+  | { mode: 'SINGLE'; order: OrderRecord; folder: 'delivered' | 'cancelled' }
+  | {
+      mode: 'DAY';
+      dateKey: string;
+      formattedDate: string;
+      count: number;
+      folder: 'delivered' | 'cancelled';
+    }
+  | { mode: 'ALL'; status: 'DELIVERED' | 'CANCELLED'; count: number };
+
+const istDateKeyFormatter = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Asia/Kolkata',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+
+const istDisplayDateFormatter = new Intl.DateTimeFormat('en-GB', {
+  timeZone: 'Asia/Kolkata',
+  day: 'numeric',
+  month: 'short',
+  year: 'numeric',
+});
+
+function getIstDateKey(isoOrDate?: string | Date | number | null): string {
+  if (!isoOrDate) return istDateKeyFormatter.format(new Date());
+  const d = isoOrDate instanceof Date ? isoOrDate : new Date(isoOrDate);
+  if (Number.isNaN(d.getTime())) return istDateKeyFormatter.format(new Date());
+  return istDateKeyFormatter.format(d);
+}
+
+function getPreviousIstDateKey(istDateKey: string): string {
+  const [y, m, d] = istDateKey.split('-').map(Number);
+  if (!y || !m || !d) return getIstDateKey(Date.now() - 24 * 3600 * 1000);
+  const prevUtcNoon = new Date(Date.UTC(y, m - 1, d - 1, 12, 0, 0));
+  return istDateKeyFormatter.format(prevUtcNoon);
+}
+
+function formatIstDisplayDate(dateKey: string): string {
+  const [y, m, d] = dateKey.split('-').map(Number);
+  if (!y || !m || !d) return dateKey;
+  const utcNoon = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+  return istDisplayDateFormatter.format(utcNoon);
+}
 
 export const AdminPortal: React.FC<AdminPortalProps> = ({
   onRefreshStore,
@@ -185,7 +232,13 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
   // Order Filters & Folders
   const [ordersFolder, setOrdersFolder] = useState<OrdersFolderTab>('live');
-  const [ordersDateFilter, setOrdersDateFilter] = useState<OrdersDateFilter>('TODAY');
+  const [expandedDayFolders, setExpandedDayFolders] = useState<Record<string, boolean>>({});
+  const [deleteOrdersConfirm, setDeleteOrdersConfirm] =
+    useState<DeleteOrdersConfirmation | null>(null);
+  const [deleteConfirmTypedText, setDeleteConfirmTypedText] = useState('');
+  const [isDeletingOrders, setIsDeletingOrders] = useState(false);
+  const singleTapTimerRef = useRef<number | null>(null);
+  const lastCardTapRef = useRef<{ orderId: string; ts: number } | null>(null);
   const [orderSearch, setOrderSearch] = useState('');
   const [selectedOrderDetailsId, setSelectedOrderDetailsId] = useState<string | null>(null);
   const [nowTick, setNowTick] = useState<number>(() => Date.now());
@@ -1148,13 +1201,19 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   };
 
   // Menu Item Create/Update
-  const openCreateDishModal = () => {
+  const openCreateDishModal = (preferredCategoryId?: string) => {
+    const initialCategoryId =
+      preferredCategoryId && preferredCategoryId !== 'ALL'
+        ? preferredCategoryId
+        : menuCategoryFilter !== 'ALL'
+        ? menuCategoryFilter
+        : categories[0]?.id || 'cat_biryani';
     setEditingDish(null);
     setDishForm({
       name: '',
       description: '',
       basePrice: 250,
-      categoryId: categories[0]?.id || 'cat_biryani',
+      categoryId: initialCategoryId,
       isVeg: true,
       inStock: true,
       spiceLevel: 'Medium',
@@ -1361,11 +1420,14 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       showToast('CSV file is empty');
       return;
     }
+    const fallbackCategoryId =
+      menuCategoryFilter !== 'ALL' ? menuCategoryFilter : categories[0]?.id || 'cat_biryani';
     const importedItems = lines.slice(1).map((line) => {
       const cols = line.split(',');
+      const rawCat = (cols[2] || '').trim();
       return {
         name: (cols[1] || 'Imported Dish').replace(/^"|"$/g, ''),
-        categoryId: cols[2] || categories[0]?.id || 'cat_biryani',
+        categoryId: rawCat || fallbackCategoryId,
         basePrice: Number(cols[3]) || 250,
         isVeg: cols[4] !== 'false',
         inStock: cols[5] !== 'false',
@@ -1377,7 +1439,11 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     });
     const res = await adminFetch('/api/admin/menu-items/bulk', {
       method: 'POST',
-      body: JSON.stringify({ action: 'CSV_IMPORT', importedItems }),
+      body: JSON.stringify({
+        action: 'CSV_IMPORT',
+        importedItems,
+        defaultCategoryId: fallbackCategoryId,
+      }),
     });
     if (res.ok) {
       const data = await res.json();
@@ -1407,6 +1473,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   };
 
   const {
+    todayIstKey,
     liveOrders,
     advanceOrders,
     deliveredOrdersAll,
@@ -1415,12 +1482,10 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     cancelledTodayCount,
     advanceUpcomingCount,
     filteredFolderOrders,
+    archiveDayGroups,
   } = useMemo(() => {
-    const startOfToday = new Date(nowTick);
-    startOfToday.setHours(0, 0, 0, 0);
-    const startOfTodayMs = startOfToday.getTime();
-    const startOfYesterdayMs = startOfTodayMs - 24 * 3600 * 1000;
-    const last7DaysMs = startOfTodayMs - 6 * 24 * 3600 * 1000;
+    const todayKey = getIstDateKey(nowTick);
+    const yesterdayKey = getPreviousIstDateKey(todayKey);
 
     const live = orders
       .filter((o) => isLiveOrderStatus(o.status) && !isAdvanceBookingOrder(o))
@@ -1438,46 +1503,33 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       .filter((o) => o.status === 'DELIVERED')
       .sort(
         (a, b) =>
-          getSafeTimestampMs(b.deliveredAt || b.placedAt) -
-          getSafeTimestampMs(a.deliveredAt || a.placedAt)
+          getSafeTimestampMs(b.deliveredAt || b.updatedAt || b.placedAt) -
+          getSafeTimestampMs(a.deliveredAt || a.updatedAt || a.placedAt)
       );
 
     const cancelled = orders
       .filter((o) => o.status === 'CANCELLED' || o.status === 'REJECTED')
       .sort(
         (a, b) =>
-          getSafeTimestampMs(b.cancelledAt || b.placedAt) -
-          getSafeTimestampMs(a.cancelledAt || a.placedAt)
+          getSafeTimestampMs(b.cancelledAt || b.updatedAt || b.placedAt) -
+          getSafeTimestampMs(a.cancelledAt || a.updatedAt || a.placedAt)
       );
 
     const deliveredToday = delivered.filter(
-      (o) => getSafeTimestampMs(o.deliveredAt || o.placedAt) >= startOfTodayMs
+      (o) => getIstDateKey(o.deliveredAt || o.updatedAt || o.placedAt) === todayKey
     ).length;
 
     const cancelledToday = cancelled.filter(
-      (o) => getSafeTimestampMs(o.cancelledAt || o.placedAt) >= startOfTodayMs
+      (o) => getIstDateKey(o.cancelledAt || o.updatedAt || o.placedAt) === todayKey
     ).length;
-
-    const matchesDateFilter = (tsMs: number) => {
-      if (ordersDateFilter === 'ALL') return true;
-      if (ordersDateFilter === 'TODAY') return tsMs >= startOfTodayMs;
-      if (ordersDateFilter === 'YESTERDAY')
-        return tsMs >= startOfYesterdayMs && tsMs < startOfTodayMs;
-      if (ordersDateFilter === '7D') return tsMs >= last7DaysMs;
-      return true;
-    };
 
     let baseFolderList: OrderRecord[] = live;
     if (ordersFolder === 'advance') {
       baseFolderList = advance;
     } else if (ordersFolder === 'delivered') {
-      baseFolderList = delivered.filter((o) =>
-        matchesDateFilter(getSafeTimestampMs(o.deliveredAt || o.placedAt))
-      );
+      baseFolderList = delivered;
     } else if (ordersFolder === 'cancelled') {
-      baseFolderList = cancelled.filter((o) =>
-        matchesDateFilter(getSafeTimestampMs(o.cancelledAt || o.placedAt))
-      );
+      baseFolderList = cancelled;
     }
 
     const q = orderSearch.trim().toLowerCase();
@@ -1490,7 +1542,48 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         )
       : baseFolderList;
 
+    const dayGroups: Array<{
+      dateKey: string;
+      formattedDate: string;
+      relativeLabel: 'Today' | 'Yesterday' | null;
+      orders: OrderRecord[];
+      totalAmount: number;
+    }> = [];
+
+    if (ordersFolder === 'delivered' || ordersFolder === 'cancelled') {
+      const groupedMap = new Map<string, OrderRecord[]>();
+      for (const ord of searched) {
+        const ts =
+          ordersFolder === 'delivered'
+            ? ord.deliveredAt || ord.updatedAt || ord.placedAt
+            : ord.cancelledAt || ord.updatedAt || ord.placedAt;
+        const dk = getIstDateKey(ts);
+        const existing = groupedMap.get(dk);
+        if (existing) {
+          existing.push(ord);
+        } else {
+          groupedMap.set(dk, [ord]);
+        }
+      }
+
+      const sortedDateKeys = Array.from(groupedMap.keys()).sort((a, b) => b.localeCompare(a));
+      for (const dk of sortedDateKeys) {
+        const list = groupedMap.get(dk) || [];
+        const totalAmount = list.reduce((sum, o) => sum + (Number(o.grandTotal) || 0), 0);
+        const relativeLabel =
+          dk === todayKey ? 'Today' : dk === yesterdayKey ? 'Yesterday' : null;
+        dayGroups.push({
+          dateKey: dk,
+          formattedDate: formatIstDisplayDate(dk),
+          relativeLabel,
+          orders: list,
+          totalAmount,
+        });
+      }
+    }
+
     return {
+      todayIstKey: todayKey,
       liveOrders: live,
       advanceOrders: advance,
       deliveredOrdersAll: delivered,
@@ -1499,8 +1592,9 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       cancelledTodayCount: cancelledToday,
       advanceUpcomingCount: advance.length,
       filteredFolderOrders: searched,
+      archiveDayGroups: dayGroups,
     };
-  }, [orders, ordersFolder, ordersDateFilter, orderSearch, nowTick]);
+  }, [orders, ordersFolder, orderSearch, nowTick]);
 
   const selectedOrderDetails = useMemo(
     () =>
@@ -1524,6 +1618,114 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     });
   }, [menuItems, menuCategoryFilter, menuSearch]);
 
+  const selectedMenuCategory = useMemo(
+    () =>
+      menuCategoryFilter !== 'ALL'
+        ? categories.find((c) => c.id === menuCategoryFilter) || null
+        : null,
+    [categories, menuCategoryFilter]
+  );
+
+  const openSingleOrderDeleteConfirm = (
+    order: OrderRecord,
+    folder: 'delivered' | 'cancelled'
+  ) => {
+    if (singleTapTimerRef.current !== null) {
+      window.clearTimeout(singleTapTimerRef.current);
+      singleTapTimerRef.current = null;
+    }
+    lastCardTapRef.current = null;
+    setDeleteConfirmTypedText('');
+    setDeleteOrdersConfirm({ mode: 'SINGLE', order, folder });
+  };
+
+  const handleArchiveCardTap = (
+    order: OrderRecord,
+    folder: 'delivered' | 'cancelled'
+  ) => {
+    const now = Date.now();
+    const last = lastCardTapRef.current;
+    if (last && last.orderId === order.id && now - last.ts <= 350) {
+      openSingleOrderDeleteConfirm(order, folder);
+      return;
+    }
+
+    lastCardTapRef.current = { orderId: order.id, ts: now };
+    if (singleTapTimerRef.current !== null) {
+      window.clearTimeout(singleTapTimerRef.current);
+    }
+    singleTapTimerRef.current = window.setTimeout(() => {
+      singleTapTimerRef.current = null;
+      lastCardTapRef.current = null;
+      setSelectedOrderDetailsId(order.id);
+    }, 260);
+  };
+
+  const handleConfirmDeleteOrders = async () => {
+    if (!deleteOrdersConfirm || isDeletingOrders) return;
+    if (
+      deleteOrdersConfirm.mode === 'ALL' &&
+      deleteConfirmTypedText.trim() !== 'DELETE'
+    ) {
+      return;
+    }
+
+    setIsDeletingOrders(true);
+    try {
+      let res: Response;
+      if (deleteOrdersConfirm.mode === 'SINGLE') {
+        res = await adminFetch(
+          `/api/admin/orders/${encodeURIComponent(deleteOrdersConfirm.order.id)}`,
+          { method: 'DELETE' }
+        );
+      } else if (deleteOrdersConfirm.mode === 'DAY') {
+        res = await adminFetch('/api/admin/orders/bulk-delete', {
+          method: 'POST',
+          body: JSON.stringify({
+            date: deleteOrdersConfirm.dateKey,
+            status: deleteOrdersConfirm.folder === 'delivered' ? 'DELIVERED' : 'CANCELLED',
+          }),
+        });
+      } else {
+        res = await adminFetch('/api/admin/orders/bulk-delete', {
+          method: 'POST',
+          body: JSON.stringify({
+            all: true,
+            status: deleteOrdersConfirm.status,
+          }),
+        });
+      }
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        showToast(data.error || 'Could not delete order(s)');
+        return;
+      }
+
+      const deletedCount = Number(data.deletedCount ?? 0);
+      const deletedSet = new Set<string>(data.deletedOrderIds || []);
+      if (selectedOrderDetailsId && deletedSet.has(selectedOrderDetailsId)) {
+        setSelectedOrderDetailsId(null);
+      }
+      if (Array.isArray(data.orders)) {
+        setOrders(data.orders);
+      } else {
+        setOrders((prev) => prev.filter((o) => !deletedSet.has(o.id)));
+      }
+      if (Array.isArray(data.payments)) {
+        setPayments(data.payments);
+      }
+      setDeleteOrdersConfirm(null);
+      setDeleteConfirmTypedText('');
+      await fetchBootstrap();
+      showToast(`${deletedCount} ${deletedCount === 1 ? 'order' : 'orders'} deleted`);
+    } catch {
+      showToast('Failed to delete order(s)');
+    } finally {
+      setIsDeletingOrders(false);
+    }
+  };
+
   // Filtered Reports Data
   const reportData = useMemo(() => {
     const now = Date.now();
@@ -1545,14 +1747,14 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
     const delivered = filtered.filter((o) => o.status === 'DELIVERED');
     const cancelled = filtered.filter((o) => o.status === 'CANCELLED' || o.status === 'REJECTED');
-    const grossRevenue = delivered.reduce((s, o) => s + o.grandTotal, 0);
-    const totalGst = delivered.reduce((s, o) => s + o.gstAmount, 0);
+    const grossRevenue = delivered.reduce((s, o) => s + (Number(o.grandTotal) || 0), 0);
+    const totalGst = delivered.reduce((s, o) => s + (Number(o.gstAmount) || 0), 0);
     const razorpayTotal = delivered
       .filter((o) => o.paymentMethod === 'RAZORPAY')
-      .reduce((s, o) => s + o.grandTotal, 0);
+      .reduce((s, o) => s + (Number(o.grandTotal) || 0), 0);
     const codTotal = delivered
       .filter((o) => o.paymentMethod === 'COD')
-      .reduce((s, o) => s + o.grandTotal, 0);
+      .reduce((s, o) => s + (Number(o.grandTotal) || 0), 0);
 
     // Peak hours distribution
     const hourCounts: Record<number, number> = {};
@@ -2176,17 +2378,41 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
   const renderCompactFolderOrderCard = (order: OrderRecord) => {
     const isAdvance = ordersFolder === 'advance';
-    const isCancelled = ordersFolder === 'cancelled';
+    const isDeliveredFolder = ordersFolder === 'delivered';
+    const isCancelledFolder = ordersFolder === 'cancelled';
+    const isDeletableArchiveCard = isDeliveredFolder || isCancelledFolder;
+    const archiveFolder: 'delivered' | 'cancelled' = isCancelledFolder
+      ? 'cancelled'
+      : 'delivered';
     const dueSoon = isAdvance && isAdvanceOrderDueSoon(order.scheduledFor);
-    const itemsSummary = order.items
+    const itemsSummary = (order.items || [])
       .map((it) => `${it.quantity}x ${it.itemName}`)
       .join(', ');
+    const displayTimestamp = isDeliveredFolder
+      ? order.deliveredAt || order.updatedAt || order.placedAt
+      : isCancelledFolder
+      ? order.cancelledAt || order.updatedAt || order.placedAt
+      : order.placedAt;
 
     return (
       <div
         key={order.id}
-        onClick={() => setSelectedOrderDetailsId(order.id)}
-        className="bg-surface rounded-2xl border border-border p-3.5 sm:p-4 space-y-2.5 shadow-xs cursor-pointer hover:border-primary/40 transition-colors min-w-0"
+        onClick={() => {
+          if (isDeletableArchiveCard) {
+            handleArchiveCardTap(order, archiveFolder);
+          } else {
+            setSelectedOrderDetailsId(order.id);
+          }
+        }}
+        onDoubleClick={(e) => {
+          if (isDeletableArchiveCard) {
+            e.preventDefault();
+            openSingleOrderDeleteConfirm(order, archiveFolder);
+          }
+        }}
+        className={`bg-surface rounded-2xl border border-border p-3.5 sm:p-4 space-y-2.5 shadow-xs cursor-pointer hover:border-primary/40 transition-colors min-w-0 ${
+          isDeletableArchiveCard ? 'touch-manipulation select-none' : ''
+        }`}
       >
         <div className="flex items-start justify-between gap-2 min-w-0">
           <div className="min-w-0">
@@ -2204,19 +2430,35 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
               {order.customerName}
             </p>
           </div>
-          <span
-            className={`px-2.5 py-1 rounded-full text-[10px] sm:text-[11px] font-bold uppercase shrink-0 ${
-              order.status === 'DELIVERED'
-                ? 'bg-emerald-500/15 text-emerald-600'
-                : order.status === 'CANCELLED' || order.status === 'REJECTED'
-                ? 'bg-red-500/15 text-red-600'
-                : order.status === 'READY'
-                ? 'bg-blue-500/15 text-blue-600'
-                : 'bg-amber-500/15 text-amber-600'
-            }`}
-          >
-            {order.status.replace(/_/g, ' ')}
-          </span>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <span
+              className={`px-2.5 py-1 rounded-full text-[10px] sm:text-[11px] font-bold uppercase shrink-0 ${
+                order.status === 'DELIVERED'
+                  ? 'bg-emerald-500/15 text-emerald-600'
+                  : order.status === 'CANCELLED' || order.status === 'REJECTED'
+                  ? 'bg-red-500/15 text-red-600'
+                  : order.status === 'READY'
+                  ? 'bg-blue-500/15 text-blue-600'
+                  : 'bg-amber-500/15 text-amber-600'
+              }`}
+            >
+              {order.status.replace(/_/g, ' ')}
+            </span>
+            {isDeletableArchiveCard && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  openSingleOrderDeleteConfirm(order, archiveFolder);
+                }}
+                aria-label={`Delete order ${order.orderNumber}`}
+                title="Delete order"
+                className="p-1.5 rounded-lg border border-red-500/25 text-red-600 hover:bg-red-500/10 cursor-pointer shrink-0"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
         </div>
 
         {isAdvance && order.scheduledFor && (
@@ -2230,7 +2472,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
         <p className="text-xs text-muted break-words line-clamp-2">{itemsSummary}</p>
 
-        {isCancelled && order.cancelReason && (
+        {isCancelledFolder && order.cancelReason && (
           <div className="p-2 rounded-xl bg-red-500/10 border border-red-500/20 text-red-600 text-xs break-words">
             <span className="font-bold">Reason: </span>
             {order.cancelReason}
@@ -2243,9 +2485,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
               {order.paymentMethod === 'COD' ? 'COD' : 'Online'}
             </span>
             <span>
-              {new Date(order.placedAt).toLocaleString([], {
-                day: 'numeric',
-                month: 'short',
+              {new Date(displayTimestamp).toLocaleTimeString([], {
                 hour: '2-digit',
                 minute: '2-digit',
               })}
@@ -2535,7 +2775,10 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   type="button"
                   onClick={() => {
                     setOrdersFolder('delivered');
-                    setOrdersDateFilter('TODAY');
+                    setExpandedDayFolders((prev) => ({
+                      ...prev,
+                      [`delivered:${todayIstKey}`]: true,
+                    }));
                     setActiveSection('orders');
                   }}
                   className="min-w-0 text-left bg-surface rounded-2xl border border-border p-2.5 sm:p-4 hover:border-primary/50 transition-colors cursor-pointer flex flex-col justify-between gap-1"
@@ -2556,7 +2799,10 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   type="button"
                   onClick={() => {
                     setOrdersFolder('cancelled');
-                    setOrdersDateFilter('TODAY');
+                    setExpandedDayFolders((prev) => ({
+                      ...prev,
+                      [`cancelled:${todayIstKey}`]: true,
+                    }));
                     setActiveSection('orders');
                   }}
                   className="min-w-0 text-left bg-surface rounded-2xl border border-border p-2.5 sm:p-4 hover:border-primary/50 transition-colors cursor-pointer flex flex-col justify-between gap-1"
@@ -2704,35 +2950,144 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 })}
               </div>
 
-              {/* Date Filter for Delivered & Cancelled Folders */}
-              {(ordersFolder === 'delivered' || ordersFolder === 'cancelled') && (
-                <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
-                  {(
-                    [
-                      { id: 'TODAY', label: 'Today' },
-                      { id: 'YESTERDAY', label: 'Yesterday' },
-                      { id: '7D', label: 'Last 7 days' },
-                      { id: 'ALL', label: 'All' },
-                    ] as const
-                  ).map((df) => (
+              {/* Delivered & Cancelled Date-Wise Collapsible Folders */}
+              {ordersFolder === 'delivered' || ordersFolder === 'cancelled' ? (
+                <div className="space-y-3">
+                  <div className="bg-surface rounded-2xl border border-border p-3 sm:p-3.5 flex flex-wrap items-center justify-between gap-2.5 min-w-0">
+                    <p className="text-xs text-muted min-w-0 flex-1 break-words">
+                      Double-tap any order card or tap its bin icon to delete permanently.
+                    </p>
                     <button
-                      key={df.id}
                       type="button"
-                      onClick={() => setOrdersDateFilter(df.id)}
-                      className={`min-h-[34px] px-3 rounded-xl text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer ${
-                        ordersDateFilter === df.id
-                          ? 'bg-primary/15 text-primary border border-primary/30'
-                          : 'bg-surface border border-border text-muted hover:text-text'
-                      }`}
+                      disabled={
+                        ordersFolder === 'delivered'
+                          ? deliveredOrdersAll.length === 0
+                          : cancelledOrdersAll.length === 0
+                      }
+                      onClick={() => {
+                        setDeleteConfirmTypedText('');
+                        setDeleteOrdersConfirm({
+                          mode: 'ALL',
+                          status: ordersFolder === 'delivered' ? 'DELIVERED' : 'CANCELLED',
+                          count:
+                            ordersFolder === 'delivered'
+                              ? deliveredOrdersAll.length
+                              : cancelledOrdersAll.length,
+                        });
+                      }}
+                      className="min-h-[36px] px-3 rounded-xl border border-red-500/35 text-red-600 hover:bg-red-500/10 text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed max-w-full"
                     >
-                      {df.label}
+                      <Trash2 className="w-3.5 h-3.5 shrink-0" />
+                      <span>
+                        {ordersFolder === 'delivered'
+                          ? 'Delete all delivered orders'
+                          : 'Delete all cancelled orders'}
+                      </span>
                     </button>
-                  ))}
-                </div>
-              )}
+                  </div>
 
-              {/* Orders Folder List */}
-              {filteredFolderOrders.length === 0 ? (
+                  {archiveDayGroups.length === 0 ? (
+                    <div className="bg-surface rounded-2xl border border-border p-8 text-center text-sm text-muted">
+                      No orders in this folder.
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      {archiveDayGroups.map((group) => {
+                        const folderDayKey = `${ordersFolder}:${group.dateKey}`;
+                        const isExpanded = orderSearch.trim()
+                          ? true
+                          : expandedDayFolders[folderDayKey] ??
+                            group.dateKey === todayIstKey;
+                        const archiveFolder =
+                          ordersFolder === 'delivered' ? 'delivered' : 'cancelled';
+                        return (
+                          <div
+                            key={group.dateKey}
+                            className="bg-surface rounded-2xl border border-border overflow-hidden shadow-xs min-w-0"
+                          >
+                            <div
+                              role="button"
+                              tabIndex={0}
+                              onClick={() =>
+                                setExpandedDayFolders((prev) => ({
+                                  ...prev,
+                                  [folderDayKey]: !isExpanded,
+                                }))
+                              }
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                  e.preventDefault();
+                                  setExpandedDayFolders((prev) => ({
+                                    ...prev,
+                                    [folderDayKey]: !isExpanded,
+                                  }));
+                                }
+                              }}
+                              className="p-3 sm:p-4 flex flex-wrap items-center justify-between gap-2.5 cursor-pointer hover:bg-bg/50 transition-colors min-w-0"
+                            >
+                              <div className="flex items-center gap-2 min-w-0 flex-1">
+                                {isExpanded ? (
+                                  <ChevronDown className="w-4 h-4 text-muted shrink-0" />
+                                ) : (
+                                  <ChevronRight className="w-4 h-4 text-muted shrink-0" />
+                                )}
+                                <div className="min-w-0">
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <span className="font-bold text-sm text-text">
+                                      {group.relativeLabel || group.formattedDate}
+                                    </span>
+                                    {group.relativeLabel && (
+                                      <span className="text-xs text-muted font-medium">
+                                        {group.formattedDate}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <p className="text-xs text-muted mt-0.5 break-words">
+                                    {group.orders.length}{' '}
+                                    {group.orders.length === 1 ? 'order' : 'orders'} •{' '}
+                                    <span className="font-bold text-text">
+                                      ₹{group.totalAmount}
+                                    </span>
+                                  </p>
+                                </div>
+                              </div>
+
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setDeleteConfirmTypedText('');
+                                  setDeleteOrdersConfirm({
+                                    mode: 'DAY',
+                                    dateKey: group.dateKey,
+                                    formattedDate: group.formattedDate,
+                                    count: group.orders.length,
+                                    folder: archiveFolder,
+                                  });
+                                }}
+                                className="min-h-[34px] px-3 rounded-xl border border-red-500/30 text-red-600 hover:bg-red-500/10 text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer shrink-0 max-w-full"
+                              >
+                                <Trash2 className="w-3.5 h-3.5 shrink-0" />
+                                <span>Delete this day</span>
+                              </button>
+                            </div>
+
+                            {isExpanded && (
+                              <div className="p-3 sm:p-4 pt-0 sm:pt-0 border-t border-border bg-bg/30">
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-3">
+                                  {group.orders.map((order) =>
+                                    renderCompactFolderOrderCard(order)
+                                  )}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              ) : filteredFolderOrders.length === 0 ? (
                 <div className="bg-surface rounded-2xl border border-border p-8 text-center text-sm text-muted">
                   No orders in this folder.
                 </div>
@@ -2775,11 +3130,12 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
                 {menuSubTab === 'items' && (
                   <button
-                    onClick={openCreateDishModal}
-                    className="min-h-[40px] px-4 rounded-xl bg-primary text-primary-contrast text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                    type="button"
+                    onClick={() => openCreateDishModal()}
+                    className="min-h-[40px] px-4 rounded-xl bg-primary text-primary-contrast text-xs font-bold flex items-center gap-1.5 cursor-pointer max-w-full"
                   >
-                    <Plus className="w-4 h-4" />
-                    Add New Dish
+                    <Plus className="w-4 h-4 shrink-0" />
+                    <span>Add New Dish</span>
                   </button>
                 )}
               </div>
@@ -2879,6 +3235,29 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       ))}
                     </select>
                   </div>
+
+                  {selectedMenuCategory && (
+                    <div className="bg-surface rounded-2xl border border-primary/25 p-3 sm:p-3.5 flex flex-wrap items-center justify-between gap-2.5 min-w-0">
+                      <div className="min-w-0">
+                        <p className="text-xs font-bold text-text break-words">
+                          {selectedMenuCategory.name}
+                        </p>
+                        <p className="text-[11px] text-muted">
+                          {filteredMenuItems.length}{' '}
+                          {filteredMenuItems.length === 1 ? 'dish' : 'dishes'} in this category
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => openCreateDishModal(selectedMenuCategory.id)}
+                        className="min-h-[38px] px-3.5 rounded-xl bg-primary text-primary-contrast text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer max-w-full"
+                      >
+                        <span className="break-words text-left">
+                          + Add dish to {selectedMenuCategory.name}
+                        </span>
+                      </button>
+                    </div>
+                  )}
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     {filteredMenuItems.map((item) => {
@@ -5249,9 +5628,14 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   )}
 
                   <div className="space-y-2.5">
-                    {payments.slice(0, 25).map((p) => {
-                      const existingRefund = refunds.find((r) => r.paymentId === p.id);
-                      return (
+                    {payments.length === 0 ? (
+                      <div className="p-6 rounded-xl border border-border bg-bg text-center text-xs text-muted">
+                        No payment records yet.
+                      </div>
+                    ) : (
+                      payments.slice(0, 25).map((p) => {
+                        const existingRefund = refunds.find((r) => r.paymentId === p.id);
+                        return (
                         <div
                           key={p.id}
                           className="p-3 rounded-xl border border-border flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs min-w-0"
@@ -5328,7 +5712,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                           )}
                         </div>
                       );
-                    })}
+                      })
+                    )}
                   </div>
                 </div>
               ) : (
@@ -6180,6 +6565,16 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
               </button>
             </div>
 
+            {!editingDish && (
+              <div className="px-3 py-2 rounded-xl bg-primary/10 border border-primary/25 text-xs font-semibold text-primary break-words">
+                Adding to:{' '}
+                <span className="font-bold">
+                  {categories.find((c) => c.id === dishForm.categoryId)?.name ||
+                    'Category'}
+                </span>
+              </div>
+            )}
+
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs font-semibold mb-1">Dish Name</label>
@@ -6934,6 +7329,123 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 className="px-3 py-1.5 rounded-lg bg-primary text-primary-contrast font-sans font-bold cursor-pointer"
               >
                 Print
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================
+          DELETE CLOSED ORDERS CONFIRMATION SHEET / MODAL
+      ======================================================================== */}
+      {deleteOrdersConfirm && (
+        <div
+          className="fixed inset-0 z-50 bg-black/60 flex items-end sm:items-center justify-center p-2.5 sm:p-4"
+          onClick={() => {
+            if (!isDeletingOrders) {
+              setDeleteOrdersConfirm(null);
+              setDeleteConfirmTypedText('');
+            }
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-md bg-surface rounded-2xl border border-border p-4 sm:p-5 space-y-3.5 text-text shadow-xl"
+          >
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <div className="w-8 h-8 rounded-xl bg-red-500/15 text-red-600 flex items-center justify-center shrink-0">
+                  <Trash2 className="w-4 h-4" />
+                </div>
+                <h3 className="text-base font-bold text-text break-words">
+                  {deleteOrdersConfirm.mode === 'SINGLE'
+                    ? 'Delete this order permanently?'
+                    : deleteOrdersConfirm.mode === 'DAY'
+                    ? `Delete all ${deleteOrdersConfirm.count} ${
+                        deleteOrdersConfirm.count === 1 ? 'order' : 'orders'
+                      } of ${deleteOrdersConfirm.formattedDate} permanently?`
+                    : deleteOrdersConfirm.status === 'DELIVERED'
+                    ? `Delete all ${deleteOrdersConfirm.count} delivered orders permanently?`
+                    : `Delete all ${deleteOrdersConfirm.count} cancelled orders permanently?`}
+                </h3>
+              </div>
+              <button
+                type="button"
+                disabled={isDeletingOrders}
+                onClick={() => {
+                  setDeleteOrdersConfirm(null);
+                  setDeleteConfirmTypedText('');
+                }}
+                aria-label="Close confirmation"
+                className="p-1 text-muted hover:text-text cursor-pointer shrink-0"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {deleteOrdersConfirm.mode === 'SINGLE' && (
+              <div className="p-3 rounded-xl bg-bg border border-border flex items-center justify-between gap-2 text-xs">
+                <div className="min-w-0">
+                  <p className="font-bold text-text">
+                    {deleteOrdersConfirm.order.orderNumber}
+                  </p>
+                  <p className="text-muted truncate">
+                    {deleteOrdersConfirm.order.customerName}
+                  </p>
+                </div>
+                <span className="font-bold text-sm text-text shrink-0">
+                  ₹{deleteOrdersConfirm.order.grandTotal}
+                </span>
+              </div>
+            )}
+
+            <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-800 dark:text-amber-300 text-xs flex items-start gap-2">
+              <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+              <p className="break-words">
+                Deleted orders will no longer appear in Finance reports.
+              </p>
+            </div>
+
+            {deleteOrdersConfirm.mode === 'ALL' && (
+              <div className="space-y-1.5">
+                <label className="block text-xs font-semibold text-text">
+                  Type <span className="font-mono font-bold text-red-600">DELETE</span> to
+                  confirm
+                </label>
+                <input
+                  type="text"
+                  value={deleteConfirmTypedText}
+                  onChange={(e) => setDeleteConfirmTypedText(e.target.value)}
+                  placeholder="Type DELETE"
+                  autoComplete="off"
+                  className="w-full min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs text-text focus:outline-none focus:border-red-500"
+                />
+              </div>
+            )}
+
+            <div className="flex flex-wrap justify-end gap-2 pt-1">
+              <button
+                type="button"
+                disabled={isDeletingOrders}
+                onClick={() => {
+                  setDeleteOrdersConfirm(null);
+                  setDeleteConfirmTypedText('');
+                }}
+                className="min-h-[40px] px-4 py-2 rounded-xl border border-border text-xs font-semibold cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={
+                  isDeletingOrders ||
+                  (deleteOrdersConfirm.mode === 'ALL' &&
+                    deleteConfirmTypedText.trim() !== 'DELETE')
+                }
+                onClick={handleConfirmDeleteOrders}
+                className="min-h-[40px] px-4 py-2 rounded-xl bg-red-600 text-white text-xs font-bold cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed"
+              >
+                {isDeletingOrders ? 'Deleting...' : 'Delete'}
               </button>
             </div>
           </div>

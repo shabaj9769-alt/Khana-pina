@@ -265,6 +265,7 @@ export interface OrderRecord {
   outForDeliveryAt?: string;
   deliveredAt?: string;
   cancelledAt?: string;
+  updatedAt?: string;
   items: OrderItemRecord[];
   razorpayOrderId?: string;
 }

@@ -44,9 +44,12 @@ import {
   clearHomeCache,
   clearLoginFailuresFirebase,
   db,
+  deleteClosedOrdersAtomic,
   ensureFirebaseSeeded,
   expireStaleOrdersLazy,
+  getOrderArchiveDateKeyIST,
   IMG_HERO,
+  isClosedOrderStatus,
   isLoginLockedFirebase,
   isOrderVisibleToKitchen,
   logAudit,
@@ -1087,6 +1090,8 @@ export default async function handler(req: Request, res: Response) {
         );
       }
 
+      order.updatedAt = nowIso;
+
       for (const r of db.deliveryBoys) {
         r.activeOrders = db.orders.filter(
           (o) =>
@@ -1100,6 +1105,159 @@ export default async function handler(req: Request, res: Response) {
       await syncOrderRealtimePaths(order, previousRiderId);
 
       res.json({ order });
+      return;
+    }
+
+    // 16b. POST /api/admin/orders/bulk-delete (Owner-only permanent deletion of closed orders)
+    if (method === 'POST' && subPath === '/orders/bulk-delete') {
+      const admin = await verifyAdminAuthorized(req, res);
+      if (!admin) return;
+
+      const BulkDeleteOrdersSchema = z.union([
+        z
+          .object({
+            orderIds: z.array(z.string().trim().min(1).max(200)).min(1).max(500),
+          })
+          .strict(),
+        z
+          .object({
+            date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be YYYY-MM-DD'),
+            status: z.enum(['DELIVERED', 'CANCELLED']),
+          })
+          .strict(),
+        z
+          .object({
+            all: z.literal(true),
+            status: z.enum(['DELIVERED', 'CANCELLED']),
+          })
+          .strict(),
+      ]);
+
+      const parsed = BulkDeleteOrdersSchema.safeParse(req.body || {});
+      if (!parsed.success) {
+        res.status(400).json({
+          error: parsed.error.issues[0]?.message || 'Invalid bulk delete request',
+        });
+        return;
+      }
+
+      const payload = parsed.data;
+      let ordersToDelete: OrderRecord[] = [];
+      let scopeLabel = '';
+
+      if ('orderIds' in payload) {
+        const idSet = new Set(payload.orderIds);
+        const matched = db.orders.filter((o) => idSet.has(o.id));
+        const liveMatched = matched.find((o) => !isClosedOrderStatus(o.status));
+        if (liveMatched) {
+          res.status(400).json({
+            error: `Live order ${liveMatched.orderNumber} cannot be deleted. Only delivered, cancelled, or rejected orders can be deleted.`,
+          });
+          return;
+        }
+        ordersToDelete = matched;
+        scopeLabel = `orderIds (${payload.orderIds.length} requested)`;
+      } else if ('date' in payload) {
+        ordersToDelete = db.orders.filter((o) => {
+          if (payload.status === 'DELIVERED') {
+            return (
+              o.status === 'DELIVERED' &&
+              getOrderArchiveDateKeyIST(o, 'DELIVERED') === payload.date
+            );
+          }
+          return (
+            (o.status === 'CANCELLED' || o.status === 'REJECTED') &&
+            getOrderArchiveDateKeyIST(o, 'CANCELLED') === payload.date
+          );
+        });
+        scopeLabel = `${payload.status} day ${payload.date}`;
+      } else {
+        ordersToDelete = db.orders.filter((o) => {
+          if (payload.status === 'DELIVERED') return o.status === 'DELIVERED';
+          return o.status === 'CANCELLED' || o.status === 'REJECTED';
+        });
+        scopeLabel = `all ${payload.status}`;
+      }
+
+      const dateKeys = ordersToDelete
+        .map((o) =>
+          getOrderArchiveDateKeyIST(o, o.status === 'DELIVERED' ? 'DELIVERED' : 'CANCELLED')
+        )
+        .sort();
+      const dateRange =
+        dateKeys.length === 0
+          ? 'none'
+          : dateKeys[0] === dateKeys[dateKeys.length - 1]
+          ? dateKeys[0]
+          : `${dateKeys[0]} to ${dateKeys[dateKeys.length - 1]}`;
+
+      const result = await deleteClosedOrdersAtomic(ordersToDelete);
+
+      await logAudit(
+        admin.email,
+        admin.role,
+        'ORDERS_BULK_DELETED',
+        `By ${admin.email}: deleted ${result.deletedCount} closed order(s) [${scopeLabel}] (date range: ${dateRange})`,
+        clientIp
+      );
+
+      res.json({
+        deletedCount: result.deletedCount,
+        deletedOrderIds: result.deletedOrderIds,
+        orders: db.orders.filter(isOrderVisibleToKitchen),
+        payments: db.payments,
+      });
+      return;
+    }
+
+    // 16c. DELETE /api/admin/orders/:id (Owner-only permanent deletion of one closed order)
+    if (method === 'DELETE' && /^\/orders\/[^/]+$/.test(subPath)) {
+      const admin = await verifyAdminAuthorized(req, res);
+      if (!admin) return;
+
+      const parsedId = z
+        .string()
+        .trim()
+        .min(1)
+        .max(200)
+        .safeParse(decodeURIComponent(subPath.split('/')[2] || ''));
+      if (!parsedId.success) {
+        res.status(400).json({ error: 'Valid order ID is required' });
+        return;
+      }
+
+      const order = db.orders.find((o) => o.id === parsedId.data);
+      if (!order) {
+        res.status(404).json({ error: 'Order not found' });
+        return;
+      }
+      if (!isClosedOrderStatus(order.status)) {
+        res.status(400).json({
+          error: 'Live orders cannot be deleted. Only delivered, cancelled, or rejected orders can be deleted.',
+        });
+        return;
+      }
+
+      const dateKey = getOrderArchiveDateKeyIST(
+        order,
+        order.status === 'DELIVERED' ? 'DELIVERED' : 'CANCELLED'
+      );
+      const result = await deleteClosedOrdersAtomic([order]);
+
+      await logAudit(
+        admin.email,
+        admin.role,
+        'ORDER_DELETED',
+        `By ${admin.email}: deleted 1 closed order ${order.orderNumber} (${order.status}, date range: ${dateKey})`,
+        clientIp
+      );
+
+      res.json({
+        deletedCount: result.deletedCount,
+        deletedOrderIds: result.deletedOrderIds,
+        orders: db.orders.filter(isOrderVisibleToKitchen),
+        payments: db.payments,
+      });
       return;
     }
 
@@ -1179,7 +1337,7 @@ export default async function handler(req: Request, res: Response) {
     if (method === 'POST' && subPath === '/menu-items/bulk') {
       const admin = await verifyAdminAuthorized(req, res);
       if (!admin) return;
-      const { action, itemIds, percentChange, importedItems } = req.body || {};
+      const { action, itemIds, percentChange, importedItems, defaultCategoryId } = req.body || {};
       const targetSet =
         Array.isArray(itemIds) && itemIds.length > 0 ? new Set<string>(itemIds) : null;
 
@@ -1236,10 +1394,16 @@ export default async function handler(req: Request, res: Response) {
       }
 
       if (action === 'CSV_IMPORT' && Array.isArray(importedItems)) {
+        const validDefaultCat =
+          typeof defaultCategoryId === 'string' &&
+          db.categories.some((c) => c.id === defaultCategoryId)
+            ? defaultCategoryId
+            : db.categories[0]?.id || 'cat_biryani';
         let importedCount = 0;
         for (const raw of importedItems) {
           if (!raw || !raw.name) continue;
-          const catId = raw.categoryId || db.categories[0]?.id || 'cat_biryani';
+          const rawCatId = typeof raw.categoryId === 'string' ? raw.categoryId.trim() : '';
+          const catId = rawCatId || validDefaultCat;
           db.menuItems.push({
             id: `item_${Date.now()}_${importedCount}`,
             categoryId: String(catId),

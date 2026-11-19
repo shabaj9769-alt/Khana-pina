@@ -856,6 +856,96 @@ export async function syncOrderRealtimePaths(
   await rtdb.ref().update(updates);
 }
 
+const kolkataDateFormatter = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Asia/Kolkata',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+
+export function getKolkataDateKey(isoOrDate?: string | Date | null): string {
+  if (!isoOrDate) return kolkataDateFormatter.format(new Date());
+  const d = isoOrDate instanceof Date ? isoOrDate : new Date(isoOrDate);
+  if (Number.isNaN(d.getTime())) {
+    return kolkataDateFormatter.format(new Date());
+  }
+  return kolkataDateFormatter.format(d);
+}
+
+export function getOrderArchiveDateKeyIST(
+  order: OrderRecord,
+  folder: 'DELIVERED' | 'CANCELLED'
+): string {
+  const ts =
+    folder === 'DELIVERED'
+      ? order.deliveredAt || order.updatedAt || order.placedAt
+      : order.cancelledAt || order.updatedAt || order.placedAt;
+  return getKolkataDateKey(ts);
+}
+
+export function isClosedOrderStatus(status: OrderStatus): boolean {
+  return status === 'DELIVERED' || status === 'CANCELLED' || status === 'REJECTED';
+}
+
+export async function deleteClosedOrdersAtomic(ordersToDelete: OrderRecord[]): Promise<{
+  deletedCount: number;
+  deletedOrderIds: string[];
+  deletedPaymentIds: string[];
+}> {
+  for (const order of ordersToDelete) {
+    if (!isClosedOrderStatus(order.status)) {
+      throw new Error(`Live order ${order.orderNumber} cannot be deleted`);
+    }
+  }
+
+  if (ordersToDelete.length === 0) {
+    return { deletedCount: 0, deletedOrderIds: [], deletedPaymentIds: [] };
+  }
+
+  const rtdb = getRtdb();
+  const deleteOrderIdSet = new Set(ordersToDelete.map((o) => o.id));
+  const deleteRzpOrderIdSet = new Set(
+    ordersToDelete.map((o) => o.razorpayOrderId).filter((v): v is string => Boolean(v))
+  );
+
+  const updates: Record<string, null> = {};
+  for (const ord of ordersToDelete) {
+    updates[`orders/${ord.id}`] = null;
+    updates[`adminOrders/${ord.id}`] = null;
+    if (ord.deliveryBoyId) {
+      updates[`riderOrders/${ord.deliveryBoyId}/${ord.id}`] = null;
+    }
+    if (ord.trackingToken) {
+      updates[`tracking/${ord.trackingToken}`] = null;
+    }
+  }
+
+  const relatedPayments = db.payments.filter(
+    (p) =>
+      deleteOrderIdSet.has(p.orderId) ||
+      (p.razorpayOrderId ? deleteRzpOrderIdSet.has(p.razorpayOrderId) : false)
+  );
+  const deletePaymentIdSet = new Set(relatedPayments.map((p) => p.id));
+
+  for (const pay of relatedPayments) {
+    updates[`payments/${pay.id}`] = null;
+    if (pay.razorpayPaymentId) {
+      updates[`paymentLocks/${pay.razorpayPaymentId}`] = null;
+    }
+  }
+
+  db.orders = db.orders.filter((o) => !deleteOrderIdSet.has(o.id));
+  db.payments = db.payments.filter((p) => !deletePaymentIdSet.has(p.id));
+
+  await rtdb.ref().update(updates);
+
+  return {
+    deletedCount: ordersToDelete.length,
+    deletedOrderIds: Array.from(deleteOrderIdSet),
+    deletedPaymentIds: Array.from(deletePaymentIdSet),
+  };
+}
+
 function recordToArray<T>(val: any): T[] {
   if (!val) return [];
   if (Array.isArray(val)) return val.filter(Boolean);
