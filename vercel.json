@@ -16,11 +16,5 @@
     { "source": "/api/manifest", "destination": "/api/manifest" },
     { "source": "/manifest.webmanifest", "destination": "/api/manifest" },
     { "source": "/((?!api/).*)", "destination": "/index.html" }
-  ],
-  "crons": [
-    {
-      "path": "/api/admin/orders/expire-stale",
-      "schedule": "*/5 * * * *"
-    }
   ]
 }
