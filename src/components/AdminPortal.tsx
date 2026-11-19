@@ -49,6 +49,8 @@ import {
   Info,
   ChevronDown,
   ChevronRight,
+  Clock,
+  History,
 } from 'lucide-react';
 import { SafeImage } from './SafeImage.tsx';
 import {
@@ -72,6 +74,7 @@ import {
   ItemAddon,
   AboutPageConfig,
   AboutPageSectionCard,
+  OrderHistoryRecord,
 } from '../types';
 import {
   DEFAULT_STOREFRONT_THEME,
@@ -105,6 +108,7 @@ interface AdminPortalProps {
 type AdminTopSection =
   | 'dashboard'
   | 'orders'
+  | 'history'
   | 'menu'
   | 'storefront'
   | 'customers'
@@ -160,6 +164,18 @@ function formatIstDisplayDate(dateKey: string): string {
   const utcNoon = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
   return istDisplayDateFormatter.format(utcNoon);
 }
+
+function formatTime24To12Admin(hhmm?: string | null): string {
+  if (!hhmm || !/^\d{2}:\d{2}$/.test(hhmm)) return hhmm || '';
+  const [hhStr, mmStr] = hhmm.split(':');
+  const hh = Number(hhStr);
+  const mm = Number(mmStr);
+  const period = hh >= 12 ? 'PM' : 'AM';
+  const h12 = hh % 12 === 0 ? 12 : hh % 12;
+  return `${h12}:${String(mm).padStart(2, '0')} ${period}`;
+}
+
+const WEEKDAY_SHORT_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
 
 const PHOTO_LINK_HINT =
   'Paste a direct image link (.jpg / .png / .webp), such as from Imgur, ImgBB, Cloudinary, or Postimages';
@@ -318,6 +334,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
   // Store Data State
   const [orders, setOrders] = useState<OrderRecord[]>([]);
+  const [orderHistory, setOrderHistory] = useState<OrderHistoryRecord[]>([]);
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [deliveryBoys, setDeliveryBoys] = useState<DeliveryBoy[]>([]);
@@ -491,6 +508,26 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const [reportRange, setReportRange] = useState<'ALL' | 'TODAY' | '7D' | '30D' | 'CUSTOM'>('ALL');
   const [reportStartDate, setReportStartDate] = useState('');
   const [reportEndDate, setReportEndDate] = useState('');
+
+  // Order History Tab State
+  const [historyRange, setHistoryRange] = useState<'ALL' | 'TODAY' | '7D' | '30D' | 'DATE'>('ALL');
+  const [historyDateFilter, setHistoryDateFilter] = useState('');
+  const [historySearch, setHistorySearch] = useState('');
+  const [historyDeleteConfirm, setHistoryDeleteConfirm] = useState<OrderHistoryRecord | null>(null);
+  const [isDeletingHistory, setIsDeletingHistory] = useState(false);
+
+  // Auto Shop Timing Draft State
+  const [scheduleDraft, setScheduleDraft] = useState<{
+    autoScheduleEnabled: boolean;
+    openTime: string;
+    closeTime: string;
+    closedDays: number[];
+  }>({
+    autoScheduleEnabled: false,
+    openTime: '11:00',
+    closeTime: '23:30',
+    closedDays: [],
+  });
 
   // Account Settings State (Name, Email, Password)
   const [nameFormOpen, setNameFormOpen] = useState(false);
@@ -768,6 +805,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       if (!res.ok) return;
       const data = await res.json();
       setOrders(data.orders || []);
+      setOrderHistory(data.orderHistory || []);
       setMenuItems(data.menuItems || []);
       setCategories(data.categories || []);
       setDeliveryBoys(data.deliveryBoys || []);
@@ -784,6 +822,14 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             }
           : null
       );
+      if (data.settings) {
+        setScheduleDraft({
+          autoScheduleEnabled: Boolean(data.settings.autoScheduleEnabled),
+          openTime: data.settings.openTime || '11:00',
+          closeTime: data.settings.closeTime || '23:30',
+          closedDays: Array.isArray(data.settings.closedDays) ? data.settings.closedDays : [],
+        });
+      }
       setDeliveryZone(data.deliveryZone || null);
       if (data.deliveryZone) {
         setManualLat(
@@ -1217,6 +1263,14 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             }
           : null
       );
+      if (data.settings) {
+        setScheduleDraft({
+          autoScheduleEnabled: Boolean(data.settings.autoScheduleEnabled),
+          openTime: data.settings.openTime || '11:00',
+          closeTime: data.settings.closeTime || '23:30',
+          closedDays: Array.isArray(data.settings.closedDays) ? data.settings.closedDays : [],
+        });
+      }
       setDeliveryZone(data.deliveryZone);
       if (data.deliveryZone) {
         setManualLat(
@@ -1939,10 +1993,201 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     }
   };
 
-  // Filtered Reports Data
+  const handleDeleteHistoryOrder = async (orderId: string) => {
+    if (isDeletingHistory) return;
+    setIsDeletingHistory(true);
+    try {
+      const res = await adminFetch(`/api/admin/history/${encodeURIComponent(orderId)}`, {
+        method: 'DELETE',
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        showToast(data.error || 'Could not delete history record');
+        return;
+      }
+      if (Array.isArray(data.orderHistory)) {
+        setOrderHistory(data.orderHistory);
+      } else {
+        setOrderHistory((prev) => prev.filter((h) => h.id !== orderId));
+      }
+      setHistoryDeleteConfirm(null);
+      showToast('History entry deleted');
+    } catch {
+      showToast('Network error while deleting history entry');
+    } finally {
+      setIsDeletingHistory(false);
+    }
+  };
+
+  // Filtered Order History (IST date groups + metrics)
+  const historyViewData = useMemo(() => {
+    const todayKey = getIstDateKey(nowTick);
+    const startOf7d = getIstDateKey(nowTick - 6 * 24 * 3600 * 1000);
+    const startOf30d = getIstDateKey(nowTick - 29 * 24 * 3600 * 1000);
+    const q = historySearch.trim().toLowerCase();
+
+    const filtered = orderHistory.filter((h) => {
+      if (historyRange === 'TODAY' && h.dateKeyIST !== todayKey) return false;
+      if (historyRange === '7D' && h.dateKeyIST < startOf7d) return false;
+      if (historyRange === '30D' && h.dateKeyIST < startOf30d) return false;
+      if (historyRange === 'DATE' && historyDateFilter && h.dateKeyIST !== historyDateFilter) {
+        return false;
+      }
+      if (q) {
+        const itemsMatch = (h.items || []).some((it) => it.itemName.toLowerCase().includes(q));
+        const matches =
+          h.orderNumber.toLowerCase().includes(q) ||
+          h.customerName.toLowerCase().includes(q) ||
+          h.customerPhone.toLowerCase().includes(q) ||
+          (h.deliveryBoyName || '').toLowerCase().includes(q) ||
+          h.paymentMethod.toLowerCase().includes(q) ||
+          itemsMatch;
+        if (!matches) return false;
+      }
+      return true;
+    });
+
+    const deliveredItems = filtered.filter((h) => h.status === 'DELIVERED');
+    const deliveredRevenue = deliveredItems.reduce(
+      (sum, h) => sum + (Number(h.grandTotal) || 0),
+      0
+    );
+    const codRevenue = deliveredItems
+      .filter((h) => h.paymentMethod === 'COD')
+      .reduce((sum, h) => sum + (Number(h.grandTotal) || 0), 0);
+    const onlineRevenue = deliveredItems
+      .filter((h) => h.paymentMethod === 'RAZORPAY')
+      .reduce((sum, h) => sum + (Number(h.grandTotal) || 0), 0);
+    const refundPendingCount = filtered.filter(
+      (h) => h.status === 'CANCELLED_REFUND_PENDING'
+    ).length;
+    const refundedCount = filtered.filter((h) => h.status === 'CANCELLED_REFUNDED').length;
+
+    const map = new Map<string, OrderHistoryRecord[]>();
+    for (const h of filtered) {
+      const key = h.dateKeyIST || getIstDateKey(h.placedAt);
+      const arr = map.get(key);
+      if (arr) arr.push(h);
+      else map.set(key, [h]);
+    }
+
+    const yesterdayKey = getPreviousIstDateKey(todayKey);
+    const dayGroups = Array.from(map.keys())
+      .sort((a, b) => b.localeCompare(a))
+      .map((dateKey) => {
+        const list = (map.get(dateKey) || []).sort(
+          (a, b) =>
+            getSafeTimestampMs(b.deliveredAt || b.cancelledAt || b.archivedAt || b.placedAt) -
+            getSafeTimestampMs(a.deliveredAt || a.cancelledAt || a.archivedAt || a.placedAt)
+        );
+        const dayDelivered = list.filter((h) => h.status === 'DELIVERED');
+        const dayCancelledRefund = list.filter((h) => h.status !== 'DELIVERED');
+        const dayDeliveredRev = dayDelivered.reduce(
+          (s, h) => s + (Number(h.grandTotal) || 0),
+          0
+        );
+        const dayCodRev = dayDelivered
+          .filter((h) => h.paymentMethod === 'COD')
+          .reduce((s, h) => s + (Number(h.grandTotal) || 0), 0);
+        const dayOnlineRev = dayDelivered
+          .filter((h) => h.paymentMethod === 'RAZORPAY')
+          .reduce((s, h) => s + (Number(h.grandTotal) || 0), 0);
+
+        const riderMap = new Map<string, number>();
+        for (const h of dayDelivered) {
+          const rLabel = h.deliveryBoyName?.trim() || 'Unassigned';
+          riderMap.set(rLabel, (riderMap.get(rLabel) || 0) + 1);
+        }
+        const riderSummary = Array.from(riderMap.entries()).map(([name, count]) => ({
+          name,
+          count,
+        }));
+
+        const relativeLabel =
+          dateKey === todayKey ? 'Today' : dateKey === yesterdayKey ? 'Yesterday' : null;
+        const shopCloseTime =
+          list.find((h) => h.shopCloseTime)?.shopCloseTime || 'Manual Close';
+
+        return {
+          dateKey,
+          formattedDate: formatIstDisplayDate(dateKey),
+          relativeLabel,
+          shopCloseTime,
+          items: list,
+          deliveredCount: dayDelivered.length,
+          deliveredRevenue: dayDeliveredRev,
+          codRevenue: dayCodRev,
+          onlineRevenue: dayOnlineRev,
+          cancelledRefundOrders: dayCancelledRefund,
+          riderSummary,
+        };
+      });
+
+    return {
+      filtered,
+      deliveredCount: deliveredItems.length,
+      deliveredRevenue,
+      codRevenue,
+      onlineRevenue,
+      refundPendingCount,
+      refundedCount,
+      dayGroups,
+    };
+  }, [orderHistory, historyRange, historyDateFilter, historySearch, nowTick]);
+
+  // Filtered Reports Data (merges active orders and archived orderHistory without duplicates)
   const reportData = useMemo(() => {
     const now = Date.now();
-    const filtered = orders.filter((o) => {
+    const activeIds = new Set(orders.map((o) => o.id));
+    const archivedAsOrderShape: Array<{
+      id: string;
+      orderNumber: string;
+      placedAt: string;
+      customerName: string;
+      customerPhone: string;
+      status: OrderStatus;
+      paymentMethod: OrderRecord['paymentMethod'];
+      paymentStatus: OrderRecord['paymentStatus'];
+      itemTotal: number;
+      gstAmount: number;
+      deliveryFee: number;
+      grandTotal: number;
+    }> = orderHistory
+      .filter((h) => !activeIds.has(h.id))
+      .map((h) => ({
+        id: h.id,
+        orderNumber: h.orderNumber,
+        placedAt: h.placedAt,
+        customerName: h.customerName,
+        customerPhone: h.customerPhone,
+        status: h.status === 'DELIVERED' ? 'DELIVERED' : 'CANCELLED',
+        paymentMethod: h.paymentMethod,
+        paymentStatus: h.paymentStatus,
+        itemTotal: h.itemTotal,
+        gstAmount: h.gstAmount,
+        deliveryFee: h.deliveryFee,
+        grandTotal: h.grandTotal,
+      }));
+
+    const combinedOrders = [
+      ...orders.map((o) => ({
+        id: o.id,
+        orderNumber: o.orderNumber,
+        placedAt: o.placedAt,
+        customerName: o.customerName,
+        customerPhone: o.customerPhone,
+        status: o.status,
+        paymentMethod: o.paymentMethod,
+        paymentStatus: o.paymentStatus,
+        itemTotal: o.itemTotal,
+        gstAmount: o.gstAmount,
+        deliveryFee: o.deliveryFee,
+        grandTotal: o.grandTotal,
+      })),
+      ...archivedAsOrderShape,
+    ];
+
+    const filtered = combinedOrders.filter((o) => {
       const t = new Date(o.placedAt).getTime();
       if (reportRange === 'TODAY') {
         const startOfToday = new Date();
@@ -2000,7 +2245,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       repeatRate,
       uniqueCustomers,
     };
-  }, [orders, reportRange, reportStartDate, reportEndDate]);
+  }, [orders, orderHistory, reportRange, reportStartDate, reportEndDate]);
 
   // Change Own Password Handler
   const handleChangeMyPassword = async (e: React.FormEvent) => {
@@ -2266,6 +2511,12 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       label: 'Orders',
       icon: ShoppingBag,
       badge: orders.filter((o) => o.status === 'PLACED').length,
+    },
+    {
+      id: 'history',
+      label: 'History',
+      icon: History,
+      badge: orderHistory.filter((h) => h.status === 'CANCELLED_REFUND_PENDING').length || undefined,
     },
     { id: 'menu', label: 'Menu', icon: UtensilsCrossed },
     { id: 'storefront', label: 'Storefront', icon: Palette },
@@ -2881,32 +3132,48 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
           </button>
 
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
-            {/* Open / Closed Pill */}
-            {shopSettings && (
-              <button
-                type="button"
-                role="switch"
-                aria-checked={shopSettings.isOpen}
-                aria-label="Shop open status"
-                onClick={() =>
-                  handleUpdateShopSettings({
-                    isOpen: !shopSettings.isOpen,
-                  })
-                }
-                className={`min-h-[34px] px-2.5 rounded-full border text-[11px] font-bold flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 ${
-                  shopSettings.isOpen
-                    ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border-emerald-500/30'
-                    : 'bg-red-500/15 text-red-600 border-red-500/30'
-                }`}
-              >
-                <span
-                  className={`w-2 h-2 rounded-full shrink-0 ${
-                    shopSettings.isOpen ? 'bg-emerald-500' : 'bg-red-500'
+            {/* Open / Closed Pill + Schedule Mode Badge */}
+            {shopSettings && (() => {
+              const isManualOverrideToday = Boolean(
+                shopSettings.autoScheduleEnabled &&
+                  shopSettings.manualOverrideOpen !== null &&
+                  shopSettings.manualOverrideOpen !== undefined &&
+                  shopSettings.manualOverrideDate === todayIstKey
+              );
+              const modeLabel = shopSettings.autoScheduleEnabled
+                ? isManualOverrideToday
+                  ? 'Override'
+                  : 'Auto'
+                : 'Manual';
+              return (
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={shopSettings.isOpen}
+                  aria-label="Shop open status"
+                  onClick={() =>
+                    handleUpdateShopSettings({
+                      isOpen: !shopSettings.isOpen,
+                    })
+                  }
+                  className={`min-h-[34px] px-2.5 rounded-full border text-[11px] font-bold flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 ${
+                    shopSettings.isOpen
+                      ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border-emerald-500/30'
+                      : 'bg-red-500/15 text-red-600 border-red-500/30'
                   }`}
-                />
-                <span>{shopSettings.isOpen ? 'OPEN' : 'CLOSED'}</span>
-              </button>
-            )}
+                >
+                  <span
+                    className={`w-2 h-2 rounded-full shrink-0 ${
+                      shopSettings.isOpen ? 'bg-emerald-500' : 'bg-red-500'
+                    }`}
+                  />
+                  <span>{shopSettings.isOpen ? 'OPEN' : 'CLOSED'}</span>
+                  <span className="hidden sm:inline opacity-75 text-[10px] font-semibold">
+                    • {modeLabel}
+                  </span>
+                </button>
+              );
+            })()}
 
             {/* Bell Icon with Unread New Orders Badge */}
             <button
@@ -3004,49 +3271,96 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
           ) : activeSection === 'dashboard' && (
             <div className="space-y-4">
               {/* a) Shop Open / Closed Switch at Top */}
-              {shopSettings && (
-                <div className="bg-surface rounded-2xl border border-border p-3.5 sm:p-4 flex items-center justify-between gap-3 shadow-xs">
-                  <div className="min-w-0">
-                    <p className="text-sm font-bold text-text truncate">
-                      {shopSettings.isOpen ? 'Shop is Open' : 'Shop is Closed'}
-                    </p>
-                    <p className="text-xs text-muted truncate">
-                      {shopSettings.isOpen
-                        ? 'Customers can place orders right now'
-                        : 'New live orders are paused'}
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={shopSettings.isOpen}
-                    aria-label="Toggle shop open or closed"
-                    onClick={() =>
-                      handleUpdateShopSettings({
-                        isOpen: !shopSettings.isOpen,
-                      })
-                    }
-                    className={`min-h-[40px] px-3 rounded-full border text-xs font-bold flex items-center gap-2 transition-colors cursor-pointer shrink-0 ${
-                      shopSettings.isOpen
-                        ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border-emerald-500/30'
-                        : 'bg-red-500/15 text-red-600 border-red-500/30'
-                    }`}
-                  >
-                    <span
-                      className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
-                        shopSettings.isOpen ? 'bg-emerald-500' : 'bg-red-500/60'
-                      }`}
-                    >
-                      <span
-                        className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
-                          shopSettings.isOpen ? 'translate-x-4.5' : 'translate-x-1'
+              {shopSettings && (() => {
+                const isManualOverrideToday = Boolean(
+                  shopSettings.autoScheduleEnabled &&
+                    shopSettings.manualOverrideOpen !== null &&
+                    shopSettings.manualOverrideOpen !== undefined &&
+                    shopSettings.manualOverrideDate === todayIstKey
+                );
+                const modeBadge = shopSettings.autoScheduleEnabled
+                  ? isManualOverrideToday
+                    ? 'Manual Override'
+                    : 'Auto'
+                  : 'Manual';
+                return (
+                  <div className="bg-surface rounded-2xl border border-border p-3.5 sm:p-4 flex flex-wrap items-center justify-between gap-3 shadow-xs">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="text-sm font-bold text-text truncate">
+                          {shopSettings.isOpen ? 'Shop is Open' : 'Shop is Closed'}
+                        </p>
+                        <span
+                          className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                            isManualOverrideToday
+                              ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/30'
+                              : shopSettings.autoScheduleEnabled
+                              ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border-emerald-500/30'
+                              : 'bg-bg text-muted border-border'
+                          }`}
+                        >
+                          {modeBadge}
+                        </span>
+                      </div>
+                      <p className="text-xs text-muted truncate mt-0.5">
+                        {shopSettings.isOpen
+                          ? 'Customers can place orders right now'
+                          : 'New live orders are paused'}
+                        {shopSettings.autoScheduleEnabled &&
+                        shopSettings.openTime &&
+                        shopSettings.closeTime
+                          ? ` • Schedule: ${formatTime24To12Admin(shopSettings.openTime)} – ${formatTime24To12Admin(shopSettings.closeTime)}`
+                          : ''}
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2 shrink-0">
+                      {isManualOverrideToday && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleUpdateShopSettings({
+                              manualOverrideOpen: null,
+                              manualOverrideDate: null,
+                            })
+                          }
+                          className="min-h-[36px] px-3 rounded-xl border border-border bg-bg text-xs font-bold text-text hover:border-primary/50 cursor-pointer"
+                        >
+                          Resume Auto
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={shopSettings.isOpen}
+                        aria-label="Toggle shop open or closed"
+                        onClick={() =>
+                          handleUpdateShopSettings({
+                            isOpen: !shopSettings.isOpen,
+                          })
+                        }
+                        className={`min-h-[40px] px-3 rounded-full border text-xs font-bold flex items-center gap-2 transition-colors cursor-pointer shrink-0 ${
+                          shopSettings.isOpen
+                            ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border-emerald-500/30'
+                            : 'bg-red-500/15 text-red-600 border-red-500/30'
                         }`}
-                      />
-                    </span>
-                    <span>{shopSettings.isOpen ? 'OPEN' : 'CLOSED'}</span>
-                  </button>
-                </div>
-              )}
+                      >
+                        <span
+                          className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+                            shopSettings.isOpen ? 'bg-emerald-500' : 'bg-red-500/60'
+                          }`}
+                        >
+                          <span
+                            className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
+                              shopSettings.isOpen ? 'translate-x-4.5' : 'translate-x-1'
+                            }`}
+                          />
+                        </span>
+                        <span>{shopSettings.isOpen ? 'OPEN' : 'CLOSED'}</span>
+                      </button>
+                    </div>
+                  </div>
+                );
+              })()}
 
 
 
@@ -6418,6 +6732,325 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
           )}
 
           {/* ====================================================================
+              HISTORY SECTION (Archived Delivered & Refund-Tracked Orders by Date)
+          ==================================================================== */}
+          {activeSection === 'history' && (
+            <div className="space-y-4 min-w-0">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                <div className="min-w-0">
+                  <h2 className="text-lg font-bold text-text">Order History</h2>
+                  <p className="text-xs text-muted">
+                    Delivered and refund-tracked orders grouped by date (IST). Closed orders are archived automatically when the shop closes.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={historyViewData.filtered.length === 0}
+                  onClick={() => {
+                    const escapeCsv = (val: unknown) => {
+                      const s = String(val ?? '');
+                      return `"${s.replace(/"/g, '""')}"`;
+                    };
+                    const headers = [
+                      'OrderNumber',
+                      'DateIST',
+                      'Status',
+                      'CustomerName',
+                      'Phone',
+                      'DeliveryAddress',
+                      'Pincode',
+                      'Rider',
+                      'PaymentMethod',
+                      'PaymentStatus',
+                      'ItemTotal',
+                      'DeliveryFee',
+                      'GST',
+                      'Discount',
+                      'GrandTotal',
+                      'PlacedAt',
+                      'CompletedAt',
+                    ];
+                    const rows = historyViewData.filtered.map((h) =>
+                      [
+                        escapeCsv(h.orderNumber),
+                        escapeCsv(h.dateKeyIST),
+                        escapeCsv(h.status),
+                        escapeCsv(h.customerName),
+                        escapeCsv(h.customerPhone),
+                        escapeCsv(h.deliveryAddress),
+                        escapeCsv(h.deliveryPincode || ''),
+                        escapeCsv(h.deliveryBoyName || 'Unassigned'),
+                        escapeCsv(h.paymentMethod),
+                        escapeCsv(h.paymentStatus),
+                        h.itemTotal,
+                        h.deliveryFee,
+                        h.gstAmount,
+                        h.discountAmount,
+                        h.grandTotal,
+                        escapeCsv(h.placedAt),
+                        escapeCsv(h.refundedAt || h.deliveredAt || h.cancelledAt || h.archivedAt),
+                      ].join(',')
+                    );
+                    const csv = [headers.join(','), ...rows].join('\n');
+                    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `khana-pina-order-history-${todayIstKey}.csv`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                  }}
+                  className="min-h-[38px] px-3.5 rounded-xl border border-border bg-surface text-xs font-bold flex items-center gap-1.5 hover:bg-bg cursor-pointer disabled:opacity-50 shrink-0 self-start sm:self-auto"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Export CSV</span>
+                </button>
+              </div>
+
+              {/* Filter & Search Bar */}
+              <div className="bg-surface rounded-2xl border border-border p-3.5 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {(
+                    [
+                      { id: 'ALL', label: 'All Dates' },
+                      { id: 'TODAY', label: 'Today' },
+                      { id: '7D', label: 'Last 7 Days' },
+                      { id: '30D', label: 'Last 30 Days' },
+                      { id: 'DATE', label: 'Specific Date' },
+                    ] as const
+                  ).map((opt) => (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={() => {
+                        setHistoryRange(opt.id);
+                        if (opt.id === 'DATE' && !historyDateFilter) {
+                          setHistoryDateFilter(todayIstKey);
+                        }
+                      }}
+                      className={`min-h-[34px] px-3 rounded-xl text-xs font-bold cursor-pointer ${
+                        historyRange === opt.id
+                          ? 'bg-primary text-primary-contrast'
+                          : 'bg-bg text-muted hover:text-text border border-border'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                  {historyRange === 'DATE' && (
+                    <input
+                      type="date"
+                      aria-label="Filter history by IST date"
+                      value={historyDateFilter}
+                      onChange={(e) => setHistoryDateFilter(e.target.value)}
+                      className="min-h-[34px] px-2.5 rounded-xl border border-border bg-bg text-xs text-text"
+                    />
+                  )}
+                </div>
+
+                <div className="relative w-full lg:w-72">
+                  <Search className="w-4 h-4 text-muted absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <input
+                    type="text"
+                    value={historySearch}
+                    onChange={(e) => setHistorySearch(e.target.value)}
+                    placeholder="Search order #, customer, phone, rider..."
+                    className="w-full min-h-[38px] pl-9 pr-3 rounded-xl border border-border bg-bg text-xs text-text"
+                  />
+                </div>
+              </div>
+
+              {/* Summary KPIs */}
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                <div className="bg-surface rounded-2xl border border-border p-3.5">
+                  <p className="text-[11px] text-muted font-semibold">Delivered Orders</p>
+                  <p className="text-xl font-bold text-text mt-1">{historyViewData.deliveredCount}</p>
+                </div>
+                <div className="bg-surface rounded-2xl border border-border p-3.5">
+                  <p className="text-[11px] text-muted font-semibold">Delivered Revenue</p>
+                  <p className="text-xl font-bold text-emerald-600 mt-1">
+                    ₹{historyViewData.deliveredRevenue}
+                  </p>
+                </div>
+                <div className="bg-surface rounded-2xl border border-border p-3.5">
+                  <p className="text-[11px] text-muted font-semibold">COD vs Online (Delivered)</p>
+                  <p className="text-xs font-bold text-text mt-1.5">
+                    COD ₹{historyViewData.codRevenue} • Online ₹{historyViewData.onlineRevenue}
+                  </p>
+                </div>
+                <div className="bg-surface rounded-2xl border border-border p-3.5">
+                  <p className="text-[11px] text-muted font-semibold">Cancelled (Refund Tracked)</p>
+                  <p className="text-xs font-bold text-text mt-1.5">
+                    {historyViewData.refundPendingCount} pending • {historyViewData.refundedCount} refunded
+                  </p>
+                </div>
+              </div>
+
+              {/* Date-wise Grouped Records */}
+              {historyViewData.dayGroups.length === 0 ? (
+                <div className="bg-surface rounded-2xl border border-border p-8 text-center text-xs text-muted">
+                  No archived order history found.
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {historyViewData.dayGroups.map((group) => (
+                    <div
+                      key={group.dateKey}
+                      className="bg-surface rounded-2xl border border-border overflow-hidden"
+                    >
+                      {/* Day Header */}
+                      <div className="p-3.5 sm:p-4 border-b border-border bg-bg/40 space-y-2">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <h3 className="text-sm font-bold text-text">
+                              {group.formattedDate}
+                            </h3>
+                            {group.relativeLabel && (
+                              <span className="px-2 py-0.5 rounded-full bg-primary/15 text-primary text-[10px] font-bold">
+                                {group.relativeLabel}
+                              </span>
+                            )}
+                            <span className="px-2 py-0.5 rounded-full bg-surface border border-border text-[10px] font-semibold text-muted">
+                              Shop closed: {group.shopCloseTime}
+                            </span>
+                          </div>
+                          <div className="text-xs font-bold text-text">
+                            {group.deliveredCount} Delivered • ₹{group.deliveredRevenue}
+                          </div>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted">
+                          <span className="font-semibold text-text">
+                            COD ₹{group.codRevenue} • Online ₹{group.onlineRevenue}
+                          </span>
+                          {group.riderSummary.length > 0 && (
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <span>• Riders:</span>
+                              {group.riderSummary.map((r) => (
+                                <span
+                                  key={r.name}
+                                  className="px-2 py-0.5 rounded-md bg-surface border border-border text-text font-medium"
+                                >
+                                  {r.name}: {r.count}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                          {group.cancelledRefundOrders.length > 0 && (
+                            <span className="px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-700 dark:text-amber-300 font-bold">
+                              Cancelled with refund: {group.cancelledRefundOrders.length}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Orders for Date */}
+                      <div className="divide-y divide-border">
+                        {group.items.map((h) => {
+                          const isDelivered = h.status === 'DELIVERED';
+                          const isRefundPending = h.status === 'CANCELLED_REFUND_PENDING';
+                          const statusBadge = isDelivered
+                            ? {
+                                text: 'Delivered',
+                                cls: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400',
+                              }
+                            : isRefundPending
+                            ? {
+                                text: 'Cancelled • Refund Pending',
+                                cls: 'bg-amber-500/15 text-amber-700 dark:text-amber-300',
+                              }
+                            : {
+                                text: 'Cancelled • Refunded',
+                                cls: 'bg-sky-500/15 text-sky-700 dark:text-sky-300',
+                              };
+                          const completedAt =
+                            h.refundedAt || h.deliveredAt || h.cancelledAt || h.archivedAt;
+                          return (
+                            <div
+                              key={h.id}
+                              className="p-3.5 sm:p-4 flex flex-col sm:flex-row sm:items-start justify-between gap-3 text-xs min-w-0"
+                            >
+                              <div className="min-w-0 flex-1 space-y-1.5">
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <span className="font-bold text-text">{h.orderNumber}</span>
+                                  <span
+                                    className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${statusBadge.cls}`}
+                                  >
+                                    {statusBadge.text}
+                                  </span>
+                                  <span className="px-2 py-0.5 rounded-full bg-bg border border-border text-[10px] font-semibold text-muted">
+                                    {h.paymentMethod === 'COD' ? 'COD' : 'Online'} • {h.paymentStatus}
+                                  </span>
+                                </div>
+
+                                <p className="text-text font-medium break-words">
+                                  {h.customerName} • {h.customerPhone}
+                                </p>
+                                <p className="text-muted break-words">
+                                  {h.deliveryAddress}
+                                  {h.deliveryPincode ? ` - ${h.deliveryPincode}` : ''}
+                                </p>
+                                <p className="text-muted break-words">
+                                  {(h.items || [])
+                                    .map(
+                                      (it) =>
+                                        `${it.quantity}x ${it.itemName}${
+                                          it.variantName ? ` (${it.variantName})` : ''
+                                        }`
+                                    )
+                                    .join(', ')}
+                                </p>
+                                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted">
+                                  <span>Placed: {formatOrderPlacedAt(h.placedAt)}</span>
+                                  {completedAt && (
+                                    <span>
+                                      {isDelivered
+                                        ? 'Delivered'
+                                        : isRefundPending
+                                        ? 'Cancelled'
+                                        : 'Refunded'}
+                                      : {formatOrderPlacedAt(completedAt)}
+                                    </span>
+                                  )}
+                                  {h.deliveryBoyName && <span>Rider: {h.deliveryBoyName}</span>}
+                                  {h.cancelReason && (
+                                    <span className="text-amber-700 dark:text-amber-300">
+                                      Reason: {h.cancelReason}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+
+                              <div className="flex sm:flex-col items-center sm:items-end justify-between gap-2 shrink-0">
+                                <div className="text-right">
+                                  <p className="text-sm font-bold text-text">₹{h.grandTotal}</p>
+                                  {h.refundAmount ? (
+                                    <p className="text-[11px] text-sky-600 font-semibold">
+                                      Refunded ₹{h.refundAmount}
+                                    </p>
+                                  ) : null}
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => setHistoryDeleteConfirm(h)}
+                                  className="px-2.5 py-1.5 rounded-lg border border-red-500/30 text-red-600 font-semibold hover:bg-red-500/10 flex items-center gap-1 cursor-pointer"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                  <span>Delete</span>
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ====================================================================
               8. SETTINGS SECTION (My Account + Shop Info)
           ==================================================================== */}
           {activeSection === 'settings' && (
@@ -6685,6 +7318,185 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   </div>
                 </div>
               )}
+
+              {/* Shop Timing & Auto Schedule Card */}
+              {shopSettings && (() => {
+                const isManualOverrideToday = Boolean(
+                  shopSettings.autoScheduleEnabled &&
+                    shopSettings.manualOverrideOpen !== null &&
+                    shopSettings.manualOverrideOpen !== undefined &&
+                    shopSettings.manualOverrideDate === todayIstKey
+                );
+                return (
+                  <div className="bg-surface rounded-2xl border border-border p-4 space-y-4 min-w-0">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <Clock className="w-4 h-4 text-primary shrink-0" />
+                        <div>
+                          <h3 className="text-sm font-bold text-text">
+                            Shop Timing & Auto Schedule
+                          </h3>
+                          <p className="text-[11px] text-muted">
+                            Automatically open and close the shop in IST (Asia/Kolkata)
+                          </p>
+                        </div>
+                      </div>
+                      <span
+                        className={`px-2.5 py-1 rounded-full text-[11px] font-bold border ${
+                          isManualOverrideToday
+                            ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/30'
+                            : shopSettings.autoScheduleEnabled
+                            ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border-emerald-500/30'
+                            : 'bg-bg text-muted border-border'
+                        }`}
+                      >
+                        {isManualOverrideToday
+                          ? 'Manual Override Today'
+                          : shopSettings.autoScheduleEnabled
+                          ? 'Auto Schedule Active'
+                          : 'Manual Mode'}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        id="autoScheduleEnabledToggle"
+                        checked={scheduleDraft.autoScheduleEnabled}
+                        onChange={(e) =>
+                          setScheduleDraft((prev) => ({
+                            ...prev,
+                            autoScheduleEnabled: e.target.checked,
+                          }))
+                        }
+                      />
+                      <label
+                        htmlFor="autoScheduleEnabledToggle"
+                        className="text-xs font-semibold text-text cursor-pointer"
+                      >
+                        Auto Open & Close Shop Using Schedule
+                      </label>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label
+                          htmlFor="shop-open-time-input"
+                          className="block text-xs font-semibold text-muted mb-1"
+                        >
+                          Opening Time (IST)
+                        </label>
+                        <input
+                          id="shop-open-time-input"
+                          type="time"
+                          value={scheduleDraft.openTime}
+                          onChange={(e) =>
+                            setScheduleDraft((prev) => ({
+                              ...prev,
+                              openTime: e.target.value,
+                            }))
+                          }
+                          className="w-full min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs text-text"
+                        />
+                        <p className="text-[11px] text-muted mt-1">
+                          Opens at {formatTime24To12Admin(scheduleDraft.openTime)}
+                        </p>
+                      </div>
+
+                      <div>
+                        <label
+                          htmlFor="shop-close-time-input"
+                          className="block text-xs font-semibold text-muted mb-1"
+                        >
+                          Closing Time (IST)
+                        </label>
+                        <input
+                          id="shop-close-time-input"
+                          type="time"
+                          value={scheduleDraft.closeTime}
+                          onChange={(e) =>
+                            setScheduleDraft((prev) => ({
+                              ...prev,
+                              closeTime: e.target.value,
+                            }))
+                          }
+                          className="w-full min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs text-text"
+                        />
+                        <p className="text-[11px] text-muted mt-1">
+                          Closes at {formatTime24To12Admin(scheduleDraft.closeTime)}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <p className="text-xs font-semibold text-muted">
+                        Weekly Closed Days (Optional)
+                      </p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {WEEKDAY_SHORT_LABELS.map((dayLabel, dayIdx) => {
+                          const isClosedDay = scheduleDraft.closedDays.includes(dayIdx);
+                          return (
+                            <button
+                              key={dayLabel}
+                              type="button"
+                              onClick={() =>
+                                setScheduleDraft((prev) => ({
+                                  ...prev,
+                                  closedDays: prev.closedDays.includes(dayIdx)
+                                    ? prev.closedDays.filter((d) => d !== dayIdx)
+                                    : [...prev.closedDays, dayIdx].sort((a, b) => a - b),
+                                }))
+                              }
+                              className={`min-h-[34px] px-3 rounded-xl border text-xs font-bold cursor-pointer transition-colors ${
+                                isClosedDay
+                                  ? 'bg-red-500/15 text-red-600 border-red-500/40'
+                                  : 'bg-bg text-text border-border hover:border-primary/50'
+                              }`}
+                            >
+                              {dayLabel}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <p className="text-[11px] text-muted">
+                        Overnight windows (such as 11:00 AM to 2:00 AM) are supported. When the shop closes, delivered orders move to History automatically.
+                      </p>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          handleUpdateShopSettings({
+                            autoScheduleEnabled: scheduleDraft.autoScheduleEnabled,
+                            openTime: scheduleDraft.openTime,
+                            closeTime: scheduleDraft.closeTime,
+                            closedDays: scheduleDraft.closedDays,
+                          })
+                        }
+                        className="min-h-[40px] px-4 rounded-xl bg-primary text-primary-contrast text-xs font-bold cursor-pointer"
+                      >
+                        Save Shop Schedule
+                      </button>
+
+                      {isManualOverrideToday && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleUpdateShopSettings({
+                              manualOverrideOpen: null,
+                              manualOverrideDate: null,
+                            })
+                          }
+                          className="min-h-[40px] px-4 rounded-xl border border-border bg-bg text-xs font-bold text-text hover:border-primary/50 cursor-pointer"
+                        >
+                          Resume Auto Schedule
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
           )}
         </main>
@@ -8011,6 +8823,78 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 className="min-h-[40px] px-4 py-2 rounded-xl bg-red-600 text-white text-xs font-bold cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed"
               >
                 {isDeletingOrders ? 'Deleting...' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================
+          DELETE ORDER HISTORY ENTRY CONFIRMATION MODAL
+      ======================================================================== */}
+      {historyDeleteConfirm && (
+        <div
+          className="fixed inset-0 z-50 bg-black/60 flex items-end sm:items-center justify-center p-2.5 sm:p-4"
+          onClick={() => {
+            if (!isDeletingHistory) setHistoryDeleteConfirm(null);
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-md bg-surface rounded-2xl border border-border p-4 sm:p-5 space-y-3.5 text-text shadow-xl"
+          >
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <div className="w-8 h-8 rounded-xl bg-red-500/15 text-red-600 flex items-center justify-center shrink-0">
+                  <Trash2 className="w-4 h-4" />
+                </div>
+                <h3 className="text-base font-bold text-text break-words">
+                  Delete history entry permanently?
+                </h3>
+              </div>
+              <button
+                type="button"
+                disabled={isDeletingHistory}
+                onClick={() => setHistoryDeleteConfirm(null)}
+                aria-label="Close confirmation"
+                className="p-1 text-muted hover:text-text cursor-pointer shrink-0"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-3 rounded-xl bg-bg border border-border flex items-center justify-between gap-2 text-xs">
+              <div className="min-w-0">
+                <p className="font-bold text-text">{historyDeleteConfirm.orderNumber}</p>
+                <p className="text-muted truncate">
+                  {historyDeleteConfirm.customerName} • {historyDeleteConfirm.dateKeyIST}
+                </p>
+              </div>
+              <span className="font-bold text-sm text-text shrink-0">
+                ₹{historyDeleteConfirm.grandTotal}
+              </span>
+            </div>
+
+            <p className="text-xs text-muted">
+              This will permanently remove this archived order snapshot from Order History. Payment ledger records remain untouched.
+            </p>
+
+            <div className="flex flex-wrap justify-end gap-2 pt-1">
+              <button
+                type="button"
+                disabled={isDeletingHistory}
+                onClick={() => setHistoryDeleteConfirm(null)}
+                className="min-h-[40px] px-4 py-2 rounded-xl border border-border text-xs font-semibold cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isDeletingHistory}
+                onClick={() => handleDeleteHistoryOrder(historyDeleteConfirm.id)}
+                className="min-h-[40px] px-4 py-2 rounded-xl bg-red-600 text-white text-xs font-bold cursor-pointer disabled:opacity-50"
+              >
+                {isDeletingHistory ? 'Deleting...' : 'Delete'}
               </button>
             </div>
           </div>

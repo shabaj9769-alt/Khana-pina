@@ -9,9 +9,12 @@ import {
 } from './_lib/security.ts';
 import {
   checkFirebaseRateLimit,
+  computeEffectiveShopOpen,
   db,
   ensureHomeDataLoaded,
+  formatTime24To12,
   getHomeCache,
+  runScheduledShopAndArchiveCheck,
   setHomeCache,
 } from './_lib/store.ts';
 
@@ -25,6 +28,7 @@ export default async function handler(req: Request, res: Response) {
 
   try {
     const clientIp = getClientIp(req);
+    await runScheduledShopAndArchiveCheck({ minIntervalMs: 45_000 });
     const cached = getHomeCache();
     if (cached && Date.now() - cached.timestamp < 30_000) {
       const allowed = await checkFirebaseRateLimit('home', clientIp, 300, 15 * 60 * 1000);
@@ -32,8 +36,18 @@ export default async function handler(req: Request, res: Response) {
         res.status(429).json({ error: 'Too many requests from this IP, please try again shortly.' });
         return;
       }
+      const cachedObj = cached.payload as Record<string, any>;
+      const cachedSettings = cachedObj?.settings
+        ? {
+            ...cachedObj.settings,
+            isOpen: computeEffectiveShopOpen(db.settings),
+            opensAtText: db.settings.autoScheduleEnabled
+              ? formatTime24To12(db.settings.openTime || '11:00')
+              : db.settings.opensAtText || '11:00 AM',
+          }
+        : cachedObj?.settings;
       res.setHeader('Cache-Control', 'no-store, max-age=0, s-maxage=0');
-      res.json(cached.payload);
+      res.json(cachedSettings ? { ...cachedObj, settings: cachedSettings } : cached.payload);
       return;
     }
 
@@ -98,8 +112,13 @@ export default async function handler(req: Request, res: Response) {
 
     const rzpCfg = getRazorpayConfig();
 
+    const effectiveOpen = computeEffectiveShopOpen(db.settings, now);
     const normalizedSettings = {
       ...db.settings,
+      isOpen: effectiveOpen,
+      opensAtText: db.settings.autoScheduleEnabled
+        ? formatTime24To12(db.settings.openTime || '11:00')
+        : db.settings.opensAtText || '11:00 AM',
       gstEnabled:
         db.settings.gstEnabled !== undefined
           ? db.settings.gstEnabled

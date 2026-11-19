@@ -18,6 +18,8 @@ import type {
   ItemAddon,
   ItemVariant,
   MenuItem,
+  OrderHistoryRecord,
+  OrderHistoryStatus,
   OrderItemRecord,
   OrderRecord,
   OrderStatus,
@@ -118,6 +120,7 @@ export interface DatabaseState {
   couponUsages: CouponUsageRecord[];
   customers: Record<string, CustomerRecord>;
   orders: OrderRecord[];
+  orderHistory: OrderHistoryRecord[];
   payments: PaymentRecord[];
   refunds: RefundRecord[];
   deliveryBoys: DeliveryBoy[];
@@ -217,6 +220,13 @@ export function getInitialDatabaseState(options?: { forSeeding?: boolean }): Dat
       opensAtText: '11:00 AM',
       allowPreOrdersWhenClosed: true,
       holidaysNote: '',
+      autoScheduleEnabled: false,
+      openTime: '11:00',
+      closeTime: '23:30',
+      closedDays: [],
+      lastArchivedDate: '',
+      manualOverrideOpen: null,
+      manualOverrideDate: null,
       minOrderAmount: 199,
       gstEnabled: false,
       gstPercent: 5,
@@ -719,6 +729,7 @@ export function getInitialDatabaseState(options?: { forSeeding?: boolean }): Dat
         ],
       },
     ],
+    orderHistory: [],
     payments: isLiveMode
       ? []
       : [
@@ -832,6 +843,7 @@ let homeHydratePromise: Promise<void> | null = null;
 let lastAdminAuthHydratedAt = 0;
 let adminAuthHydratePromise: Promise<void> | null = null;
 let lastExpireStaleAt = 0;
+let lastScheduledCheckAt = 0;
 const HYDRATION_TTL_MS = 8000;
 
 export function invalidateHydration(): void {
@@ -900,17 +912,144 @@ export function buildPublicTrackingProjection(order: OrderRecord): PublicTrackin
   };
 }
 
-export function buildPublicShopStatus(settings: ShopSettings): PublicShopStatus {
+export function formatTime24To12(hhmm: string): string {
+  const match = /^(\d{1,2}):(\d{2})$/.exec((hhmm || '').trim());
+  if (!match) return hhmm || '11:00 AM';
+  let hour = Number(match[1]);
+  const minute = match[2];
+  if (Number.isNaN(hour) || hour < 0 || hour > 23) return hhmm;
+  const suffix = hour >= 12 ? 'PM' : 'AM';
+  hour = hour % 12;
+  if (hour === 0) hour = 12;
+  return `${hour}:${minute} ${suffix}`;
+}
+
+const kolkataClockFormatter = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'Asia/Kolkata',
+  weekday: 'short',
+  hour: '2-digit',
+  minute: '2-digit',
+  hourCycle: 'h23',
+});
+
+const WEEKDAY_MAP: Record<string, number> = {
+  Sun: 0,
+  Mon: 1,
+  Tue: 2,
+  Wed: 3,
+  Thu: 4,
+  Fri: 5,
+  Sat: 6,
+};
+
+export function getKolkataClockInfo(now: Date = new Date()): {
+  dateKeyIST: string;
+  weekdayIndex: number;
+  minutesOfDay: number;
+} {
+  const dateKeyIST = getKolkataDateKey(now);
+  const parts = kolkataClockFormatter.formatToParts(now);
+  let weekdayStr = 'Mon';
+  let hour = 0;
+  let minute = 0;
+  for (const part of parts) {
+    if (part.type === 'weekday') weekdayStr = part.value;
+    else if (part.type === 'hour') hour = Number(part.value) % 24;
+    else if (part.type === 'minute') minute = Number(part.value);
+  }
+  const weekdayIndex = WEEKDAY_MAP[weekdayStr] ?? 0;
+  return {
+    dateKeyIST,
+    weekdayIndex,
+    minutesOfDay: hour * 60 + minute,
+  };
+}
+
+function parseHhmmToMinutes(hhmm?: string): number | null {
+  const match = /^(\d{2}):(\d{2})$/.exec((hhmm || '').trim());
+  if (!match) return null;
+  const h = Number(match[1]);
+  const m = Number(match[2]);
+  if (h < 0 || h > 23 || m < 0 || m > 59) return null;
+  return h * 60 + m;
+}
+
+export function computeEffectiveShopOpen(
+  settings: ShopSettings,
+  now: Date = new Date()
+): boolean {
+  const { dateKeyIST, weekdayIndex, minutesOfDay } = getKolkataClockInfo(now);
+
+  if (
+    settings.manualOverrideOpen !== null &&
+    settings.manualOverrideOpen !== undefined &&
+    settings.manualOverrideDate === dateKeyIST
+  ) {
+    return Boolean(settings.manualOverrideOpen);
+  }
+
+  if (!settings.autoScheduleEnabled) {
+    return Boolean(settings.isOpen);
+  }
+
+  const openMins = parseHhmmToMinutes(settings.openTime || '11:00');
+  const closeMins = parseHhmmToMinutes(settings.closeTime || '23:30');
+  if (openMins === null || closeMins === null) {
+    return Boolean(settings.isOpen);
+  }
+
+  const closedDays = new Set(
+    (settings.closedDays || [])
+      .map((d) => Number(d))
+      .filter((d) => Number.isInteger(d) && d >= 0 && d <= 6)
+  );
+
+  if (openMins === closeMins) {
+    return !closedDays.has(weekdayIndex);
+  }
+
+  if (openMins < closeMins) {
+    if (closedDays.has(weekdayIndex)) return false;
+    return minutesOfDay >= openMins && minutesOfDay < closeMins;
+  }
+
+  // Overnight / midnight-crossing window (e.g., 18:00 to 02:00)
+  const inEveningSlot = minutesOfDay >= openMins && !closedDays.has(weekdayIndex);
+  const yesterdayIndex = (weekdayIndex + 6) % 7;
+  const inAfterMidnightSlot = minutesOfDay < closeMins && !closedDays.has(yesterdayIndex);
+  return inEveningSlot || inAfterMidnightSlot;
+}
+
+export function buildPublicShopStatus(
+  settings: ShopSettings,
+  now: Date = new Date()
+): PublicShopStatus {
+  const todayKeyIST = getKolkataDateKey(now);
+  const hasManualOverrideToday =
+    settings.manualOverrideOpen !== null &&
+    settings.manualOverrideOpen !== undefined &&
+    settings.manualOverrideDate === todayKeyIST;
+  const effectiveOpen = computeEffectiveShopOpen(settings, now);
+  const openTime = settings.openTime || '11:00';
+  const closeTime = settings.closeTime || '23:30';
+  const opensAtText = settings.autoScheduleEnabled
+    ? formatTime24To12(openTime)
+    : settings.opensAtText || '11:00 AM';
+
   return {
     shopName: settings.shopName,
-    isOpen: settings.isOpen,
+    isOpen: effectiveOpen,
     busyMode: settings.busyMode,
-    opensAtText: settings.opensAtText || '11:00 AM',
+    opensAtText,
     holidaysNote: settings.holidaysNote || '',
     allowPreOrdersWhenClosed: settings.allowPreOrdersWhenClosed !== false,
+    autoScheduleEnabled: Boolean(settings.autoScheduleEnabled),
+    openTime,
+    closeTime,
+    scheduleMode: settings.autoScheduleEnabled && !hasManualOverrideToday ? 'AUTO' : 'MANUAL',
     ...(settings.cityArea ? { cityArea: settings.cityArea } : {}),
     ...(settings.theme ? { theme: settings.theme } : {}),
-    updatedAt: new Date().toISOString(),
+    updatedAt: now.toISOString(),
   };
 }
 
@@ -1047,6 +1186,353 @@ export async function deleteClosedOrdersAtomic(ordersToDelete: OrderRecord[]): P
   };
 }
 
+function buildOrderHistorySnapshot(
+  order: OrderRecord,
+  status: OrderHistoryStatus,
+  options?: {
+    archivedAt?: string;
+    shopCloseTime?: string;
+    refundedAt?: string;
+    refundAmount?: number;
+  }
+): OrderHistoryRecord {
+  const nowIso = options?.archivedAt || new Date().toISOString();
+  const folder = status === 'DELIVERED' ? 'DELIVERED' : 'CANCELLED';
+  const dateKeyIST = getOrderArchiveDateKeyIST(order, folder);
+  const existing = db.orderHistory.find((h) => h.id === order.id);
+
+  return {
+    id: order.id,
+    orderId: order.id,
+    orderNumber: order.orderNumber,
+    trackingToken: order.trackingToken,
+    status,
+    customerName: order.customerName,
+    customerPhone: order.customerPhone,
+    deliveryAddress: order.deliveryAddress,
+    ...(order.deliveryPincode ? { deliveryPincode: order.deliveryPincode } : {}),
+    deliveryLat: order.deliveryLat,
+    deliveryLng: order.deliveryLng,
+    distanceKm: order.distanceKm,
+    deliveryBoyId: order.deliveryBoyId ?? null,
+    ...(order.deliveryBoyName ? { deliveryBoyName: order.deliveryBoyName } : {}),
+    ...(order.deliveryBoyPhone ? { deliveryBoyPhone: order.deliveryBoyPhone } : {}),
+    items: order.items,
+    itemTotal: order.itemTotal,
+    deliveryFee: order.deliveryFee,
+    gstAmount: order.gstAmount,
+    discountAmount: order.discountAmount,
+    couponCode: order.couponCode ?? null,
+    grandTotal: order.grandTotal,
+    paymentMethod: order.paymentMethod,
+    paymentStatus: status === 'CANCELLED_REFUNDED' ? 'REFUNDED' : order.paymentStatus,
+    refundPending: status === 'CANCELLED_REFUND_PENDING',
+    ...(options?.refundAmount !== undefined
+      ? { refundAmount: options.refundAmount }
+      : existing?.refundAmount !== undefined
+      ? { refundAmount: existing.refundAmount }
+      : {}),
+    ...(options?.refundedAt
+      ? { refundedAt: options.refundedAt }
+      : existing?.refundedAt
+      ? { refundedAt: existing.refundedAt }
+      : {}),
+    ...(order.cancelReason ? { cancelReason: order.cancelReason } : {}),
+    ...(order.cancelledBy ? { cancelledBy: order.cancelledBy } : {}),
+    placedAt: order.placedAt,
+    ...(order.deliveredAt ? { deliveredAt: order.deliveredAt } : {}),
+    ...(order.cancelledAt ? { cancelledAt: order.cancelledAt } : {}),
+    archivedAt: existing?.archivedAt || nowIso,
+    dateKeyIST,
+    shopCloseTime:
+      options?.shopCloseTime ||
+      existing?.shopCloseTime ||
+      (db.settings.autoScheduleEnabled
+        ? formatTime24To12(db.settings.closeTime || '23:30')
+        : 'Manual Close'),
+  };
+}
+
+function upsertOrderHistoryInMemory(record: OrderHistoryRecord): void {
+  const idx = db.orderHistory.findIndex((h) => h.id === record.id);
+  if (idx >= 0) {
+    db.orderHistory[idx] = record;
+  } else {
+    db.orderHistory.unshift(record);
+  }
+  db.orderHistory.sort(
+    (a, b) =>
+      new Date(b.archivedAt || b.placedAt).getTime() -
+      new Date(a.archivedAt || a.placedAt).getTime()
+  );
+}
+
+export async function syncCancelledPendingRefundToHistory(
+  order: OrderRecord
+): Promise<OrderHistoryRecord | null> {
+  if (
+    (order.status !== 'CANCELLED' && order.status !== 'REJECTED') ||
+    order.paymentMethod !== 'RAZORPAY' ||
+    order.paymentStatus === 'REFUNDED' ||
+    (!order.refundPending && order.paymentStatus !== 'PAID')
+  ) {
+    return null;
+  }
+
+  const snapshot = buildOrderHistorySnapshot(order, 'CANCELLED_REFUND_PENDING');
+  await getRtdb().ref(`orderHistory/${snapshot.id}`).set(snapshot);
+  upsertOrderHistoryInMemory(snapshot);
+  refreshHydrationCache();
+  return snapshot;
+}
+
+function buildActiveOrderRemovalUpdates(order: OrderRecord): Record<string, null> {
+  const updates: Record<string, null> = {
+    [`orders/${order.id}`]: null,
+    [`adminOrders/${order.id}`]: null,
+  };
+  if (order.deliveryBoyId) {
+    updates[`riderOrders/${order.deliveryBoyId}/${order.id}`] = null;
+  }
+  if (order.trackingToken) {
+    updates[`tracking/${order.trackingToken}`] = null;
+  }
+  return updates;
+}
+
+export async function settleRefundOrderHistoryAndRemoveActive(
+  order: OrderRecord,
+  nowIso: string,
+  refundAmount?: number
+): Promise<OrderHistoryRecord> {
+  const rtdb = getRtdb();
+  const snapshot = buildOrderHistorySnapshot(order, 'CANCELLED_REFUNDED', {
+    archivedAt: nowIso,
+    refundedAt: nowIso,
+    refundAmount: refundAmount ?? order.grandTotal,
+  });
+
+  // Write history snapshot first and confirm success before deleting active order nodes
+  await rtdb.ref(`orderHistory/${snapshot.id}`).set(snapshot);
+  upsertOrderHistoryInMemory(snapshot);
+
+  const removals = buildActiveOrderRemovalUpdates(order);
+  await rtdb.ref().update(removals);
+  db.orders = db.orders.filter((o) => o.id !== order.id);
+  refreshHydrationCache();
+  return snapshot;
+}
+
+export function isRefundSettledCancelledOrder(order: OrderRecord): boolean {
+  return (
+    (order.status === 'CANCELLED' || order.status === 'REJECTED') &&
+    order.paymentStatus === 'REFUNDED'
+  );
+}
+
+export function isRefundPendingCancelledOrder(order: OrderRecord): boolean {
+  return (
+    (order.status === 'CANCELLED' || order.status === 'REJECTED') &&
+    order.paymentMethod === 'RAZORPAY' &&
+    order.paymentStatus !== 'REFUNDED' &&
+    Boolean(order.refundPending || order.paymentStatus === 'PAID')
+  );
+}
+
+export async function archiveAndClearClosedOrders(options?: {
+  now?: Date;
+  force?: boolean;
+  cleanupDeliveredAndCodCancelled?: boolean;
+}): Promise<{
+  archivedCount: number;
+  deletedCancelledCount: number;
+  refundCleanedCount: number;
+}> {
+  await ensureFirebaseSeeded();
+  const rtdb = getRtdb();
+  const now = options?.now || new Date();
+  const nowIso = now.toISOString();
+  const todayKeyIST = getKolkataDateKey(now);
+  const runDayCleanup = options?.cleanupDeliveredAndCodCancelled !== false;
+
+  let archivedCount = 0;
+  let deletedCancelledCount = 0;
+  let refundCleanedCount = 0;
+
+  // B3: Always remove refunded cancelled orders from active db.orders & finalize orderHistory
+  const refundedOrders = db.orders.filter(isRefundSettledCancelledOrder);
+  for (const ord of refundedOrders) {
+    const existingRefund = db.refunds.find((r) => r.orderId === ord.id);
+    await settleRefundOrderHistoryAndRemoveActive(
+      ord,
+      existingRefund?.createdAt || ord.updatedAt || nowIso,
+      existingRefund?.amount
+    );
+    refundCleanedCount += 1;
+  }
+
+  // B2: Ensure online-paid refund-pending cancelled orders exist in orderHistory while waiting in active db.orders
+  const pendingRefundOrders = db.orders.filter(isRefundPendingCancelledOrder);
+  for (const ord of pendingRefundOrders) {
+    if (!db.orderHistory.some((h) => h.id === ord.id && h.status === 'CANCELLED_REFUND_PENDING')) {
+      await syncCancelledPendingRefundToHistory(ord);
+    }
+  }
+
+  // A & B1: Idempotent per IST date unless forced
+  if (runDayCleanup && (options?.force || db.settings.lastArchivedDate !== todayKeyIST)) {
+    const shopCloseTime = db.settings.autoScheduleEnabled
+      ? formatTime24To12(db.settings.closeTime || '23:30')
+      : 'Manual Close';
+
+    // A: Archive DELIVERED orders first (write to orderHistory, confirm write, then remove active paths; keep payments/reviews/refunds)
+    const deliveredOrders = db.orders.filter((o) => o.status === 'DELIVERED');
+    for (const ord of deliveredOrders) {
+      const snapshot = buildOrderHistorySnapshot(ord, 'DELIVERED', {
+        archivedAt: nowIso,
+        shopCloseTime,
+      });
+      await rtdb.ref(`orderHistory/${snapshot.id}`).set(snapshot);
+      upsertOrderHistoryInMemory(snapshot);
+
+      await rtdb.ref().update(buildActiveOrderRemovalUpdates(ord));
+      db.orders = db.orders.filter((o) => o.id !== ord.id);
+      archivedCount += 1;
+    }
+
+    // B1: Delete non-refundable (COD or unpaid) CANCELLED / REJECTED orders WITHOUT saving to orderHistory
+    const disposableCancelled = db.orders.filter(
+      (o) =>
+        (o.status === 'CANCELLED' || o.status === 'REJECTED') &&
+        !isRefundPendingCancelledOrder(o) &&
+        !isRefundSettledCancelledOrder(o)
+    );
+    for (const ord of disposableCancelled) {
+      await rtdb.ref().update(buildActiveOrderRemovalUpdates(ord));
+      db.orders = db.orders.filter((o) => o.id !== ord.id);
+      deletedCancelledCount += 1;
+      await logAudit(
+        'system@khanapina.in',
+        'owner',
+        'CANCELLED_ORDER_CLEANED',
+        `Cleared cancelled order ${ord.orderNumber} (₹${ord.grandTotal}) — Reason: ${ord.cancelReason || ord.status}`,
+        '127.0.0.1'
+      );
+    }
+
+    db.settings.lastArchivedDate = todayKeyIST;
+    await rtdb.ref('settings/lastArchivedDate').set(todayKeyIST);
+  }
+
+  refreshHydrationCache();
+  return { archivedCount, deletedCancelledCount, refundCleanedCount };
+}
+
+export async function runScheduledShopAndArchiveCheck(options?: {
+  minIntervalMs?: number;
+  now?: Date;
+}): Promise<{
+  shopOpen: boolean;
+  archivedCount: number;
+  deletedCancelledCount: number;
+  refundCleanedCount: number;
+}> {
+  const minIntervalMs = options?.minIntervalMs ?? 0;
+  const now = options?.now || new Date();
+  if (minIntervalMs > 0 && Date.now() - lastScheduledCheckAt < minIntervalMs) {
+    return {
+      shopOpen: computeEffectiveShopOpen(db.settings, now),
+      archivedCount: 0,
+      deletedCancelledCount: 0,
+      refundCleanedCount: 0,
+    };
+  }
+
+  await ensureFirebaseSeeded();
+  lastScheduledCheckAt = Date.now();
+  const rtdb = getRtdb();
+  const todayKeyIST = getKolkataDateKey(now);
+
+  // Clear expired manual override from a previous IST day
+  let settingsDirty = false;
+  if (
+    db.settings.manualOverrideOpen !== null &&
+    db.settings.manualOverrideOpen !== undefined &&
+    db.settings.manualOverrideDate &&
+    db.settings.manualOverrideDate !== todayKeyIST
+  ) {
+    db.settings.manualOverrideOpen = null;
+    db.settings.manualOverrideDate = null;
+    settingsDirty = true;
+  }
+
+  const effectiveOpen = computeEffectiveShopOpen(db.settings, now);
+  if (db.settings.isOpen !== effectiveOpen) {
+    db.settings.isOpen = effectiveOpen;
+    settingsDirty = true;
+  }
+  if (db.settings.autoScheduleEnabled && db.settings.openTime) {
+    const derivedOpensAt = formatTime24To12(db.settings.openTime);
+    if (db.settings.opensAtText !== derivedOpensAt) {
+      db.settings.opensAtText = derivedOpensAt;
+      settingsDirty = true;
+    }
+  }
+
+  if (settingsDirty) {
+    await rtdb.ref().update({
+      settings: db.settings,
+      publicStatus: buildPublicShopStatus(db.settings, now),
+    });
+    clearHomeCache();
+  }
+
+  const archiveRes = await archiveAndClearClosedOrders({
+    now,
+    cleanupDeliveredAndCodCancelled: !effectiveOpen,
+  });
+
+  return {
+    shopOpen: effectiveOpen,
+    ...archiveRes,
+  };
+}
+
+export function archivedHistoryToReadOnlyOrder(hist: OrderHistoryRecord): OrderRecord {
+  return {
+    id: hist.id,
+    orderNumber: hist.orderNumber,
+    trackingToken: hist.trackingToken,
+    deliveryOtp: '0000',
+    customerName: hist.customerName,
+    customerPhone: hist.customerPhone,
+    customerIp: '0.0.0.0',
+    deliveryAddress: hist.deliveryAddress,
+    ...(hist.deliveryPincode ? { deliveryPincode: hist.deliveryPincode } : {}),
+    deliveryLat: hist.deliveryLat ?? 0,
+    deliveryLng: hist.deliveryLng ?? 0,
+    distanceKm: hist.distanceKm ?? 0,
+    orderNotes: '',
+    scheduledFor: null,
+    status: 'DELIVERED',
+    paymentMethod: hist.paymentMethod,
+    paymentStatus: hist.paymentStatus,
+    itemTotal: hist.itemTotal,
+    deliveryFee: hist.deliveryFee,
+    gstAmount: hist.gstAmount,
+    discountAmount: hist.discountAmount,
+    couponCode: hist.couponCode ?? null,
+    grandTotal: hist.grandTotal,
+    deliveryBoyId: hist.deliveryBoyId ?? null,
+    deliveryBoyName: hist.deliveryBoyName,
+    deliveryBoyPhone: hist.deliveryBoyPhone,
+    placedAt: hist.placedAt,
+    deliveredAt: hist.deliveredAt || hist.archivedAt,
+    items: hist.items,
+    isArchived: true,
+  };
+}
+
 function recordToArray<T>(val: any): T[] {
   if (!val) return [];
   if (Array.isArray(val)) return val.filter(Boolean);
@@ -1097,6 +1583,15 @@ function applySettingsAndZoneToDb(rawSettings: any, rawDeliveryZone: any): void 
       ...db.settings,
       ...rawSettings,
       gstEnabled: normalizedGstEnabled,
+      autoScheduleEnabled: Boolean(rawSettings.autoScheduleEnabled),
+      openTime: rawSettings.openTime || db.settings.openTime || '11:00',
+      closeTime: rawSettings.closeTime || db.settings.closeTime || '23:30',
+      closedDays: recordToArray<number>(rawSettings.closedDays)
+        .map((d) => Number(d))
+        .filter((d) => Number.isInteger(d) && d >= 0 && d <= 6),
+      lastArchivedDate: rawSettings.lastArchivedDate || '',
+      manualOverrideOpen: rawSettings.manualOverrideOpen ?? null,
+      manualOverrideDate: rawSettings.manualOverrideDate ?? null,
       theme: normalizeThemeConfig(rawSettings?.theme),
       aboutPage: normalizedAboutPage,
     };
@@ -1269,7 +1764,15 @@ export async function getTrackingRecordFast(trackingToken: string): Promise<{
 
   if (!rtdb.isLiveFirebase || (firebaseSeeded && now - lastHydratedAt < HYDRATION_TTL_MS)) {
     await ensureFirebaseSeeded();
-    const order = db.orders.find((o) => o.trackingToken === trackingToken) || null;
+    let order = db.orders.find((o) => o.trackingToken === trackingToken) || null;
+    if (!order) {
+      const archivedDelivered = db.orderHistory.find(
+        (h) => h.trackingToken === trackingToken && h.status === 'DELIVERED'
+      );
+      if (archivedDelivered) {
+        order = archivedHistoryToReadOnlyOrder(archivedDelivered);
+      }
+    }
     const payment = order ? db.payments.find((p) => p.orderId === order.id) : undefined;
     const review = order ? db.reviews.find((r) => r.orderId === order.id) : undefined;
     return {
@@ -1294,7 +1797,15 @@ export async function getTrackingRecordFast(trackingToken: string): Promise<{
 
   if (!settingsSnap.exists()) {
     await ensureFirebaseSeeded();
-    const order = db.orders.find((o) => o.trackingToken === trackingToken) || null;
+    let order = db.orders.find((o) => o.trackingToken === trackingToken) || null;
+    if (!order) {
+      const archivedDelivered = db.orderHistory.find(
+        (h) => h.trackingToken === trackingToken && h.status === 'DELIVERED'
+      );
+      if (archivedDelivered) {
+        order = archivedHistoryToReadOnlyOrder(archivedDelivered);
+      }
+    }
     const payment = order ? db.payments.find((p) => p.orderId === order.id) : undefined;
     const review = order ? db.reviews.find((r) => r.orderId === order.id) : undefined;
     return {
@@ -1314,7 +1825,15 @@ export async function getTrackingRecordFast(trackingToken: string): Promise<{
 
   if (!trackingSnap.exists()) {
     await ensureFirebaseSeeded();
-    const order = db.orders.find((o) => o.trackingToken === trackingToken) || null;
+    let order = db.orders.find((o) => o.trackingToken === trackingToken) || null;
+    if (!order) {
+      const archivedDelivered = db.orderHistory.find(
+        (h) => h.trackingToken === trackingToken && h.status === 'DELIVERED'
+      );
+      if (archivedDelivered) {
+        order = archivedHistoryToReadOnlyOrder(archivedDelivered);
+      }
+    }
     const payment = order ? db.payments.find((p) => p.orderId === order.id) : undefined;
     const review = order ? db.reviews.find((r) => r.orderId === order.id) : undefined;
     return {
@@ -1338,16 +1857,22 @@ export async function getTrackingRecordFast(trackingToken: string): Promise<{
   ]);
 
   const rawOrder = orderSnap.val() as OrderRecord | null;
-  const order = rawOrder ? normalizeOrderRecordFromRtdb(rawOrder) : null;
+  let order = rawOrder ? normalizeOrderRecordFromRtdb(rawOrder) : null;
   if (order) {
-    const idx = db.orders.findIndex((o) => o.id === order.id);
+    const idx = db.orders.findIndex((o) => o.id === order!.id);
     if (idx >= 0) db.orders[idx] = order;
     else db.orders.unshift(order);
+  } else {
+    const histSnap = await rtdb.ref(`orderHistory/${projection.orderId}`).get();
+    const histVal = histSnap.val() as OrderHistoryRecord | null;
+    if (histVal && histVal.status === 'DELIVERED' && histVal.trackingToken === trackingToken) {
+      order = archivedHistoryToReadOnlyOrder(histVal);
+    }
   }
   const allReviews = recordToArray<ReviewRecord>(reviewsSnap.val());
   const allPayments = recordToArray<PaymentRecord>(paymentsSnap.val());
-  const review = order ? allReviews.find((r) => r.orderId === order.id) : undefined;
-  const payment = order ? allPayments.find((p) => p.orderId === order.id) : undefined;
+  const review = order ? allReviews.find((r) => r.orderId === order!.id) : undefined;
+  const payment = order ? allPayments.find((p) => p.orderId === order!.id) : undefined;
   if (review && !db.reviews.some((r) => r.id === review.id)) {
     db.reviews.unshift(review);
   }
@@ -1470,6 +1995,7 @@ export async function ensureFirebaseSeeded(force = false): Promise<DatabaseState
         couponUsages: arrayToRecordById(initial.couponUsages, 'id'),
         customers: initial.customers,
         orders: arrayToRecordById(initial.orders, 'id'),
+        orderHistory: arrayToRecordById(initial.orderHistory, 'id'),
         payments: arrayToRecordById(initial.payments, 'id'),
         paymentLocks: paymentLocksMap,
         webhookEvents: webhookEventsMap,
@@ -1528,6 +2054,11 @@ export async function ensureFirebaseSeeded(force = false): Promise<DatabaseState
     db.orders = recordToArray<OrderRecord>(rootVal.orders)
       .map(normalizeOrderRecordFromRtdb)
       .sort((a, b) => new Date(b.placedAt).getTime() - new Date(a.placedAt).getTime());
+    db.orderHistory = recordToArray<OrderHistoryRecord>(rootVal.orderHistory).sort(
+      (a, b) =>
+        new Date(b.archivedAt || b.placedAt).getTime() -
+        new Date(a.archivedAt || a.placedAt).getTime()
+    );
     db.payments = recordToArray<PaymentRecord>(rootVal.payments).sort(
       (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
     );
@@ -1588,6 +2119,7 @@ export async function persistFullStateToFirebase(): Promise<void> {
     couponUsages: arrayToRecordById(db.couponUsages, 'id'),
     customers: db.customers,
     orders: arrayToRecordById(db.orders, 'id'),
+    orderHistory: arrayToRecordById(db.orderHistory, 'id'),
     payments: arrayToRecordById(db.payments, 'id'),
     refunds: arrayToRecordById(db.refunds, 'id'),
     deliveryBoys: arrayToRecordById(db.deliveryBoys, 'id'),

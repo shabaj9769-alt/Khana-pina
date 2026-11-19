@@ -8,6 +8,8 @@ export type OrderStatus =
   | 'CANCELLED'
   | 'REJECTED';
 
+export type OrderHistoryStatus = 'DELIVERED' | 'CANCELLED_REFUND_PENDING' | 'CANCELLED_REFUNDED';
+
 export type PaymentMethod = 'RAZORPAY' | 'COD';
 export type PaymentStatus = 'PENDING' | 'PAID' | 'FAILED' | 'REFUNDED' | 'FLAGGED' | 'LATE_CAPTURE';
 export type AdminRole = 'owner';
@@ -139,6 +141,13 @@ export interface ShopSettings {
   busyMode: boolean;
   weeklyTimings: string;
   opensAtText?: string;
+  autoScheduleEnabled?: boolean;
+  openTime?: string;
+  closeTime?: string;
+  closedDays?: number[];
+  lastArchivedDate?: string;
+  manualOverrideOpen?: boolean | null;
+  manualOverrideDate?: string | null;
   heroSubtitle?: string;
   allowPreOrdersWhenClosed?: boolean;
   holidaysNote: string;
@@ -241,6 +250,7 @@ export interface OrderRecord {
   customerPhone: string;
   customerIp: string;
   deliveryAddress: string;
+  deliveryPincode?: string;
   deliveryLat: number;
   deliveryLng: number;
   distanceKm: number;
@@ -278,6 +288,47 @@ export interface OrderRecord {
   gstPercent?: number;
   items: OrderItemRecord[];
   razorpayOrderId?: string;
+  isArchived?: boolean;
+}
+
+export interface OrderHistoryRecord {
+  id: string;
+  orderId: string;
+  orderNumber: string;
+  trackingToken: string;
+  status: OrderHistoryStatus;
+  items: OrderItemRecord[];
+  paymentMethod: PaymentMethod;
+  paymentStatus: PaymentStatus;
+  razorpayOrderId?: string;
+  razorpayPaymentId?: string;
+  deliveryBoyId: string | null;
+  deliveryBoyName?: string;
+  deliveryBoyPhone?: string;
+  placedAt: string;
+  deliveredAt?: string;
+  cancelledAt?: string;
+  cancelReason?: string;
+  cancelledBy?: 'customer' | 'kitchen' | 'payment_failed' | 'auto_expired';
+  refundPending?: boolean;
+  refundedAt?: string;
+  customerName: string;
+  customerPhone: string;
+  deliveryAddress: string;
+  deliveryPincode?: string;
+  deliveryLat?: number;
+  deliveryLng?: number;
+  distanceKm?: number;
+  itemTotal: number;
+  deliveryFee: number;
+  gstAmount: number;
+  discountAmount: number;
+  couponCode?: string | null;
+  grandTotal: number;
+  refundAmount?: number;
+  archivedAt: string;
+  shopCloseTime?: string;
+  dateKeyIST: string;
 }
 
 export interface PaymentRecord {
@@ -463,6 +514,10 @@ export interface PublicShopStatus {
   opensAtText: string;
   holidaysNote: string;
   allowPreOrdersWhenClosed: boolean;
+  autoScheduleEnabled?: boolean;
+  openTime?: string;
+  closeTime?: string;
+  scheduleMode?: 'AUTO' | 'MANUAL';
   cityArea?: string;
   theme?: StorefrontThemeConfig;
   updatedAt: string;

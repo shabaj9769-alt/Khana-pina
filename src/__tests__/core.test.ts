@@ -23,10 +23,20 @@ import {
 } from '../../server';
 import { ACCESS_TTL_SEC, hashPasswordScrypt, signJwt } from '../../api/_lib/security';
 import { getRtdb } from '../../api/_lib/firebaseAdmin';
-import { buildPublicTrackingProjection, getInitialDatabaseState } from '../../api/_lib/store';
+import {
+  archiveAndClearClosedOrders,
+  buildPublicTrackingProjection,
+  computeEffectiveShopOpen,
+  formatTime24To12,
+  getInitialDatabaseState,
+  getKolkataDateKey,
+  syncCancelledPendingRefundToHistory,
+} from '../../api/_lib/store';
 import adminHandler from '../../api/admin';
+import ordersHandler from '../../api/orders';
 import paymentsHandler from '../../api/payments';
 import riderHandler from '../../api/rider';
+import trackHandler from '../../api/track';
 import {
   formatOrderDate,
   formatOrderPlacedAt,
@@ -1072,5 +1082,399 @@ describe('Khana Pina Core & Bypass-Proof Razorpay Suite', () => {
       globalThis.fetch = origFetch;
     }
   });
+
+  it('22. computeEffectiveShopOpen handles IST windows, midnight crossing, closedDays, and today-scoped manualOverrideOpen', () => {
+    expect(formatTime24To12('11:00')).toBe('11:00 AM');
+    expect(formatTime24To12('23:30')).toBe('11:30 PM');
+    expect(formatTime24To12('00:05')).toBe('12:05 AM');
+
+    const baseSettings = {
+      ...db.settings,
+      autoScheduleEnabled: true,
+      openTime: '11:00',
+      closeTime: '23:30',
+      closedDays: [] as number[],
+      manualOverrideOpen: null as boolean | null,
+      manualOverrideDate: null as string | null,
+    };
+
+    // 10:30 IST on 2026-11-19 (05:00 UTC) -> Closed
+    const ist1030 = new Date('2026-11-19T05:00:00.000Z');
+    expect(computeEffectiveShopOpen(baseSettings, ist1030)).toBe(false);
+
+    // 14:00 IST on 2026-11-19 (08:30 UTC) -> Open
+    const ist1400 = new Date('2026-11-19T08:30:00.000Z');
+    expect(computeEffectiveShopOpen(baseSettings, ist1400)).toBe(true);
+
+    // Overnight schedule: 18:00 to 02:00 IST next day
+    const overnight = { ...baseSettings, openTime: '18:00', closeTime: '02:00' };
+    // 22:00 IST on 2026-11-19 (16:30 UTC) -> Open
+    expect(computeEffectiveShopOpen(overnight, new Date('2026-11-19T16:30:00.000Z'))).toBe(true);
+    // 01:30 IST on 2026-11-20 (20:00 UTC on 2026-11-19) -> Open (within yesterday's overnight shift)
+    expect(computeEffectiveShopOpen(overnight, new Date('2026-11-19T20:00:00.000Z'))).toBe(true);
+    // 02:30 IST on 2026-11-20 (21:00 UTC on 2026-11-19) -> Closed
+    expect(computeEffectiveShopOpen(overnight, new Date('2026-11-19T21:00:00.000Z'))).toBe(false);
+
+    // Closed days: 2026-11-19 is Thursday (day 4)
+    const thursdayClosed = { ...overnight, closedDays: [4] };
+    expect(computeEffectiveShopOpen(thursdayClosed, ist1400)).toBe(false);
+    // Early next morning (Fri 01:30 IST) also stays closed if Thursday was closed
+    expect(computeEffectiveShopOpen(thursdayClosed, new Date('2026-11-19T20:00:00.000Z'))).toBe(false);
+
+    // Manual override applies only on matching IST date
+    const todayIst = getKolkataDateKey(ist1030);
+    expect(
+      computeEffectiveShopOpen(
+        { ...baseSettings, manualOverrideOpen: true, manualOverrideDate: todayIst },
+        ist1030
+      )
+    ).toBe(true);
+    // Stale override from an earlier IST date is ignored
+    expect(
+      computeEffectiveShopOpen(
+        { ...baseSettings, manualOverrideOpen: true, manualOverrideDate: '2026-11-01' },
+        ist1030
+      )
+    ).toBe(false);
+  });
+
+  it('23. POST /api/orders validates 6-digit deliveryPincode and uses English outside-zone error', async () => {
+    await ensureFirebaseSeeded();
+    const firstItem = db.menuItems.find((m) => m.inStock)!;
+    const prevOpen = db.settings.isOpen;
+    const prevAuto = db.settings.autoScheduleEnabled;
+    db.settings.autoScheduleEnabled = false;
+    db.settings.isOpen = true;
+
+    const callOrders = async (body: Record<string, unknown>) => {
+      let statusCode = 200;
+      let jsonBody: any = null;
+      const req = {
+        method: 'POST',
+        originalUrl: '/api/orders',
+        url: '/api/orders',
+        headers: { 'x-forwarded-for': '127.0.0.99' },
+        body,
+        socket: { remoteAddress: '127.0.0.99' },
+      } as any;
+      const res = {
+        setHeader: () => res,
+        status: (code: number) => {
+          statusCode = code;
+          return res;
+        },
+        json: (payload: any) => {
+          jsonBody = payload;
+          return res;
+        },
+        end: () => res,
+      } as any;
+      await ordersHandler(req, res);
+      return { statusCode, jsonBody };
+    };
+
+    try {
+      const badPin = await callOrders({
+        customerName: 'Pincode Tester',
+        customerPhone: '9876543211',
+        deliveryAddress: '12 Park Street',
+        deliveryPincode: '123',
+        deliveryLat: db.deliveryZone.shopLat,
+        deliveryLng: db.deliveryZone.shopLng,
+        paymentMethod: 'COD',
+        items: [{ menuItemId: firstItem.id, quantity: 1 }],
+      });
+      expect(badPin.statusCode).toBe(400);
+      expect(badPin.jsonBody.error).toMatch(/6-digit pincode/i);
+
+      const outsideZone = await callOrders({
+        customerName: 'Zone Tester',
+        customerPhone: '9876543212',
+        deliveryAddress: '12 Far Street',
+        deliveryPincode: '400001',
+        deliveryLat: db.deliveryZone.shopLat + 0.8,
+        deliveryLng: db.deliveryZone.shopLng + 0.8,
+        paymentMethod: 'COD',
+        items: [{ menuItemId: firstItem.id, quantity: 1 }],
+      });
+      expect(outsideZone.statusCode).toBe(400);
+      expect(outsideZone.jsonBody.error).toBe('Delivery is not available at this location.');
+    } finally {
+      db.settings.isOpen = prevOpen;
+      db.settings.autoScheduleEnabled = prevAuto;
+    }
+  });
+
+  it('24. archiveAndClearClosedOrders archives DELIVERED orders cleanly, removes active nodes, preserves payments, and is idempotent per IST date', async () => {
+    const orderId = `ord_arch_deliv_${Date.now()}`;
+    const { order, payment } = await seedTestOrderAndPayment({
+      orderId,
+      orderNumber: 'AAN-9601',
+      razorpayOrderId: `rzp_${orderId}`,
+      grandTotal: 490,
+      status: 'DELIVERED',
+      paymentStatus: 'PAID',
+    });
+    order.deliveredAt = new Date().toISOString();
+    order.deliveryPincode = '400050';
+    await syncOrderRealtimePaths(order);
+
+    const prevLastArchived = db.settings.lastArchivedDate;
+    db.settings.lastArchivedDate = '';
+    try {
+      const firstRun = await archiveAndClearClosedOrders();
+      expect(firstRun.archivedCount).toBeGreaterThanOrEqual(1);
+      expect(db.orders.some((o) => o.id === order.id)).toBe(false);
+
+      const histEntry = db.orderHistory.find((h) => h.id === order.id);
+      expect(histEntry).toBeTruthy();
+      expect(histEntry?.orderId).toBe(order.id);
+      expect(histEntry?.status).toBe('DELIVERED');
+      expect(histEntry?.deliveryPincode).toBe('400050');
+
+      const rtdb = getRtdb();
+      const [activeSnap, histSnap, paySnap] = await Promise.all([
+        rtdb.ref(`orders/${order.id}`).get(),
+        rtdb.ref(`orderHistory/${order.id}`).get(),
+        rtdb.ref(`payments/${payment.id}`).get(),
+      ]);
+      expect(activeSnap.exists()).toBe(false);
+      expect(histSnap.exists()).toBe(true);
+      expect(paySnap.exists()).toBe(true);
+
+      // Idempotent second run on same IST date skips re-archiving unless forced
+      const secondRun = await archiveAndClearClosedOrders();
+      expect(secondRun.archivedCount).toBe(0);
+    } finally {
+      db.settings.lastArchivedDate = prevLastArchived;
+      db.orderHistory = db.orderHistory.filter((h) => h.id !== order.id);
+    }
+  });
+
+  it('25. archiveAndClearClosedOrders deletes COD cancelled orders without saving to orderHistory and logs audit entry', async () => {
+    const orderId = `ord_cod_clean_${Date.now()}`;
+    const { order } = await seedTestOrderAndPayment({
+      orderId,
+      orderNumber: 'AAN-9602',
+      razorpayOrderId: '',
+      grandTotal: 280,
+      status: 'CANCELLED',
+      paymentStatus: 'PENDING',
+    });
+    order.paymentMethod = 'COD';
+    order.cancelReason = 'Customer changed mind';
+    order.cancelledAt = new Date().toISOString();
+    await syncOrderRealtimePaths(order);
+
+    const prevLastArchived = db.settings.lastArchivedDate;
+    db.settings.lastArchivedDate = '';
+    try {
+      const res = await archiveAndClearClosedOrders();
+      expect(res.deletedCancelledCount).toBeGreaterThanOrEqual(1);
+      expect(db.orders.some((o) => o.id === order.id)).toBe(false);
+      expect(db.orderHistory.some((h) => h.id === order.id)).toBe(false);
+      expect(
+        db.auditLogs.some(
+          (l) => l.action === 'CANCELLED_ORDER_CLEANED' && l.details.includes('AAN-9602')
+        )
+      ).toBe(true);
+    } finally {
+      db.settings.lastArchivedDate = prevLastArchived;
+    }
+  });
+
+  it('26. Online paid CANCELLED order stays in /orders/by-tokens while refund pending, then settles to CANCELLED_REFUNDED and exits active orders', async () => {
+    const orderId = `ord_ref_hist_${Date.now()}`;
+    const paymentId = `pay_ref_hist_${Date.now()}`;
+    const { order, payment } = await seedTestOrderAndPayment({
+      orderId,
+      orderNumber: 'AAN-9603',
+      razorpayOrderId: `rzp_${orderId}`,
+      grandTotal: 610,
+      status: 'CANCELLED',
+      paymentStatus: 'PAID',
+    });
+    order.refundPending = true;
+    order.cancelReason = 'Kitchen unavailable';
+    order.cancelledBy = 'kitchen';
+    order.cancelledAt = new Date().toISOString();
+    await syncOrderRealtimePaths(order);
+    await syncCancelledPendingRefundToHistory(order);
+
+    payment.id = paymentId;
+    payment.status = 'VERIFIED';
+    payment.razorpayPaymentId = `pay_rzp_${Date.now()}`;
+    db.payments = [payment, ...db.payments.filter((p) => p.orderId !== order.id)];
+    await getRtdb().ref(`payments/${payment.id}`).set(payment);
+
+    const callByTokens = async (tokens: string[]) => {
+      let statusCode = 200;
+      let jsonBody: any = null;
+      const req = {
+        method: 'POST',
+        originalUrl: '/api/orders/by-tokens',
+        url: '/api/orders/by-tokens',
+        headers: { 'x-forwarded-for': '127.0.0.77' },
+        body: { tokens },
+        socket: { remoteAddress: '127.0.0.77' },
+      } as any;
+      const res = {
+        setHeader: () => res,
+        status: (code: number) => {
+          statusCode = code;
+          return res;
+        },
+        json: (payload: any) => {
+          jsonBody = payload;
+          return res;
+        },
+        end: () => res,
+      } as any;
+      await ordersHandler(req, res);
+      return { statusCode, jsonBody };
+    };
+
+    const beforeRefundTokens = await callByTokens([order.trackingToken]);
+    expect(beforeRefundTokens.statusCode).toBe(200);
+    expect(beforeRefundTokens.jsonBody.orders.some((o: any) => o.id === order.id)).toBe(true);
+    expect(
+      db.orderHistory.find((h) => h.id === order.id)?.status
+    ).toBe('CANCELLED_REFUND_PENDING');
+
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      ({
+        ok: true,
+        json: async () => ({ id: 'rfnd_settled_hist_1' }),
+      }) as any) as any;
+
+    try {
+      const refRes = await setupAdminRefundRequest(payment.id, {
+        amount: 610,
+        reason: 'Full refund to customer',
+      });
+      expect(refRes.statusCode).toBe(200);
+      expect(db.orders.some((o) => o.id === order.id)).toBe(false);
+
+      const histAfter = db.orderHistory.find((h) => h.id === order.id);
+      expect(histAfter?.status).toBe('CANCELLED_REFUNDED');
+      expect(histAfter?.refundedAt).toBeTruthy();
+
+      const afterRefundTokens = await callByTokens([order.trackingToken]);
+      expect(afterRefundTokens.jsonBody.orders.some((o: any) => o.id === order.id)).toBe(false);
+
+      // Payments & refunds records stay preserved
+      expect(db.payments.some((p) => p.id === payment.id)).toBe(true);
+      expect(db.refunds.some((r) => r.orderId === order.id)).toBe(true);
+    } finally {
+      globalThis.fetch = origFetch;
+      db.orderHistory = db.orderHistory.filter((h) => h.id !== order.id);
+    }
+  });
+
+  it('27. GET /api/track/:token returns archived DELIVERED orders read-only and 404 for cancelled/missing orders', async () => {
+    const orderId = `ord_track_arch_${Date.now()}`;
+    const { order } = await seedTestOrderAndPayment({
+      orderId,
+      orderNumber: 'AAN-9604',
+      razorpayOrderId: `rzp_${orderId}`,
+      grandTotal: 390,
+      status: 'DELIVERED',
+      paymentStatus: 'PAID',
+    });
+    order.deliveredAt = new Date().toISOString();
+    await syncOrderRealtimePaths(order);
+
+    const prevLastArchived = db.settings.lastArchivedDate;
+    db.settings.lastArchivedDate = '';
+    await archiveAndClearClosedOrders();
+
+    const callTrack = async (token: string) => {
+      let statusCode = 200;
+      let jsonBody: any = null;
+      const req = {
+        method: 'GET',
+        originalUrl: `/api/track/${token}`,
+        url: `/api/track/${token}`,
+        headers: { 'x-forwarded-for': '127.0.0.55' },
+        params: { trackingToken: token },
+        query: {},
+        socket: { remoteAddress: '127.0.0.55' },
+      } as any;
+      const res = {
+        setHeader: () => res,
+        status: (code: number) => {
+          statusCode = code;
+          return res;
+        },
+        json: (payload: any) => {
+          jsonBody = payload;
+          return res;
+        },
+        end: () => res,
+      } as any;
+      await trackHandler(req, res);
+      return { statusCode, jsonBody };
+    };
+
+    try {
+      const archivedTrack = await callTrack(order.trackingToken);
+      expect(archivedTrack.statusCode).toBe(200);
+      expect(archivedTrack.jsonBody.order.orderNumber).toBe('AAN-9604');
+      expect(archivedTrack.jsonBody.order.isArchived).toBe(true);
+
+      const missingTrack = await callTrack('trk_missing_or_cancelled_999');
+      expect(missingTrack.statusCode).toBe(404);
+      expect(missingTrack.jsonBody.error).toBe('Order not found or cancelled');
+    } finally {
+      db.settings.lastArchivedDate = prevLastArchived;
+      db.orderHistory = db.orderHistory.filter((h) => h.id !== order.id);
+    }
+  });
+
+  it('28. GET /api/admin/orders/expire-stale executes scheduled shop check & archive cleanup without extra crons', async () => {
+    await ensureFirebaseSeeded();
+    const prevSecret = process.env.CRON_SECRET;
+    process.env.CRON_SECRET = 'cron_test_secret_123';
+
+    let statusCode = 200;
+    let jsonBody: any = null;
+    const req = {
+      method: 'GET',
+      originalUrl: '/api/admin/orders/expire-stale',
+      url: '/api/admin/orders/expire-stale',
+      headers: {
+        authorization: 'Bearer cron_test_secret_123',
+        'x-forwarded-for': '127.0.0.1',
+      },
+      socket: { remoteAddress: '127.0.0.1' },
+    } as any;
+    const res = {
+      setHeader: () => res,
+      status: (code: number) => {
+        statusCode = code;
+        return res;
+      },
+      json: (payload: any) => {
+        jsonBody = payload;
+        return res;
+      },
+      end: () => res,
+    } as any;
+
+    try {
+      await adminHandler(req, res);
+      expect(statusCode).toBe(200);
+      expect(jsonBody.ok).toBe(true);
+      expect(typeof jsonBody.shopOpen).toBe('boolean');
+      expect(typeof jsonBody.archivedCount).toBe('number');
+      expect(typeof jsonBody.deletedCancelledCount).toBe('number');
+      expect(typeof jsonBody.refundCleanedCount).toBe('number');
+    } finally {
+      if (prevSecret === undefined) delete process.env.CRON_SECRET;
+      else process.env.CRON_SECRET = prevSecret;
+    }
+  });
 });
+
 

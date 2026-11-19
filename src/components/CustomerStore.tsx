@@ -244,7 +244,10 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
   const [guestEmail, setGuestEmail] = useState(initialProfile.email || '');
   const [guestAddress, setGuestAddress] = useState(initialProfile.address);
   const [guestLandmark, setGuestLandmark] = useState(initialProfile.landmark || '');
-  const [guestPincode, setGuestPincode] = useState('');
+  const [guestPincode, setGuestPincode] = useState(initialProfile.pincode || '');
+  const [pincodeTouched, setPincodeTouched] = useState(false);
+  const [gpsLoading, setGpsLoading] = useState(false);
+  const [gpsError, setGpsError] = useState<string | null>(null);
   const [profileSavedToast, setProfileSavedToast] = useState(false);
   const [guestLat, setGuestLat] = useState(initialProfile.lat);
   const [guestLng, setGuestLng] = useState(initialProfile.lng);
@@ -297,6 +300,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
   const [cancelCustomNote, setCancelCustomNote] = useState('');
   const [cancelOrderBusy, setCancelOrderBusy] = useState(false);
   const [cancelOrderError, setCancelOrderError] = useState<string | null>(null);
+  const [cancelConfirmationNotice, setCancelConfirmationNotice] = useState<string | null>(null);
 
   // Policy Modal
   const [activePolicyModal, setActivePolicyModal] = useState<
@@ -626,6 +630,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
       phone: guestPhone,
       address: guestAddress,
       landmark: guestLandmark,
+      pincode: guestPincode,
       lat: guestLat,
       lng: guestLng,
       locationPinned,
@@ -633,7 +638,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
     if (onAddressChanged) {
       onAddressChanged(locationPinned && guestAddress ? guestAddress : '');
     }
-  }, [guestName, guestPhone, guestAddress, guestLandmark, guestLat, guestLng, locationPinned]);
+  }, [guestName, guestPhone, guestAddress, guestLandmark, guestPincode, guestLat, guestLng, locationPinned]);
 
   // Fetch server-side delivery distance & bill preview whenever cart, location, coupon, or phone changes
   useEffect(() => {
@@ -689,7 +694,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
     const mergedTokens =
       tokens.length > 0
         ? tokens
-        : homeData?.demoMode
+        : homeData?.demoMode === true
         ? ['trk_live_demo_991a7b3c4d5e6f', 'trk_delivered_demo_772b9c1a']
         : [];
     if (mergedTokens.length === 0) {
@@ -706,7 +711,15 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
       syncServerTimeFromResponse(res);
       const data = await res.json();
       if (res.ok) {
-        setRecentOrders(data.orders || []);
+        const returnedOrders: OrderRecord[] = data.orders || [];
+        setRecentOrders(returnedOrders);
+        if (tokens.length > 0) {
+          const returnedTokenSet = new Set(returnedOrders.map((o) => o.trackingToken));
+          const prunedTokens = tokens.filter((t) => returnedTokenSet.has(t));
+          if (prunedTokens.length !== tokens.length) {
+            guestAuthLayer.setRecentOrderTokens(prunedTokens);
+          }
+        }
       }
     } finally {
       setLoadingRecent(false);
@@ -722,7 +735,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
   const activeRecentTokensKey = useMemo(
     () =>
       recentOrders
-        .filter((o) => !['DELIVERED', 'CANCELLED', 'REJECTED'].includes(o.status))
+        .filter((o) => !['DELIVERED', 'CANCELLED', 'REJECTED'].includes(o.status) || o.refundPending)
         .map((o) => o.trackingToken)
         .join(','),
     [recentOrders]
@@ -736,6 +749,19 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
         trackingToken: tok,
         firebaseConfig: homeData?.firebaseClientConfig || null,
         onUpdate: (proj) => {
+          const isCancelledOrRejected = proj.status === 'CANCELLED' || proj.status === 'REJECTED';
+          const isOnlineRefundPending =
+            isCancelledOrRejected &&
+            proj.paymentMethod === 'RAZORPAY' &&
+            proj.paymentStatus !== 'REFUNDED' &&
+            Boolean(proj.refundPending || proj.paymentStatus === 'PAID');
+
+          if (isCancelledOrRejected && !isOnlineRefundPending) {
+            guestAuthLayer.removeRecentOrderTokens([proj.trackingToken]);
+            setRecentOrders((prev) => prev.filter((o) => o.trackingToken !== proj.trackingToken));
+            return;
+          }
+
           setRecentOrders((prev) =>
             prev.map((o) =>
               o.trackingToken === proj.trackingToken
@@ -784,9 +810,20 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
         void loadRecentOrders();
         return;
       }
-      setRecentOrders((prev) =>
-        prev.map((o) => (o.id === data.order.id ? data.order : o))
-      );
+      const cancelledOrder: OrderRecord = data.order;
+      const keepsForRefund =
+        cancelledOrder.paymentMethod === 'RAZORPAY' &&
+        (cancelledOrder.refundPending || cancelledOrder.paymentStatus === 'PAID');
+
+      if (keepsForRefund) {
+        setRecentOrders((prev) =>
+          prev.map((o) => (o.id === cancelledOrder.id ? cancelledOrder : o))
+        );
+      } else {
+        guestAuthLayer.removeRecentOrderTokens([cancelledOrder.trackingToken]);
+        setRecentOrders((prev) => prev.filter((o) => o.id !== cancelledOrder.id));
+        setCancelConfirmationNotice(`Order #${cancelledOrder.orderNumber} has been cancelled.`);
+      }
       setCancelOrderTarget(null);
     } catch {
       setCancelOrderError('Network error while cancelling order.');
@@ -945,17 +982,13 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
   };
 
   const handleUseCurrentGps = () => {
-    const fallbackLat = homeData?.deliveryZone.shopLat ?? 19.0607;
-    const fallbackLng = homeData?.deliveryZone.shopLng ?? 72.8362;
+    setGpsError(null);
     if (!navigator.geolocation) {
-      setGuestLat(fallbackLat);
-      setGuestLng(fallbackLng);
-      setLocationPinned(true);
-      if (!guestAddress.trim()) {
-        setGuestAddress('Current location (GPS)');
-      }
+      setLocationPinned(false);
+      setGpsError('Could not get your location. Please enter your pincode manually.');
       return;
     }
+    setGpsLoading(true);
     navigator.geolocation.getCurrentPosition(
       async (pos) => {
         const lat = Number(pos.coords.latitude.toFixed(4));
@@ -963,36 +996,33 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
         setGuestLat(lat);
         setGuestLng(lng);
         setLocationPinned(true);
-        if (!guestAddress.trim()) {
-          try {
-            const ctrl = new AbortController();
-            const tid = setTimeout(() => ctrl.abort(), 4000);
-            const res = await fetch(
-              `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}`,
-              {
-                headers: { 'Accept-Language': 'en' },
-                signal: ctrl.signal,
-              }
-            );
-            clearTimeout(tid);
-            const data = await res.json().catch(() => null);
-            if (data && typeof data.display_name === 'string' && data.display_name.trim()) {
-              setGuestAddress(data.display_name.trim());
-              return;
+        setGpsError(null);
+        try {
+          const ctrl = new AbortController();
+          const tid = setTimeout(() => ctrl.abort(), 4000);
+          const res = await fetch(
+            `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}`,
+            {
+              headers: { 'Accept-Language': 'en' },
+              signal: ctrl.signal,
             }
-          } catch {
-            // Fallback to Current location (GPS)
+          );
+          clearTimeout(tid);
+          const data = await res.json().catch(() => null);
+          const rawPostcode = String(data?.address?.postcode || '').replace(/\D/g, '');
+          if (/^\d{6}$/.test(rawPostcode)) {
+            setGuestPincode(rawPostcode);
           }
-          setGuestAddress('Current location (GPS)');
+        } catch {
+          // Ignore reverse-geocoding errors; customer enters/edits pincode manually
+        } finally {
+          setGpsLoading(false);
         }
       },
       () => {
-        setGuestLat(fallbackLat);
-        setGuestLng(fallbackLng);
-        setLocationPinned(true);
-        if (!guestAddress.trim()) {
-          setGuestAddress('Current location (GPS)');
-        }
+        setGpsLoading(false);
+        setLocationPinned(false);
+        setGpsError('Could not get your location. Please enter your pincode manually.');
       }
     );
   };
@@ -1180,6 +1210,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
     setNameTouched(true);
     setPhoneTouched(true);
     setAddressTouched(true);
+    setPincodeTouched(true);
     setCheckoutError(null);
     setPaymentFailureMessage(null);
 
@@ -1199,9 +1230,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
       (liveAddressDistance.pinned && !liveAddressDistance.within) ||
       (billPreview !== null && !billPreview.withinZone)
     ) {
-      setCheckoutError(
-        'Sorry, we do not deliver to this location yet. Please try a different address.'
-      );
+      setCheckoutError('Delivery is not available at this location.');
       return;
     }
 
@@ -1209,6 +1238,12 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
       setCheckoutError(
         'Please enter your complete flat, building, and street address (at least 8 characters).'
       );
+      return;
+    }
+
+    const cleanPincode = guestPincode.replace(/\D/g, '');
+    if (!/^\d{6}$/.test(cleanPincode)) {
+      setCheckoutError('Please enter a valid 6-digit pincode.');
       return;
     }
 
@@ -1265,10 +1300,11 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
           deliveryAddress: [
             guestAddress.trim(),
             guestLandmark.trim() ? `Landmark: ${guestLandmark.trim()}` : '',
-            guestPincode.trim() ? `PIN: ${guestPincode.trim()}` : '',
+            cleanPincode ? `PIN: ${cleanPincode}` : '',
           ]
             .filter(Boolean)
             .join(', '),
+          deliveryPincode: cleanPincode,
           deliveryLat: guestLat,
           deliveryLng: guestLng,
           orderNotes,
@@ -1798,6 +1834,10 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
       : guestAddress.trim().length < 8
       ? 'Please enter your flat, building, and street address (at least 8 characters).'
       : null;
+  const cleanPincodeDigits = guestPincode.replace(/\D/g, '');
+  const pincodeFieldError = !/^\d{6}$/.test(cleanPincodeDigits)
+    ? 'Please enter a valid 6-digit pincode.'
+    : null;
   const scheduleFieldError =
     isScheduled && !scheduledFor ? 'Please choose a delivery time slot.' : null;
 
@@ -1817,7 +1857,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
   const placeOrderDisabledReason = !locationPinned
     ? 'Tap "Use my current GPS location" in Section 1 to check delivery availability.'
     : isOutsideDeliveryZone
-    ? 'Sorry, we do not deliver to this location yet. Please try a different address.'
+    ? 'Delivery is not available at this location.'
     : billPreview && !billPreview.minOrderMet
     ? `Minimum order amount for delivery is ₹${billPreview.minOrderAmount}.`
     : null;
@@ -2080,10 +2120,10 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   <AlertTriangle className="w-6 h-6 text-primary shrink-0 mt-0.5" />
                   <div className="min-w-0 flex-1 space-y-1">
                     <p className="text-[15px] font-extrabold text-primary break-words">
-                      Sorry, we do not deliver to this location yet.
+                      Delivery is not available at this location.
                     </p>
                     <p className="text-[13px] font-medium text-text break-words">
-                      Please try a different delivery address or GPS location within our service area.
+                      Please try a different GPS location within our delivery radius.
                     </p>
                   </div>
                 </div>
@@ -2124,11 +2164,17 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                 <button
                   type="button"
                   onClick={handleUseCurrentGps}
-                  className="w-full min-h-[48px] px-4 rounded-xl border border-primary/40 bg-soft-tint text-primary font-bold text-[15px] flex items-center justify-center gap-2 cursor-pointer active:scale-[0.98]"
+                  disabled={gpsLoading}
+                  className="w-full min-h-[48px] px-4 rounded-xl border border-primary/40 bg-soft-tint text-primary font-bold text-[15px] flex items-center justify-center gap-2 cursor-pointer active:scale-[0.98] disabled:opacity-70"
                 >
                   <Compass className="w-5 h-5 text-primary shrink-0" />
-                  <span>Use my current GPS location</span>
+                  <span>{gpsLoading ? 'Getting GPS location...' : 'Use my current GPS location'}</span>
                 </button>
+                {gpsError && (
+                  <p role="status" className="text-[13px] font-semibold text-primary break-words">
+                    {gpsError}
+                  </p>
+                )}
 
                 {/* Saved Last Address indicator if available */}
                 {initialProfile.address && guestAddress !== initialProfile.address && (
@@ -2212,13 +2258,22 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                       type="text"
                       inputMode="numeric"
                       maxLength={6}
+                      required
                       value={guestPincode}
                       onFocus={handleCheckoutInputFocus}
-                      onBlur={handleCheckoutInputBlur}
+                      onBlur={() => {
+                        setPincodeTouched(true);
+                        handleCheckoutInputBlur();
+                      }}
                       onChange={(e) => setGuestPincode(e.target.value.replace(/\D/g, ''))}
                       placeholder="e.g. 400050"
                       className="w-full max-w-full min-h-[48px] px-3.5 py-2.5 rounded-xl border border-border bg-bg text-[16px] tabular-nums text-text box-border focus:outline-none focus:border-primary"
                     />
+                    {(checkoutTouched || pincodeTouched) && pincodeFieldError && (
+                      <p className="text-[13px] font-semibold text-primary break-words">
+                        {pincodeFieldError}
+                      </p>
+                    )}
                   </div>
                 </div>
               </section>
@@ -2747,6 +2802,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   email: guestEmail,
                   address: guestAddress,
                   landmark: guestLandmark,
+                  pincode: guestPincode,
                   lat: guestLat,
                   lng: guestLng,
                   locationPinned,
@@ -3745,60 +3801,73 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                 </div>
 
                 {/* PROMINENT "ORDER AGAIN" CARD */}
-                {recentOrders.length > 0 && (
-                  <div
-                    aria-label="Order again"
-                    className="w-full max-w-full rounded-2xl border border-border  bg-soft-tint  p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3.5"
-                  >
-                    <div className="flex items-start gap-3 min-w-0 flex-1">
-                      <div className="w-11 h-11 rounded-xl bg-primary/12 text-primary flex items-center justify-center shrink-0">
-                        <RotateCcw className="w-5 h-5" />
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <h2 className="text-base font-extrabold text-text">
-                            Order again
-                          </h2>
-                          <span className="text-xs font-semibold text-muted tabular-nums">
-                            #{recentOrders[0].orderNumber} · ₹{recentOrders[0].grandTotal}
-                          </span>
-                          {formatOrderPlacedAt(recentOrders[0].placedAt) && (
-                            <span className="text-xs text-muted tabular-nums">
-                              · Ordered {formatOrderPlacedAt(recentOrders[0].placedAt)}
-                            </span>
-                          )}
+                {(() => {
+                  const firstOrder = recentOrders[0];
+                  if (
+                    !firstOrder ||
+                    firstOrder.status === 'CANCELLED' ||
+                    firstOrder.status === 'REJECTED'
+                  ) {
+                    return null;
+                  }
+                  const isLiveOrder = firstOrder.status !== 'DELIVERED';
+                  return (
+                    <div
+                      aria-label="Order again"
+                      className="w-full max-w-full rounded-2xl border border-border  bg-soft-tint  p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3.5"
+                    >
+                      <div className="flex items-start gap-3 min-w-0 flex-1">
+                        <div className="w-11 h-11 rounded-xl bg-primary/12 text-primary flex items-center justify-center shrink-0">
+                          <RotateCcw className="w-5 h-5" />
                         </div>
-                        <p className="text-sm text-muted line-clamp-2 break-words mt-0.5">
-                          {recentOrders[0].items
-                            .map((i) => `${i.quantity}x ${i.itemName}`)
-                            .join(', ')}
-                        </p>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <h2 className="text-base font-extrabold text-text">
+                              Order again
+                            </h2>
+                            <span className="text-xs font-semibold text-muted tabular-nums">
+                              #{firstOrder.orderNumber} · ₹{firstOrder.grandTotal}
+                            </span>
+                            {formatOrderPlacedAt(firstOrder.placedAt) && (
+                              <span className="text-xs text-muted tabular-nums">
+                                · Ordered {formatOrderPlacedAt(firstOrder.placedAt)}
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-sm text-muted line-clamp-2 break-words mt-0.5">
+                            {firstOrder.items
+                              .map((i) => `${i.quantity}x ${i.itemName}`)
+                              .join(', ')}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 shrink-0">
+                        {isLiveOrder && (
+                          <button
+                            type="button"
+                            onClick={() => onOpenTracking(firstOrder.trackingToken, firstOrder)}
+                            className="min-h-[44px] px-3.5 rounded-xl border border-border  bg-surface text-xs font-bold text-text whitespace-nowrap cursor-pointer active:scale-[0.98]"
+                          >
+                            Track order
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (onReorder) {
+                              onReorder(firstOrder, homeData.allMenuItems);
+                            }
+                          }}
+                          className="min-h-[44px] px-4 rounded-xl bg-primary hover:opacity-90 text-primary-contrast text-sm font-extrabold whitespace-nowrap inline-flex items-center gap-1.5 cursor-pointer active:scale-[0.98] shadow-xs"
+                        >
+                          <RotateCcw className="w-4 h-4" />
+                          <span>Order again</span>
+                        </button>
                       </div>
                     </div>
-
-                    <div className="flex items-center gap-2 shrink-0">
-                      <button
-                        type="button"
-                        onClick={() => onOpenTracking(recentOrders[0].trackingToken, recentOrders[0])}
-                        className="min-h-[44px] px-3.5 rounded-xl border border-border  bg-surface text-xs font-bold text-text whitespace-nowrap cursor-pointer active:scale-[0.98]"
-                      >
-                        {recentOrders[0].status === 'DELIVERED' ? 'View details' : 'Track order'}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (onReorder) {
-                            onReorder(recentOrders[0], homeData.allMenuItems);
-                          }
-                        }}
-                        className="min-h-[44px] px-4 rounded-xl bg-primary hover:opacity-90 text-primary-contrast text-sm font-extrabold whitespace-nowrap inline-flex items-center gap-1.5 cursor-pointer active:scale-[0.98] shadow-xs"
-                      >
-                        <RotateCcw className="w-4 h-4" />
-                        <span>Order again</span>
-                      </button>
-                    </div>
-                  </div>
-                )}
+                  );
+                })()}
               </section>
             )}
 
@@ -3959,6 +4028,22 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
             </button>
           </div>
 
+          {cancelConfirmationNotice && (
+            <div
+              role="status"
+              className="rounded-2xl border border-border bg-surface p-4 flex items-center justify-between gap-3 text-[14px] font-semibold text-text"
+            >
+              <span>{cancelConfirmationNotice}</span>
+              <button
+                type="button"
+                onClick={() => setCancelConfirmationNotice(null)}
+                className="text-xs font-bold text-primary hover:underline shrink-0 cursor-pointer"
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
+
           {loadingRecent ? (
             <div className="space-y-3">
               {[1, 2].map((n) => (
@@ -3981,7 +4066,11 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
             </div>
           ) : (
             <div className="space-y-4 min-w-0">
-              {recentOrders.map((ord) => (
+              {recentOrders.map((ord) => {
+                const isCancelledOrRejected = ord.status === 'CANCELLED' || ord.status === 'REJECTED';
+                const isDelivered = ord.status === 'DELIVERED';
+                const isLive = !isCancelledOrRejected && !isDelivered;
+                return (
                 <div
                   key={ord.id}
                   className="rounded-2xl border border-border  bg-surface p-4 sm:p-5 space-y-3.5 min-w-0 overflow-hidden"
@@ -3990,9 +4079,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                     <div className="min-w-0 flex-1">
                       <p className="text-[14px] text-muted tabular-nums break-words">
                         {ord.orderNumber} · <strong className="text-primary">{ord.status}</strong>
-                        {!['DELIVERED', 'CANCELLED', 'REJECTED'].includes(ord.status)
-                          ? ` · OTP: ${ord.deliveryOtp}`
-                          : ''}
+                        {isLive ? ` · OTP: ${ord.deliveryOtp}` : ''}
                       </p>
                       {formatOrderPlacedAt(ord.placedAt) && (
                         <p className="text-[12px] text-muted tabular-nums break-words mt-0.5">
@@ -4011,26 +4098,39 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                     </span>
                   </div>
 
-                  <div className="flex items-center gap-3 pt-3 border-t border-border">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (onReorder) {
-                          onReorder(ord, homeData.allMenuItems);
-                        }
-                      }}
-                      className="flex-1 min-h-[44px] px-4 rounded-xl border border-border bg-bg text-[14px] font-bold text-text whitespace-nowrap cursor-pointer active:scale-[0.98]"
-                    >
-                      Order again
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => onOpenTracking(ord.trackingToken, ord)}
-                      className="flex-1 min-h-[44px] px-4 rounded-xl bg-primary text-primary-contrast text-[14px] font-bold whitespace-nowrap cursor-pointer active:scale-[0.98]"
-                    >
-                      {ord.status === 'DELIVERED' ? 'View details' : 'Track live'}
-                    </button>
-                  </div>
+                  {isCancelledOrRejected ? (
+                    <div className="pt-3 border-t border-border flex items-center justify-between gap-3">
+                      <span className="inline-flex items-center px-3 py-1.5 rounded-xl bg-soft-tint border border-primary/25 text-[13px] font-bold text-primary">
+                        {ord.paymentStatus === 'REFUNDED' ? 'Refund received' : 'Refund pending'}
+                      </span>
+                      {ord.cancelReason && (
+                        <span className="text-[12px] text-muted truncate">{ord.cancelReason}</span>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-3 pt-3 border-t border-border">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (onReorder) {
+                            onReorder(ord, homeData.allMenuItems);
+                          }
+                        }}
+                        className="flex-1 min-h-[44px] px-4 rounded-xl border border-border bg-bg text-[14px] font-bold text-text whitespace-nowrap cursor-pointer active:scale-[0.98]"
+                      >
+                        Order again
+                      </button>
+                      {isLive && (
+                        <button
+                          type="button"
+                          onClick={() => onOpenTracking(ord.trackingToken, ord)}
+                          className="flex-1 min-h-[44px] px-4 rounded-xl bg-primary text-primary-contrast text-[14px] font-bold whitespace-nowrap cursor-pointer active:scale-[0.98]"
+                        >
+                          Track live
+                        </button>
+                      )}
+                    </div>
+                  )}
 
                   {(ord.status === 'PLACED' || ord.status === 'ACCEPTED') && (
                     <div className="flex items-center justify-end">
@@ -4068,7 +4168,8 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                     </div>
                   )}
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
           </div>
@@ -4292,11 +4393,17 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
               <button
                 type="button"
                 onClick={handleUseCurrentGps}
-                className="w-full min-h-[48px] px-4 rounded-2xl border border-primary/40 bg-soft-tint text-primary font-bold text-[15px] flex items-center justify-center gap-2 whitespace-nowrap cursor-pointer active:scale-[0.98]"
+                disabled={gpsLoading}
+                className="w-full min-h-[48px] px-4 rounded-2xl border border-primary/40 bg-soft-tint text-primary font-bold text-[15px] flex items-center justify-center gap-2 whitespace-nowrap cursor-pointer active:scale-[0.98] disabled:opacity-70"
               >
                 <Compass className="w-5 h-5 text-primary shrink-0" />
-                <span>Use my current GPS location</span>
+                <span>{gpsLoading ? 'Getting GPS location...' : 'Use my current GPS location'}</span>
               </button>
+              {gpsError && (
+                <p role="status" className="text-[13px] font-semibold text-primary break-words">
+                  {gpsError}
+                </p>
+              )}
 
               <div>
                 <label className="block font-bold text-text text-[14px] mb-1.5">
@@ -4350,7 +4457,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                 >
                   {liveAddressDistance.within
                     ? '✓ Delivery available at this location'
-                    : 'Sorry, we do not deliver to this location yet.'}
+                    : 'Delivery is not available at this location.'}
                 </div>
               )}
 

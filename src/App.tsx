@@ -72,7 +72,7 @@ export default function App() {
   const [guestThemeMode, setGuestThemeMode] = useState<ThemeMode | null>(() =>
     guestAuthLayer.getGuestThemeMode()
   );
-  const [lang, setLang] = useState<'en' | 'hi'>(() => guestAuthLayer.getGuestLanguage());
+  const lang: 'en' | 'hi' = 'en';
 
   const [headerMeta, setHeaderMeta] = useState(() => ({
     shopName: getCachedShopName() || 'Khana Pina',
@@ -250,11 +250,6 @@ export default function App() {
     guestAuthLayer.saveGuestThemeMode(nextMode);
   };
 
-  const toggleLanguage = () => {
-    const nextLang = lang === 'en' ? 'hi' : 'en';
-    setLang(nextLang);
-    guestAuthLayer.saveGuestLanguage(nextLang);
-  };
 
   const openCartPage = () => {
     setActiveView('customer');
@@ -704,42 +699,14 @@ export default function App() {
                     </button>
                   </div>
 
-                  {/* Language switch at bottom of drawer */}
+                  {/* Language indicator at bottom of drawer */}
                   <div className="p-3.5 border-t border-border mt-auto shrink-0 bg-surface">
                     <div className="flex items-center justify-between px-3 py-2 rounded-xl border border-border bg-bg text-xs font-semibold text-text">
                       <div className="flex items-center gap-2 text-muted">
                         <Languages className="w-4 h-4 shrink-0" />
                         <span>Language:</span>
                       </div>
-                      <div className="flex items-center gap-1 text-[13px]">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (lang !== 'en') toggleLanguage();
-                          }}
-                          className={`px-1.5 py-0.5 rounded cursor-pointer transition-colors ${
-                            lang === 'en'
-                              ? 'text-primary font-bold underline'
-                              : 'text-muted hover:text-text'
-                          }`}
-                        >
-                          English
-                        </button>
-                        <span className="text-muted/40">|</span>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (lang !== 'hi') toggleLanguage();
-                          }}
-                          className={`px-1.5 py-0.5 rounded cursor-pointer transition-colors ${
-                            lang === 'hi'
-                              ? 'text-primary font-bold underline'
-                              : 'text-muted hover:text-text'
-                          }`}
-                        >
-                          हिन्दी
-                        </button>
-                      </div>
+                      <span className="text-[13px] text-primary font-bold">English</span>
                     </div>
                   </div>
                 </div>

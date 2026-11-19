@@ -10,6 +10,8 @@ import {
   invalidateHomeHydration,
   logAudit,
   refreshHydrationCache,
+  settleRefundOrderHistoryAndRemoveActive,
+  syncCancelledPendingRefundToHistory,
   syncOrderRealtimePaths,
   verifyAndIncrementMenuStockSalesTx,
 } from './store.ts';
@@ -685,9 +687,14 @@ export async function processRazorpayWebhookAuthoritative(params: {
       order.updatedAt = payment.updatedAt;
     }
   } else if (event === 'refund.processed') {
+    const nowIso = new Date().toISOString();
     payment.status = 'REFUNDED';
+    payment.updatedAt = nowIso;
     order.paymentStatus = 'REFUNDED';
+    order.refundPending = false;
+    order.updatedAt = nowIso;
     const refundId = refundEntity?.id || `rfnd_wh_${Date.now()}`;
+    const refundRupees = amountPaise > 0 ? Math.round(amountPaise / 100) : order.grandTotal;
     if (!db.refunds.some((r) => r.razorpayRefundId === refundId)) {
       const refRecord: RefundRecord = {
         id: `ref_${Date.now()}`,
@@ -695,15 +702,22 @@ export async function processRazorpayWebhookAuthoritative(params: {
         orderId: order.id,
         orderNumber: order.orderNumber,
         razorpayRefundId: refundId,
-        amount: amountPaise > 0 ? Math.round(amountPaise / 100) : order.grandTotal,
+        amount: refundRupees,
         reason: 'Processed via Razorpay refund.processed webhook',
         status: 'PROCESSED',
         processedBy: 'razorpay-webhook',
-        createdAt: new Date().toISOString(),
+        createdAt: nowIso,
       };
       db.refunds.unshift(refRecord);
       await rtdb.ref(`refunds/${refRecord.id}`).set(refRecord);
     }
+    await rtdb.ref(`payments/${payment.id}`).set(payment);
+    await settleRefundOrderHistoryAndRemoveActive(order, nowIso, refundRupees);
+    refreshHydrationCache();
+    return {
+      status: 200,
+      payload: { status: 'processed', order, payment },
+    };
   }
 
   await Promise.all([
@@ -849,6 +863,7 @@ export async function processRazorpayRefundAuthoritative(params: {
     createdAt: new Date().toISOString(),
   };
 
+  const nowIso = new Date().toISOString();
   const newTotalRefunded = alreadyRefundedRupees + refundAmountRupees;
   const isFullyRefunded = newTotalRefunded >= payment.amount;
 
@@ -857,8 +872,8 @@ export async function processRazorpayRefundAuthoritative(params: {
     order.paymentStatus = 'REFUNDED';
   }
   order.refundPending = false;
-  payment.updatedAt = new Date().toISOString();
-  await syncOrderRealtimePaths(order);
+  order.updatedAt = nowIso;
+  payment.updatedAt = nowIso;
 
   db.refunds.unshift(refund);
   const rtdb = getRtdb();
@@ -866,6 +881,15 @@ export async function processRazorpayRefundAuthoritative(params: {
     rtdb.ref(`payments/${payment.id}`).set(payment),
     rtdb.ref(`refunds/${refund.id}`).set(refund),
   ]);
+
+  if (isFullyRefunded) {
+    await settleRefundOrderHistoryAndRemoveActive(order, nowIso, newTotalRefunded);
+  } else {
+    await syncOrderRealtimePaths(order);
+    if (db.orderHistory.some((h) => h.id === order.id)) {
+      await syncCancelledPendingRefundToHistory(order);
+    }
+  }
   refreshHydrationCache();
 
   return { refund, order, payment };

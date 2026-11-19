@@ -14,6 +14,7 @@ export interface GuestProfile {
   email?: string;
   address: string;
   landmark: string;
+  pincode?: string;
   lat: number;
   lng: number;
   locationPinned?: boolean;
@@ -30,6 +31,8 @@ export interface CustomerAuthAdapter {
   toggleFavourite: (itemId: string) => string[];
   getRecentOrderTokens: () => string[];
   addRecentOrderToken: (token: string) => string[];
+  removeRecentOrderTokens: (tokensToRemove: string[]) => string[];
+  setRecentOrderTokens: (tokens: string[]) => string[];
   getGuestThemeMode: () => ThemeMode | null;
   saveGuestThemeMode: (mode: ThemeMode | null) => void;
   getGuestLanguage: () => 'en' | 'hi';
@@ -54,6 +57,7 @@ const DEFAULT_PROFILE: GuestProfile = {
   email: '',
   address: '',
   landmark: '',
+  pincode: '',
   lat: 0,
   lng: 0,
   locationPinned: false,
@@ -136,6 +140,27 @@ export const guestAuthLayer: CustomerAuthAdapter = {
   addRecentOrderToken(token: string): string[] {
     const current = this.getRecentOrderTokens().filter((t) => t !== token);
     const next = [token, ...current].slice(0, 20);
+    try {
+      localStorage.setItem(STORAGE_KEYS.RECENT_TOKENS, JSON.stringify(next));
+    } catch {
+      // Ignore
+    }
+    return next;
+  },
+
+  removeRecentOrderTokens(tokensToRemove: string[]): string[] {
+    const removeSet = new Set(tokensToRemove);
+    const next = this.getRecentOrderTokens().filter((t) => !removeSet.has(t));
+    try {
+      localStorage.setItem(STORAGE_KEYS.RECENT_TOKENS, JSON.stringify(next));
+    } catch {
+      // Ignore
+    }
+    return next;
+  },
+
+  setRecentOrderTokens(tokens: string[]): string[] {
+    const next = Array.from(new Set(tokens.filter((t) => typeof t === 'string' && t.length > 0))).slice(0, 20);
     try {
       localStorage.setItem(STORAGE_KEYS.RECENT_TOKENS, JSON.stringify(next));
     } catch {

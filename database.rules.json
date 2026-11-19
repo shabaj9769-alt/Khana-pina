@@ -30,6 +30,10 @@
       ".read": false,
       ".write": false
     },
+    "orderHistory": {
+      ".read": "auth != null && (auth.token.role === 'owner' || auth.token.role === 'manager' || auth.token.role === 'staff')",
+      ".write": "auth != null && auth.token.role === 'owner'"
+    },
     "payments": {
       ".read": false,
       ".write": false

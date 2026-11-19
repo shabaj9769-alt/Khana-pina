@@ -48,11 +48,14 @@ import {
   cleanupDemoRecordsFromRtdb,
   clearHomeCache,
   clearLoginFailuresFirebase,
+  computeEffectiveShopOpen,
   db,
   deleteClosedOrdersAtomic,
   ensureFirebaseSeeded,
   ensureHomeDataLoaded,
   expireStaleOrdersLazy,
+  formatTime24To12,
+  getKolkataDateKey,
   getOrderArchiveDateKeyIST,
   IMG_HERO,
   invalidateHomeHydration,
@@ -64,6 +67,8 @@ import {
   purgeNonOwnerAdmins,
   recordLoginFailureFirebase,
   refreshHydrationCache,
+  runScheduledShopAndArchiveCheck,
+  syncCancelledPendingRefundToHistory,
   syncOrderRealtimePaths,
   toPublicAdminUser,
 } from './_lib/store.ts';
@@ -164,6 +169,12 @@ const ShopSettingsUpdateSchema = z
     heroSubtitle: z.string().trim().max(500).optional(),
     allowPreOrdersWhenClosed: z.boolean().optional(),
     holidaysNote: z.string().trim().max(250).optional(),
+    autoScheduleEnabled: z.boolean().optional(),
+    openTime: z.string().regex(/^\d{2}:\d{2}$/, 'Open time must be in HH:MM format').optional(),
+    closeTime: z.string().regex(/^\d{2}:\d{2}$/, 'Close time must be in HH:MM format').optional(),
+    closedDays: z.array(z.number().int().min(0).max(6)).max(7).optional(),
+    manualOverrideOpen: z.boolean().nullable().optional(),
+    manualOverrideDate: z.string().nullable().optional(),
     minOrderAmount: z.number().min(0).max(10000).optional(),
     gstPercent: z.number().min(0).max(28).optional(),
     codEnabled: z.boolean().optional(),
@@ -869,22 +880,30 @@ export default async function handler(req: Request, res: Response) {
         if (!admin) return;
       }
 
-      const expired = await expireStaleOrdersLazy({ minIntervalMs: 0 });
+      const [expired, scheduleCheck] = await Promise.all([
+        expireStaleOrdersLazy({ minIntervalMs: 0 }),
+        runScheduledShopAndArchiveCheck({ minIntervalMs: 0 }),
+      ]);
       res.json({
         ok: true,
         expiredCount: expired.length,
+        shopOpen: scheduleCheck.shopOpen,
+        archivedCount: scheduleCheck.archivedCount,
+        deletedCancelledCount: scheduleCheck.deletedCancelledCount,
+        refundCleanedCount: scheduleCheck.refundCleanedCount,
         orders: db.orders.filter(isOrderVisibleToKitchen),
       });
       return;
     }
 
-    // 12. GET /api/admin/bootstrap (Requirement 5 & 8: Runs lazy expiry & filters unpaid RAZORPAY orders from kitchen board)
+    // 12. GET /api/admin/bootstrap (Requirement 5 & 8: Runs lazy expiry, schedule/archive check & filters unpaid RAZORPAY orders from kitchen board)
     if (method === 'GET' && subPath === '/bootstrap') {
       const admin = await verifyAdminAuthorized(req, res);
       if (!admin) return;
-      const [, , firebaseCustomToken] = await Promise.all([
+      const [, , , firebaseCustomToken] = await Promise.all([
         purgeNonOwnerAdmins(),
         expireStaleOrdersLazy({ minIntervalMs: 45_000 }),
+        runScheduledShopAndArchiveCheck({ minIntervalMs: 45_000 }),
         createFirebaseCustomToken(admin.userId, {
           role: admin.role,
           adminId: admin.userId,
@@ -893,6 +912,13 @@ export default async function handler(req: Request, res: Response) {
 
       const currentUser = db.adminUsers.find((u) => u.id === admin.userId);
       const rzpCfg = getRazorpayConfig();
+      const effectiveSettings = {
+        ...db.settings,
+        isOpen: computeEffectiveShopOpen(db.settings),
+        opensAtText: db.settings.autoScheduleEnabled
+          ? formatTime24To12(db.settings.openTime || '11:00')
+          : db.settings.opensAtText || '11:00 AM',
+      };
 
       res.json({
         currentUser: currentUser ? toPublicAdminUser(currentUser) : null,
@@ -904,7 +930,7 @@ export default async function handler(req: Request, res: Response) {
               projectId: process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID || '',
             }
           : null,
-        settings: db.settings,
+        settings: effectiveSettings,
         deliveryZone: db.deliveryZone,
         categories: db.categories,
         menuItems: db.menuItems,
@@ -914,6 +940,7 @@ export default async function handler(req: Request, res: Response) {
         customers: Object.values(db.customers),
         // Requirement 8: Unpaid RAZORPAY orders do NOT enter the kitchen board
         orders: db.orders.filter(isOrderVisibleToKitchen),
+        orderHistory: db.orderHistory,
         payments: db.payments,
         refunds: db.refunds,
         deliveryBoys: db.deliveryBoys.map(toPublicDeliveryBoy),
@@ -1203,6 +1230,7 @@ export default async function handler(req: Request, res: Response) {
           return rtdb.ref(`deliveryBoys/${r.id}`).set(r);
         }),
         syncOrderRealtimePaths(order, previousRiderId),
+        order.refundPending ? syncCancelledPendingRefundToHistory(order) : Promise.resolve(),
       ]);
 
       if (becameCancelled) {
@@ -1862,7 +1890,43 @@ export default async function handler(req: Request, res: Response) {
           });
           return;
         }
-        db.settings = { ...db.settings, ...parsedSettings.data };
+        const patch = parsedSettings.data;
+        const isPureManualOpenToggle =
+          patch.isOpen !== undefined &&
+          patch.autoScheduleEnabled === undefined &&
+          patch.openTime === undefined &&
+          patch.closeTime === undefined &&
+          patch.closedDays === undefined &&
+          patch.manualOverrideOpen === undefined;
+        const hasScheduleUpdate =
+          patch.autoScheduleEnabled !== undefined ||
+          patch.openTime !== undefined ||
+          patch.closeTime !== undefined ||
+          patch.closedDays !== undefined;
+
+        db.settings = { ...db.settings, ...patch };
+
+        if (patch.manualOverrideOpen === null) {
+          db.settings.manualOverrideOpen = null;
+          db.settings.manualOverrideDate = null;
+        } else if (isPureManualOpenToggle && db.settings.autoScheduleEnabled) {
+          db.settings.manualOverrideOpen = Boolean(patch.isOpen);
+          db.settings.manualOverrideDate = getKolkataDateKey();
+        } else if (hasScheduleUpdate) {
+          if (patch.manualOverrideOpen === undefined) {
+            db.settings.manualOverrideOpen = null;
+            db.settings.manualOverrideDate = null;
+          }
+          if (!db.settings.autoScheduleEnabled) {
+            db.settings.manualOverrideOpen = null;
+            db.settings.manualOverrideDate = null;
+          }
+        }
+
+        if (db.settings.autoScheduleEnabled && db.settings.openTime) {
+          db.settings.opensAtText = formatTime24To12(db.settings.openTime);
+        }
+        db.settings.isOpen = computeEffectiveShopOpen(db.settings);
       }
 
       for (const k of ['shopLat', 'shopLng', 'radiusKm', 'shopAddress'] as const) {
@@ -2583,6 +2647,37 @@ export default async function handler(req: Request, res: Response) {
         clientIp
       );
       res.json({ ok: true, result });
+      return;
+    }
+
+    // 30. GET /api/admin/history & DELETE /api/admin/history/:orderId
+    if (method === 'GET' && subPath === '/history') {
+      const admin = await verifyAdminAuthorized(req, res);
+      if (!admin) return;
+      res.json({ orderHistory: db.orderHistory });
+      return;
+    }
+
+    if (method === 'DELETE' && /^\/history\/[^/]+$/.test(subPath)) {
+      const admin = await verifyAdminAuthorized(req, res);
+      if (!admin) return;
+      const orderId = decodeURIComponent(subPath.split('/')[2]);
+      const target = db.orderHistory.find((h) => h.id === orderId);
+      if (!target) {
+        res.status(404).json({ error: 'History record not found' });
+        return;
+      }
+      db.orderHistory = db.orderHistory.filter((h) => h.id !== orderId);
+      await rtdb.ref(`orderHistory/${orderId}`).remove();
+      refreshHydrationCache();
+      await logAudit(
+        admin.email,
+        admin.role,
+        'ORDER_HISTORY_DELETED',
+        `Deleted history entry ${target.orderNumber} (₹${target.grandTotal}, ${target.dateKeyIST})`,
+        clientIp
+      );
+      res.json({ ok: true, orderHistory: db.orderHistory });
       return;
     }
 

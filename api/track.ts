@@ -47,13 +47,15 @@ export default async function handler(req: Request, res: Response) {
 
     const order = fast.order;
     if (!order) {
-      res.status(404).json({ error: 'Order tracking token not found' });
+      res.status(404).json({ error: 'Order not found or cancelled' });
       return;
     }
 
     // GET /api/track/:trackingToken
     if (req.method === 'GET' && !isReview) {
-      await expireSingleOrderIfStale(order, fast.payment);
+      if (!order.isArchived) {
+        await expireSingleOrderIfStale(order, fast.payment);
+      }
       res.json({
         order,
         trackingProjection: buildPublicTrackingProjection(order),

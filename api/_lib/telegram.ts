@@ -127,7 +127,7 @@ export function buildCancelledOrderTelegramMessage(
   ];
 
   if (order.paymentMethod === 'RAZORPAY' && order.paymentStatus === 'PAID') {
-    lines.push('⚠ Online paid - refund manually karna hai');
+    lines.push('⚠ Online paid - manual refund required');
   }
   lines.push(adminLine);
 

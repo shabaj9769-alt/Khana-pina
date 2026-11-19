@@ -20,14 +20,19 @@ import {
   checkFirebaseRateLimit,
   claimCouponUsageTx,
   clearHomeCache,
+  computeEffectiveShopOpen,
   db,
   ensureFirebaseSeeded,
   expireStaleOrdersLazy,
   findVerifiedCodOtpSession,
+  formatTime24To12,
   getCodOtpSession,
   invalidateHomeHydration,
+  isRefundPendingCancelledOrder,
   refreshHydrationCache,
+  runScheduledShopAndArchiveCheck,
   saveCodOtpSession,
+  syncCancelledPendingRefundToHistory,
   syncOrderRealtimePaths,
   verifyAndIncrementMenuStockSalesTx,
 } from './_lib/store.ts';
@@ -40,6 +45,10 @@ const OrderPlacementSchema = z.object({
     .trim()
     .regex(/^[6-9]\d{9}$/, 'Valid 10-digit Indian mobile number required'),
   deliveryAddress: z.string().trim().min(8).max(400),
+  deliveryPincode: z
+    .string()
+    .trim()
+    .regex(/^\d{6}$/, 'Please enter a valid 6-digit pincode'),
   deliveryLat: z.number().min(-90).max(90),
   deliveryLng: z.number().min(-180).max(180),
   orderNotes: z.string().max(300).optional().default(''),
@@ -272,6 +281,7 @@ export default async function handler(req: Request, res: Response) {
         return;
       }
       await expireStaleOrdersLazy({ minIntervalMs: 45_000 });
+      await runScheduledShopAndArchiveCheck({ minIntervalMs: 45_000 });
       const { tokens } = req.body || {};
       if (!Array.isArray(tokens)) {
         res.json({ orders: [] });
@@ -280,7 +290,13 @@ export default async function handler(req: Request, res: Response) {
       const safeTokens = tokens
         .filter((t): t is string => typeof t === 'string' && t.length >= 8)
         .slice(0, 30);
-      const matched = db.orders.filter((o) => safeTokens.includes(o.trackingToken));
+      const matched = db.orders.filter((o) => {
+        if (!safeTokens.includes(o.trackingToken)) return false;
+        if (o.status === 'CANCELLED' || o.status === 'REJECTED') {
+          return isRefundPendingCancelledOrder(o);
+        }
+        return true;
+      });
       res.json({ orders: matched });
       return;
     }
@@ -482,6 +498,7 @@ export default async function handler(req: Request, res: Response) {
         ...riderUpdates,
         updatedPayment ? rtdb.ref(`payments/${updatedPayment.id}`).set(updatedPayment) : Promise.resolve(),
         syncOrderRealtimePaths(order),
+        order.refundPending ? syncCancelledPendingRefundToHistory(order) : Promise.resolve(),
       ]);
       refreshHydrationCache();
 
@@ -515,6 +532,7 @@ export default async function handler(req: Request, res: Response) {
         customerName,
         customerPhone,
         deliveryAddress,
+        deliveryPincode,
         deliveryLat,
         deliveryLng,
         orderNotes,
@@ -526,11 +544,17 @@ export default async function handler(req: Request, res: Response) {
         items,
       } = parsedBody.data;
 
-      if (!db.settings.isOpen) {
+      await runScheduledShopAndArchiveCheck({ minIntervalMs: 45_000 });
+      const effectiveShopOpen = computeEffectiveShopOpen(db.settings);
+      const effectiveOpensAtText = db.settings.autoScheduleEnabled
+        ? formatTime24To12(db.settings.openTime || '11:00')
+        : db.settings.opensAtText || '11:00 AM';
+
+      if (!effectiveShopOpen) {
         if (!(db.settings.allowPreOrdersWhenClosed && scheduledFor)) {
           res.status(400).json({
             error: db.settings.allowPreOrdersWhenClosed
-              ? `Kitchen is currently closed (opens at ${db.settings.opensAtText || '11:00 AM'}). Please pick a scheduled pre-order slot.`
+              ? `Kitchen is currently closed (opens at ${effectiveOpensAtText}). Please pick a scheduled pre-order slot.`
               : 'The kitchen is currently closed. Please check our opening hours.',
           });
           return;
@@ -546,6 +570,7 @@ export default async function handler(req: Request, res: Response) {
       const cleanName = customerName.replace(/[<>]/g, '');
       const cleanPhone = customerPhone.replace(/\D/g, '');
       const cleanAddress = deliveryAddress.replace(/[<>]/g, '');
+      const cleanPincode = deliveryPincode.replace(/\D/g, '');
 
       // Verify Cloudflare Turnstile if secret is configured
       if (process.env.TURNSTILE_SECRET_KEY) {
@@ -632,7 +657,7 @@ export default async function handler(req: Request, res: Response) {
       }
       if (!bill.withinZone) {
         res.status(400).json({
-          error: 'Sorry, we do not deliver to this location yet.',
+          error: 'Delivery is not available at this location.',
         });
         return;
       }
@@ -713,6 +738,7 @@ export default async function handler(req: Request, res: Response) {
         customerPhone: cleanPhone,
         customerIp: clientIp,
         deliveryAddress: cleanAddress,
+        deliveryPincode: cleanPincode,
         deliveryLat: Number(deliveryLat),
         deliveryLng: Number(deliveryLng),
         distanceKm: bill.distanceKm,
