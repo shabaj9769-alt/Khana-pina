@@ -104,6 +104,33 @@ export interface DeliverySlab {
   fee: number;
 }
 
+export interface AboutPageSectionCard {
+  id: string;
+  title: string;
+  text: string;
+  emoji?: string;
+  sortOrder: number;
+}
+
+export interface AboutPageSocialLinks {
+  instagram?: string;
+  facebook?: string;
+  youtube?: string;
+}
+
+export interface AboutPageConfig {
+  tagline?: string;
+  story?: string;
+  coverImage?: string;
+  sections: AboutPageSectionCard[];
+  openingHours?: string;
+  address?: string;
+  supportPhone?: string;
+  whatsappNumber?: string;
+  mapLink?: string;
+  socialLinks?: AboutPageSocialLinks;
+}
+
 export interface ShopSettings {
   shopName: string;
   fssaiNumber: string;
@@ -129,6 +156,7 @@ export interface ShopSettings {
   themeAccentColor?: string;
   themeSurfaceStyle?: 'warm' | 'clean' | 'minimal';
   theme?: StorefrontThemeConfig;
+  aboutPage?: AboutPageConfig;
 }
 
 export interface DeliveryZone {

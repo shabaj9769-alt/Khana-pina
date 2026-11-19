@@ -39,6 +39,9 @@ import {
   LocateFixed,
   ExternalLink,
   Mail,
+  ArrowUp,
+  ArrowDown,
+  Info,
 } from 'lucide-react';
 import { SafeImage } from './SafeImage.tsx';
 import {
@@ -61,6 +64,8 @@ import {
   ThemeMode,
   ItemVariant,
   ItemAddon,
+  AboutPageConfig,
+  AboutPageSectionCard,
 } from '../types';
 import {
   DEFAULT_STOREFRONT_THEME,
@@ -131,7 +136,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   // Navigation State (8 clean sections)
   const [activeSection, setActiveSection] = useState<AdminTopSection>('orders');
   const [menuSubTab, setMenuSubTab] = useState<'items' | 'categories'>('items');
-  const [storefrontSubTab, setStorefrontSubTab] = useState<'homepage' | 'banners' | 'theme'>(
+  const [storefrontSubTab, setStorefrontSubTab] = useState<'homepage' | 'banners' | 'theme' | 'about'>(
     'homepage'
   );
   const [marketingSubTab, setMarketingSubTab] = useState<'coupons' | 'broadcast'>('coupons');
@@ -266,6 +271,26 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   // Storefront Theme Editor State
   const [themeDraft, setThemeDraft] = useState<StorefrontThemeConfig>(DEFAULT_STOREFRONT_THEME);
   const [previewModeOverride, setPreviewModeOverride] = useState<'light' | 'dark'>('light');
+
+  // About Page Editor State
+  const emptyAboutDraft = (): AboutPageConfig => ({
+    tagline: '',
+    story: '',
+    coverImage: '',
+    sections: [],
+    openingHours: '',
+    address: '',
+    supportPhone: '',
+    whatsappNumber: '',
+    mapLink: '',
+    socialLinks: {
+      instagram: '',
+      facebook: '',
+      youtube: '',
+    },
+  });
+  const [aboutDraft, setAboutDraft] = useState<AboutPageConfig>(emptyAboutDraft);
+  const [confirmDeleteAboutCardId, setConfirmDeleteAboutCardId] = useState<string | null>(null);
 
   // KOT Print Modal
   const [kotOrder, setKotOrder] = useState<OrderRecord | null>(null);
@@ -488,6 +513,29 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         setThemeDraft(data.settings.theme);
         setPreviewModeOverride(data.settings.theme.mode === 'dark' ? 'dark' : 'light');
         cacheStorefrontTheme(data.settings.theme);
+      }
+      if (data.settings?.aboutPage) {
+        const rawA = data.settings.aboutPage as AboutPageConfig;
+        setAboutDraft({
+          tagline: rawA.tagline || '',
+          story: rawA.story || '',
+          coverImage: rawA.coverImage || '',
+          sections: [...(rawA.sections || [])].sort(
+            (a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0)
+          ),
+          openingHours: rawA.openingHours || '',
+          address: rawA.address || '',
+          supportPhone: rawA.supportPhone || '',
+          whatsappNumber: rawA.whatsappNumber || '',
+          mapLink: rawA.mapLink || '',
+          socialLinks: {
+            instagram: rawA.socialLinks?.instagram || '',
+            facebook: rawA.socialLinks?.facebook || '',
+            youtube: rawA.socialLinks?.youtube || '',
+          },
+        });
+      } else {
+        setAboutDraft(emptyAboutDraft());
       }
       if (data.currentUser) {
         setAdminUser(data.currentUser);
@@ -817,6 +865,27 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         setThemeDraft(data.settings.theme);
         setPreviewModeOverride(data.settings.theme.mode === 'dark' ? 'dark' : 'light');
         cacheStorefrontTheme(data.settings.theme);
+      }
+      if (data.settings?.aboutPage) {
+        const rawA = data.settings.aboutPage as AboutPageConfig;
+        setAboutDraft({
+          tagline: rawA.tagline || '',
+          story: rawA.story || '',
+          coverImage: rawA.coverImage || '',
+          sections: [...(rawA.sections || [])].sort(
+            (a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0)
+          ),
+          openingHours: rawA.openingHours || '',
+          address: rawA.address || '',
+          supportPhone: rawA.supportPhone || '',
+          whatsappNumber: rawA.whatsappNumber || '',
+          mapLink: rawA.mapLink || '',
+          socialLinks: {
+            instagram: rawA.socialLinks?.instagram || '',
+            facebook: rawA.socialLinks?.facebook || '',
+            youtube: rawA.socialLinks?.youtube || '',
+          },
+        });
       }
       triggerStoreRefresh();
       showToast('Saved');
@@ -2554,6 +2623,17 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   <Palette className="w-3.5 h-3.5" />
                   Appearance & Theme
                 </button>
+                <button
+                  onClick={() => setStorefrontSubTab('about')}
+                  className={`min-h-[40px] px-4 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer ${
+                    storefrontSubTab === 'about'
+                      ? 'bg-primary text-primary-contrast'
+                      : 'bg-surface border border-border text-text'
+                  }`}
+                >
+                  <Info className="w-3.5 h-3.5" />
+                  About Page
+                </button>
               </div>
 
               {storefrontSubTab === 'homepage' && (
@@ -3285,6 +3365,545 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       );
                     })()}
                   </div>
+                </div>
+              )}
+
+              {/* ================================================================
+                  4. ABOUT PAGE MANAGER (Owner & Manager)
+              ================================================================ */}
+              {storefrontSubTab === 'about' && (
+                <div className="space-y-4 min-w-0 max-w-full pb-20 lg:pb-6">
+                  {!canEditMenu && (
+                    <div className="p-3 rounded-xl border border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400 text-xs font-semibold">
+                      Only Owner or Manager can edit the About Page.
+                    </div>
+                  )}
+
+                  {/* Cover Image, Tagline & Story */}
+                  <div className="bg-surface rounded-2xl border border-border p-4 sm:p-5 space-y-4 min-w-0">
+                    <div>
+                      <h3 className="text-sm font-bold text-text">Brand Story & Cover</h3>
+                      <p className="text-xs text-muted">
+                        Shown on your customer About page. Leave any field blank to hide it.
+                      </p>
+                    </div>
+
+                    <div className="space-y-2">
+                      <label className="block text-xs font-bold text-text">
+                        Cover Image (Optional)
+                      </label>
+                      <div className="flex flex-wrap items-center gap-3 min-w-0">
+                        {aboutDraft.coverImage ? (
+                          <SafeImage
+                            src={aboutDraft.coverImage}
+                            alt="About cover preview"
+                            className="w-24 h-16 rounded-xl object-cover border border-border bg-bg shrink-0"
+                            containerClassName="w-24 h-16 rounded-xl object-cover border border-border bg-bg shrink-0"
+                          />
+                        ) : null}
+                        <label
+                          className={`flex-1 min-w-[160px] min-h-[42px] px-4 rounded-xl border border-border bg-bg text-xs font-bold flex items-center justify-center gap-1.5 hover:bg-surface ${
+                            canEditMenu ? 'cursor-pointer' : 'opacity-60 pointer-events-none'
+                          }`}
+                        >
+                          <Upload className="w-3.5 h-3.5 shrink-0" />
+                          <span>
+                            {isUploadingImage
+                              ? 'Uploading...'
+                              : aboutDraft.coverImage
+                              ? 'Change Photo'
+                              : 'Upload Photo'}
+                          </span>
+                          <input
+                            type="file"
+                            accept="image/*"
+                            disabled={!canEditMenu}
+                            className="hidden"
+                            onChange={async (e) => {
+                              const f = e.target.files?.[0];
+                              if (!f) return;
+                              const url = await uploadImageFile(f, 'about_cover');
+                              if (url) setAboutDraft((prev) => ({ ...prev, coverImage: url }));
+                            }}
+                          />
+                        </label>
+                        {aboutDraft.coverImage && canEditMenu && (
+                          <button
+                            type="button"
+                            onClick={() => setAboutDraft((prev) => ({ ...prev, coverImage: '' }))}
+                            className="min-h-[42px] px-3 rounded-xl border border-red-500/30 text-red-600 text-xs font-semibold hover:bg-red-500/10 cursor-pointer"
+                          >
+                            Remove
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-text mb-1">Tagline</label>
+                      <input
+                        type="text"
+                        disabled={!canEditMenu}
+                        maxLength={200}
+                        value={aboutDraft.tagline || ''}
+                        onChange={(e) =>
+                          setAboutDraft((prev) => ({ ...prev, tagline: e.target.value }))
+                        }
+                        placeholder="e.g. Fresh homestyle kitchen since 2018"
+                        className="w-full min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs text-text"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-text mb-1">Our Story</label>
+                      <textarea
+                        rows={4}
+                        disabled={!canEditMenu}
+                        maxLength={5000}
+                        value={aboutDraft.story || ''}
+                        onChange={(e) =>
+                          setAboutDraft((prev) => ({ ...prev, story: e.target.value }))
+                        }
+                        placeholder="Tell customers about your kitchen, ingredients, and passion..."
+                        className="w-full p-3 rounded-xl border border-border bg-bg text-xs text-text leading-relaxed"
+                      />
+                    </div>
+                  </div>
+
+                  {/* About Cards List */}
+                  <div className="bg-surface rounded-2xl border border-border p-4 sm:p-5 space-y-3 min-w-0">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <h3 className="text-sm font-bold text-text">About Cards</h3>
+                        <p className="text-xs text-muted">
+                          Add highlight cards like Kitchen Promise, Ingredients, or Catering.
+                        </p>
+                      </div>
+                      {canEditMenu && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const nextCard: AboutPageSectionCard = {
+                              id: `about_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+                              title: '',
+                              text: '',
+                              emoji: '',
+                              sortOrder: aboutDraft.sections.length + 1,
+                            };
+                            setAboutDraft((prev) => ({
+                              ...prev,
+                              sections: [...prev.sections, nextCard],
+                            }));
+                          }}
+                          className="min-h-[38px] px-3.5 rounded-xl bg-primary text-primary-contrast text-xs font-bold flex items-center gap-1.5 shrink-0 cursor-pointer"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>Add card</span>
+                        </button>
+                      )}
+                    </div>
+
+                    {aboutDraft.sections.length === 0 ? (
+                      <p className="text-xs text-muted py-3 text-center border border-dashed border-border rounded-xl">
+                        No cards added yet. Tap &quot;+ Add card&quot; to add one.
+                      </p>
+                    ) : (
+                      <div className="space-y-3">
+                        {aboutDraft.sections.map((card, idx) => (
+                          <div
+                            key={card.id}
+                            className="p-3 sm:p-4 rounded-xl border border-border bg-bg space-y-2.5 min-w-0"
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <span className="text-[11px] font-bold text-muted">
+                                Card {idx + 1}
+                              </span>
+                              {canEditMenu && (
+                                <div className="flex items-center gap-1 shrink-0">
+                                  <button
+                                    type="button"
+                                    disabled={idx === 0}
+                                    aria-label="Move card up"
+                                    onClick={() => {
+                                      if (idx === 0) return;
+                                      const copy = [...aboutDraft.sections];
+                                      [copy[idx - 1], copy[idx]] = [copy[idx], copy[idx - 1]];
+                                      setAboutDraft((prev) => ({
+                                        ...prev,
+                                        sections: copy.map((c, i) => ({
+                                          ...c,
+                                          sortOrder: i + 1,
+                                        })),
+                                      }));
+                                    }}
+                                    className="w-8 h-8 rounded-lg border border-border bg-surface flex items-center justify-center text-text disabled:opacity-40 cursor-pointer"
+                                  >
+                                    <ArrowUp className="w-3.5 h-3.5" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={idx === aboutDraft.sections.length - 1}
+                                    aria-label="Move card down"
+                                    onClick={() => {
+                                      if (idx === aboutDraft.sections.length - 1) return;
+                                      const copy = [...aboutDraft.sections];
+                                      [copy[idx], copy[idx + 1]] = [copy[idx + 1], copy[idx]];
+                                      setAboutDraft((prev) => ({
+                                        ...prev,
+                                        sections: copy.map((c, i) => ({
+                                          ...c,
+                                          sortOrder: i + 1,
+                                        })),
+                                      }));
+                                    }}
+                                    className="w-8 h-8 rounded-lg border border-border bg-surface flex items-center justify-center text-text disabled:opacity-40 cursor-pointer"
+                                  >
+                                    <ArrowDown className="w-3.5 h-3.5" />
+                                  </button>
+                                  {confirmDeleteAboutCardId === card.id ? (
+                                    <div className="flex items-center gap-1 ml-1">
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          const filtered = aboutDraft.sections
+                                            .filter((c) => c.id !== card.id)
+                                            .map((c, i) => ({ ...c, sortOrder: i + 1 }));
+                                          setAboutDraft((prev) => ({
+                                            ...prev,
+                                            sections: filtered,
+                                          }));
+                                          setConfirmDeleteAboutCardId(null);
+                                        }}
+                                        className="px-2 py-1 rounded-lg bg-red-600 text-white text-[11px] font-bold cursor-pointer"
+                                      >
+                                        Confirm
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => setConfirmDeleteAboutCardId(null)}
+                                        className="px-2 py-1 rounded-lg border border-border bg-surface text-[11px] font-semibold cursor-pointer"
+                                      >
+                                        Cancel
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      aria-label="Delete card"
+                                      onClick={() => setConfirmDeleteAboutCardId(card.id)}
+                                      className="w-8 h-8 rounded-lg border border-red-500/30 text-red-600 hover:bg-red-500/10 flex items-center justify-center cursor-pointer"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+
+                            <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
+                              <div>
+                                <label className="block text-[11px] font-semibold text-muted mb-1">
+                                  Emoji
+                                </label>
+                                <input
+                                  type="text"
+                                  disabled={!canEditMenu}
+                                  maxLength={8}
+                                  value={card.emoji || ''}
+                                  onChange={(e) => {
+                                    const val = e.target.value;
+                                    setAboutDraft((prev) => ({
+                                      ...prev,
+                                      sections: prev.sections.map((c) =>
+                                        c.id === card.id ? { ...c, emoji: val } : c
+                                      ),
+                                    }));
+                                  }}
+                                  placeholder="🍲"
+                                  className="w-full min-h-[38px] px-2.5 rounded-xl border border-border bg-surface text-xs text-text"
+                                />
+                              </div>
+                              <div className="sm:col-span-3">
+                                <label className="block text-[11px] font-semibold text-muted mb-1">
+                                  Title *
+                                </label>
+                                <input
+                                  type="text"
+                                  disabled={!canEditMenu}
+                                  maxLength={120}
+                                  value={card.title}
+                                  onChange={(e) => {
+                                    const val = e.target.value;
+                                    setAboutDraft((prev) => ({
+                                      ...prev,
+                                      sections: prev.sections.map((c) =>
+                                        c.id === card.id ? { ...c, title: val } : c
+                                      ),
+                                    }));
+                                  }}
+                                  placeholder="e.g. Fresh Daily Preparation"
+                                  className="w-full min-h-[38px] px-3 rounded-xl border border-border bg-surface text-xs text-text"
+                                />
+                              </div>
+                            </div>
+
+                            <div>
+                              <label className="block text-[11px] font-semibold text-muted mb-1">
+                                Text *
+                              </label>
+                              <textarea
+                                rows={2}
+                                disabled={!canEditMenu}
+                                maxLength={1500}
+                                value={card.text}
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  setAboutDraft((prev) => ({
+                                    ...prev,
+                                    sections: prev.sections.map((c) =>
+                                      c.id === card.id ? { ...c, text: val } : c
+                                    ),
+                                  }));
+                                }}
+                                placeholder="Write a short description for this card..."
+                                className="w-full p-2.5 rounded-xl border border-border bg-surface text-xs text-text"
+                              />
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Hours, Address, Contact & Social Links */}
+                  <div className="bg-surface rounded-2xl border border-border p-4 sm:p-5 space-y-4 min-w-0">
+                    <div>
+                      <h3 className="text-sm font-bold text-text">Hours, Location & Contact</h3>
+                      <p className="text-xs text-muted">
+                        Only filled details will appear on the customer About page.
+                      </p>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div className="sm:col-span-2">
+                        <label className="block text-xs font-bold text-text mb-1">
+                          Opening Hours
+                        </label>
+                        <input
+                          type="text"
+                          disabled={!canEditMenu}
+                          maxLength={200}
+                          value={aboutDraft.openingHours || ''}
+                          onChange={(e) =>
+                            setAboutDraft((prev) => ({ ...prev, openingHours: e.target.value }))
+                          }
+                          placeholder="e.g. Mon–Sun · 11:00 AM – 11:00 PM"
+                          className="w-full min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs text-text"
+                        />
+                      </div>
+
+                      <div className="sm:col-span-2">
+                        <label className="block text-xs font-bold text-text mb-1">
+                          Shop Address
+                        </label>
+                        <textarea
+                          rows={2}
+                          disabled={!canEditMenu}
+                          maxLength={500}
+                          value={aboutDraft.address || ''}
+                          onChange={(e) =>
+                            setAboutDraft((prev) => ({ ...prev, address: e.target.value }))
+                          }
+                          placeholder="Full street address of your restaurant"
+                          className="w-full p-3 rounded-xl border border-border bg-bg text-xs text-text"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-bold text-text mb-1">
+                          Support Phone
+                        </label>
+                        <input
+                          type="text"
+                          disabled={!canEditMenu}
+                          maxLength={32}
+                          value={aboutDraft.supportPhone || ''}
+                          onChange={(e) =>
+                            setAboutDraft((prev) => ({ ...prev, supportPhone: e.target.value }))
+                          }
+                          placeholder="+91 98201 44500"
+                          className="w-full min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs text-text"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-bold text-text mb-1">
+                          WhatsApp Number
+                        </label>
+                        <input
+                          type="text"
+                          disabled={!canEditMenu}
+                          maxLength={32}
+                          value={aboutDraft.whatsappNumber || ''}
+                          onChange={(e) =>
+                            setAboutDraft((prev) => ({ ...prev, whatsappNumber: e.target.value }))
+                          }
+                          placeholder="+91 98201 44500"
+                          className="w-full min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs text-text"
+                        />
+                      </div>
+
+                      <div className="sm:col-span-2">
+                        <label className="block text-xs font-bold text-text mb-1">
+                          Google Maps Link
+                        </label>
+                        <input
+                          type="url"
+                          disabled={!canEditMenu}
+                          maxLength={500}
+                          value={aboutDraft.mapLink || ''}
+                          onChange={(e) =>
+                            setAboutDraft((prev) => ({ ...prev, mapLink: e.target.value }))
+                          }
+                          placeholder="https://maps.google.com/..."
+                          className="w-full min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs text-text"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="pt-2 border-t border-border space-y-3">
+                      <h4 className="text-xs font-bold text-text">Social Links (Optional)</h4>
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                        <div>
+                          <label className="block text-[11px] font-semibold text-muted mb-1">
+                            Instagram
+                          </label>
+                          <input
+                            type="url"
+                            disabled={!canEditMenu}
+                            maxLength={300}
+                            value={aboutDraft.socialLinks?.instagram || ''}
+                            onChange={(e) =>
+                              setAboutDraft((prev) => ({
+                                ...prev,
+                                socialLinks: {
+                                  ...(prev.socialLinks || {}),
+                                  instagram: e.target.value,
+                                },
+                              }))
+                            }
+                            placeholder="https://instagram.com/..."
+                            className="w-full min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs text-text"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-[11px] font-semibold text-muted mb-1">
+                            Facebook
+                          </label>
+                          <input
+                            type="url"
+                            disabled={!canEditMenu}
+                            maxLength={300}
+                            value={aboutDraft.socialLinks?.facebook || ''}
+                            onChange={(e) =>
+                              setAboutDraft((prev) => ({
+                                ...prev,
+                                socialLinks: {
+                                  ...(prev.socialLinks || {}),
+                                  facebook: e.target.value,
+                                },
+                              }))
+                            }
+                            placeholder="https://facebook.com/..."
+                            className="w-full min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs text-text"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-[11px] font-semibold text-muted mb-1">
+                            YouTube
+                          </label>
+                          <input
+                            type="url"
+                            disabled={!canEditMenu}
+                            maxLength={300}
+                            value={aboutDraft.socialLinks?.youtube || ''}
+                            onChange={(e) =>
+                              setAboutDraft((prev) => ({
+                                ...prev,
+                                socialLinks: {
+                                  ...(prev.socialLinks || {}),
+                                  youtube: e.target.value,
+                                },
+                              }))
+                            }
+                            placeholder="https://youtube.com/..."
+                            className="w-full min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs text-text"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Sticky Save Button */}
+                  {canEditMenu && (
+                    <div className="sticky bottom-16 lg:bottom-4 z-20 bg-surface/95 backdrop-blur-xs border border-border rounded-2xl p-3 shadow-md">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const normalizeUrl = (raw?: string) => {
+                            const t = (raw || '').trim();
+                            if (!t) return '';
+                            if (/^https?:\/\//i.test(t)) return t;
+                            if (/^(javascript|data|vbscript):/i.test(t)) return '';
+                            return `https://${t}`;
+                          };
+
+                          const cleanedCards: AboutPageSectionCard[] = [];
+                          for (let i = 0; i < aboutDraft.sections.length; i++) {
+                            const c = aboutDraft.sections[i];
+                            const title = c.title.trim();
+                            const text = c.text.trim();
+                            const emoji = (c.emoji || '').trim();
+                            if (!title && !text && !emoji) continue;
+                            if (!title || !text) {
+                              showToast(`Please fill both title and text for Card ${i + 1}`);
+                              return;
+                            }
+                            cleanedCards.push({
+                              id: c.id,
+                              title,
+                              text,
+                              emoji,
+                              sortOrder: cleanedCards.length + 1,
+                            });
+                          }
+
+                          const payload: AboutPageConfig = {
+                            tagline: (aboutDraft.tagline || '').trim(),
+                            story: (aboutDraft.story || '').trim(),
+                            coverImage: (aboutDraft.coverImage || '').trim(),
+                            sections: cleanedCards,
+                            openingHours: (aboutDraft.openingHours || '').trim(),
+                            address: (aboutDraft.address || '').trim(),
+                            supportPhone: (aboutDraft.supportPhone || '').trim(),
+                            whatsappNumber: (aboutDraft.whatsappNumber || '').trim(),
+                            mapLink: normalizeUrl(aboutDraft.mapLink),
+                            socialLinks: {
+                              instagram: normalizeUrl(aboutDraft.socialLinks?.instagram),
+                              facebook: normalizeUrl(aboutDraft.socialLinks?.facebook),
+                              youtube: normalizeUrl(aboutDraft.socialLinks?.youtube),
+                            },
+                          };
+                          handleUpdateShopSettings({ aboutPage: payload });
+                        }}
+                        className="w-full min-h-[44px] rounded-xl bg-primary text-primary-contrast font-bold text-xs cursor-pointer shadow-sm"
+                      >
+                        Save
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
             </div>

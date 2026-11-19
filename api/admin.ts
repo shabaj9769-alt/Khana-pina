@@ -84,6 +84,44 @@ const StorefrontThemeSchema = z.object({
   pwaThemeColor: z.string().trim().max(32).optional().default('#E23744'),
 });
 
+const safeOptionalHttpUrlSchema = z
+  .string()
+  .trim()
+  .max(500)
+  .refine((val) => !val || /^https?:\/\/.+/i.test(val), {
+    message: 'Link must start with https:// or http://',
+  });
+
+const AboutPageSectionCardSchema = z.object({
+  id: z.string().trim().min(1).max(100),
+  title: z.string().trim().min(1, 'Card title is required').max(120),
+  text: z.string().trim().min(1, 'Card text is required').max(1500),
+  emoji: z.string().trim().max(16).optional().default(''),
+  sortOrder: z.number().int().min(0).max(500),
+});
+
+const AboutPageSchema = z
+  .object({
+    tagline: z.string().trim().max(200).optional().default(''),
+    story: z.string().trim().max(5000).optional().default(''),
+    coverImage: z.string().trim().max(500000).optional().default(''),
+    sections: z.array(AboutPageSectionCardSchema).max(30).optional().default([]),
+    openingHours: z.string().trim().max(200).optional().default(''),
+    address: z.string().trim().max(500).optional().default(''),
+    supportPhone: z.string().trim().max(32).optional().default(''),
+    whatsappNumber: z.string().trim().max(32).optional().default(''),
+    mapLink: safeOptionalHttpUrlSchema.optional().default(''),
+    socialLinks: z
+      .object({
+        instagram: safeOptionalHttpUrlSchema.optional().default(''),
+        facebook: safeOptionalHttpUrlSchema.optional().default(''),
+        youtube: safeOptionalHttpUrlSchema.optional().default(''),
+      })
+      .optional()
+      .default({ instagram: '', facebook: '', youtube: '' }),
+  })
+  .strict();
+
 const ShopSettingsUpdateSchema = z
   .object({
     shopName: z.string().trim().min(2).max(120).optional(),
@@ -110,6 +148,7 @@ const ShopSettingsUpdateSchema = z
     themeAccentColor: z.string().trim().max(32).optional(),
     themeSurfaceStyle: z.enum(['warm', 'clean', 'minimal']).optional(),
     theme: StorefrontThemeSchema.optional(),
+    aboutPage: AboutPageSchema.optional(),
   })
   .strict();
 

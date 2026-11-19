@@ -9,12 +9,15 @@ import {
   Clock,
   Compass,
   ExternalLink,
+  Facebook,
   Flame,
   Heart,
   Info,
+  Instagram,
   MapPin,
   MessageCircle,
   Minus,
+  Phone,
   Plus,
   RotateCcw,
   Search,
@@ -25,6 +28,7 @@ import {
   Truck,
   User,
   X,
+  Youtube,
 } from 'lucide-react';
 import {
   Banner,
@@ -85,33 +89,6 @@ interface CustomerStoreProps {
     allMenuItems?: MenuItem[];
   }) => void;
 }
-
-const LOCATION_PRESETS = [
-  {
-    label: 'Bandra West · Carter Road (1.2 km)',
-    address: 'Flat 402, Sea Breeze Apartments, Carter Road, Bandra West, Mumbai',
-    lat: 19.0655,
-    lng: 72.8262,
-  },
-  {
-    label: 'Khar West · Pali Hill (2.4 km)',
-    address: '12th Road, Pali Hill, Khar West, Mumbai 400052',
-    lat: 19.0728,
-    lng: 72.8345,
-  },
-  {
-    label: 'Santacruz West · Juhu Tara Rd (4.6 km)',
-    address: '301 Palm Grove, Juhu Tara Road, Santacruz West, Mumbai',
-    lat: 19.0988,
-    lng: 72.8265,
-  },
-  {
-    label: 'Colaba · Cuffe Parade (18.4 km · Outside Area)',
-    address: 'Maker Tower, Cuffe Parade, Colaba, South Mumbai',
-    lat: 18.9151,
-    lng: 72.8259,
-  },
-];
 
 const CATEGORY_THUMBS: Record<string, string> = {
   cat_biryani: '/assets/images/dish_royal_biryani_1793975538453.webp',
@@ -262,6 +239,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
   const [guestPhone, setGuestPhone] = useState(initialProfile.phone);
   const [guestEmail, setGuestEmail] = useState(initialProfile.email || '');
   const [guestAddress, setGuestAddress] = useState(initialProfile.address);
+  const [guestLandmark, setGuestLandmark] = useState(initialProfile.landmark || '');
   const [guestPincode, setGuestPincode] = useState('');
   const [profileSavedToast, setProfileSavedToast] = useState(false);
   const [guestLat, setGuestLat] = useState(initialProfile.lat);
@@ -606,7 +584,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
       name: guestName,
       phone: guestPhone,
       address: guestAddress,
-      landmark: '',
+      landmark: guestLandmark,
       lat: guestLat,
       lng: guestLng,
       locationPinned,
@@ -614,7 +592,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
     if (onAddressChanged) {
       onAddressChanged(locationPinned && guestAddress ? guestAddress : '');
     }
-  }, [guestName, guestPhone, guestAddress, guestLat, guestLng, locationPinned]);
+  }, [guestName, guestPhone, guestAddress, guestLandmark, guestLat, guestLng, locationPinned]);
 
   // Fetch server-side Haversine & bill preview whenever cart, location, coupon, or phone changes
   useEffect(() => {
@@ -848,12 +826,14 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
   };
 
   const handleUseCurrentGps = () => {
+    const fallbackLat = homeData?.deliveryZone.shopLat ?? 19.0607;
+    const fallbackLng = homeData?.deliveryZone.shopLng ?? 72.8362;
     if (!navigator.geolocation) {
-      setGuestLat(19.0655);
-      setGuestLng(72.8262);
+      setGuestLat(fallbackLat);
+      setGuestLng(fallbackLng);
       setLocationPinned(true);
       if (!guestAddress.trim()) {
-        setGuestAddress('Bandra West, Mumbai (GPS Location)');
+        setGuestAddress('Pinned GPS Location');
       }
       return;
     }
@@ -863,15 +843,15 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
         setGuestLng(Number(pos.coords.longitude.toFixed(4)));
         setLocationPinned(true);
         if (!guestAddress.trim()) {
-          setGuestAddress('GPS Pinned Location');
+          setGuestAddress('Pinned GPS Location');
         }
       },
       () => {
-        setGuestLat(19.0655);
-        setGuestLng(72.8262);
+        setGuestLat(fallbackLat);
+        setGuestLng(fallbackLng);
         setLocationPinned(true);
         if (!guestAddress.trim()) {
-          setGuestAddress('Bandra West, Mumbai (GPS Location)');
+          setGuestAddress('Pinned GPS Location');
         }
       }
     );
@@ -1069,7 +1049,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
 
     if (!locationPinned || (guestLat === 0 && guestLng === 0)) {
       setCheckoutError(
-        'Please select your delivery location using GPS or a nearby area pin in Section 1.'
+        'Please tap "Use my current GPS location" in Section 1 to check delivery availability.'
       );
       return;
     }
@@ -1079,7 +1059,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
       (billPreview !== null && !billPreview.withinZone)
     ) {
       setCheckoutError(
-        "Sorry, we don't deliver to this location yet. Try a different address or pin."
+        'Sorry, we do not deliver to this location yet. Please try a different address.'
       );
       return;
     }
@@ -1141,7 +1121,13 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
         body: JSON.stringify({
           customerName: guestName,
           customerPhone: guestPhone,
-          deliveryAddress: guestAddress,
+          deliveryAddress: [
+            guestAddress.trim(),
+            guestLandmark.trim() ? `Landmark: ${guestLandmark.trim()}` : '',
+            guestPincode.trim() ? `PIN: ${guestPincode.trim()}` : '',
+          ]
+            .filter(Boolean)
+            .join(', '),
           deliveryLat: guestLat,
           deliveryLng: guestLng,
           orderNotes,
@@ -1660,7 +1646,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
     : null;
   const addressFieldError =
     !locationPinned || (guestLat === 0 && guestLng === 0)
-      ? 'Please pin your delivery location using GPS or choose a nearby area.'
+      ? 'Please tap "Use my current GPS location" to verify delivery availability.'
       : guestAddress.trim().length < 8
       ? 'Please enter your flat, building, and street address (at least 8 characters).'
       : null;
@@ -1680,11 +1666,9 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
     (billPreview !== null && !billPreview.minOrderMet);
 
   const placeOrderDisabledReason = !locationPinned
-    ? 'Pin your delivery location in Section 1 to enable ordering.'
+    ? 'Tap "Use my current GPS location" in Section 1 to check delivery availability.'
     : isOutsideDeliveryZone
-    ? `Outside our ${deliveryZone.radiusKm} km delivery area (${
-        liveAddressDistance.km || billPreview?.distanceKm
-      } km away). Try a different address or pin.`
+    ? 'Sorry, we do not deliver to this location yet. Please try a different address.'
     : billPreview && !billPreview.minOrderMet
     ? `Minimum order amount for delivery is ₹${billPreview.minOrderAmount}.`
     : null;
@@ -1940,15 +1924,15 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
               {isOutsideDeliveryZone && (
                 <div
                   role="alert"
-                  className="rounded-2xl border-2 border-primary bg-soft-tint  p-4 flex items-start gap-3 shadow-xs"
+                  className="rounded-2xl border-2 border-primary bg-soft-tint p-4 flex items-start gap-3 shadow-xs"
                 >
                   <AlertTriangle className="w-6 h-6 text-primary shrink-0 mt-0.5" />
                   <div className="min-w-0 flex-1 space-y-1">
                     <p className="text-[15px] font-extrabold text-primary break-words">
-                      Sorry, we don&apos;t deliver to this location yet. Try a different address or pin.
+                      Sorry, we do not deliver to this location yet.
                     </p>
                     <p className="text-[13px] font-medium text-text break-words">
-                      Pinned location is {liveAddressDistance.km || billPreview?.distanceKm} km from our Bandra West kitchen (maximum delivery radius is {deliveryZone.radiusKm} km).
+                      Please try a different delivery address or GPS location within our service area.
                     </p>
                   </div>
                 </div>
@@ -1959,7 +1943,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                 aria-label="Delivery address"
                 className={`rounded-2xl border p-4 sm:p-5 space-y-4 min-w-0 max-w-full transition-colors ${
                   isOutsideDeliveryZone || ((checkoutTouched || addressTouched) && addressFieldError)
-                    ? 'border-2 border-primary bg-soft-tint/50 /40'
+                    ? 'border-2 border-primary bg-soft-tint/50'
                     : 'border-border bg-surface'
                 }`}
               >
@@ -1979,8 +1963,8 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                       }`}
                     >
                       {liveAddressDistance.within
-                        ? `✓ ${liveAddressDistance.km} km`
-                        : `✕ ${liveAddressDistance.km} km (Outside zone)`}
+                        ? '✓ Delivery available'
+                        : '✕ Outside delivery area'}
                     </span>
                   )}
                 </div>
@@ -1995,47 +1979,13 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   <span>Use my current GPS location</span>
                 </button>
 
-                {/* Area Presets (Quick pin selector) */}
-                <div className="space-y-2">
-                  <p className="text-[13px] font-bold text-muted">
-                    Or pin your neighborhood area:
-                  </p>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    {LOCATION_PRESETS.map((p, idx) => {
-                      const isSelected =
-                        locationPinned && guestLat === p.lat && guestLng === p.lng;
-                      return (
-                        <button
-                          key={idx}
-                          type="button"
-                          onClick={() => {
-                            setGuestAddress(p.address);
-                            setGuestLat(p.lat);
-                            setGuestLng(p.lng);
-                            setLocationPinned(true);
-                            setCheckoutError(null);
-                          }}
-                          className={`min-h-[48px] p-3 rounded-xl border text-left transition-colors cursor-pointer ${
-                            isSelected
-                              ? 'border-primary bg-soft-tint font-bold'
-                              : 'border-border bg-bg hover:border-primary/50'
-                          }`}
-                        >
-                          <p className="text-[14px] font-bold text-text break-words">
-                            {p.label}
-                          </p>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
                 {/* Saved Last Address indicator if available */}
                 {initialProfile.address && guestAddress !== initialProfile.address && (
                   <button
                     type="button"
                     onClick={() => {
                       setGuestAddress(initialProfile.address);
+                      setGuestLandmark(initialProfile.landmark || '');
                       if (initialProfile.lat && initialProfile.lng) {
                         setGuestLat(initialProfile.lat);
                         setGuestLng(initialProfile.lng);
@@ -2068,7 +2018,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                       handleCheckoutInputBlur();
                     }}
                     onChange={(e) => setGuestAddress(e.target.value)}
-                    placeholder="Enter flat no., building name, street & landmark"
+                    placeholder="Enter flat no., building name, and street"
                     className="w-full max-w-full min-h-[64px] px-3.5 py-3 rounded-xl border border-border bg-bg text-[16px] text-text box-border focus:outline-none focus:border-primary"
                   />
                   {(checkoutTouched || addressTouched) && addressFieldError && (
@@ -2078,26 +2028,47 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   )}
                 </div>
 
-                {/* Pincode Input */}
-                <div className="space-y-1.5">
-                  <label
-                    htmlFor="checkout-pincode-input"
-                    className="block text-[14px] font-bold text-text"
-                  >
-                    Pincode *
-                  </label>
-                  <input
-                    id="checkout-pincode-input"
-                    type="text"
-                    inputMode="numeric"
-                    maxLength={6}
-                    value={guestPincode}
-                    onFocus={handleCheckoutInputFocus}
-                    onBlur={handleCheckoutInputBlur}
-                    onChange={(e) => setGuestPincode(e.target.value.replace(/\D/g, ''))}
-                    placeholder="e.g. 400050"
-                    className="w-full max-w-full min-h-[48px] px-3.5 py-2.5 rounded-xl border border-border bg-bg text-[16px] tabular-nums text-text box-border focus:outline-none focus:border-primary"
-                  />
+                {/* Landmark & Pincode Inputs */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <label
+                      htmlFor="checkout-landmark-input"
+                      className="block text-[14px] font-bold text-text"
+                    >
+                      Landmark (optional)
+                    </label>
+                    <input
+                      id="checkout-landmark-input"
+                      type="text"
+                      value={guestLandmark}
+                      onFocus={handleCheckoutInputFocus}
+                      onBlur={handleCheckoutInputBlur}
+                      onChange={(e) => setGuestLandmark(e.target.value)}
+                      placeholder="Near park, temple, etc."
+                      className="w-full max-w-full min-h-[48px] px-3.5 py-2.5 rounded-xl border border-border bg-bg text-[16px] text-text box-border focus:outline-none focus:border-primary"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label
+                      htmlFor="checkout-pincode-input"
+                      className="block text-[14px] font-bold text-text"
+                    >
+                      Pincode *
+                    </label>
+                    <input
+                      id="checkout-pincode-input"
+                      type="text"
+                      inputMode="numeric"
+                      maxLength={6}
+                      value={guestPincode}
+                      onFocus={handleCheckoutInputFocus}
+                      onBlur={handleCheckoutInputBlur}
+                      onChange={(e) => setGuestPincode(e.target.value.replace(/\D/g, ''))}
+                      placeholder="e.g. 400050"
+                      className="w-full max-w-full min-h-[48px] px-3.5 py-2.5 rounded-xl border border-border bg-bg text-[16px] tabular-nums text-text box-border focus:outline-none focus:border-primary"
+                    />
+                  </div>
                 </div>
               </section>
 
@@ -2502,7 +2473,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   <div className="flex justify-between text-muted">
                     <span>
                       Delivery fee
-                      {billPreview ? ` (${billPreview.distanceKm} km)` : ''}
+                      {billPreview && billPreview.withinZone ? ` (${billPreview.distanceKm} km)` : ''}
                     </span>
                     <span className="tabular-nums font-semibold text-text">
                       ₹{billPreview?.deliveryFee ?? 0}
@@ -2622,7 +2593,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   phone: guestPhone,
                   email: guestEmail,
                   address: guestAddress,
-                  landmark: '',
+                  landmark: guestLandmark,
                   lat: guestLat,
                   lng: guestLng,
                   locationPinned,
@@ -2755,99 +2726,260 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
       {/* =====================================================================
           ABOUT RESTAURANT PAGE (#/about)
          ===================================================================== */}
-      {checkoutStep === 'about' && (
-        <div className="min-h-dvh w-full max-w-full overflow-x-hidden bg-bg text-text pb-36 box-border">
-          <div className="sticky top-0 z-20 w-full max-w-full bg-surface border-b border-border">
-            <div className="w-full max-w-[720px] mx-auto px-4 min-h-[54px] flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                <button
-                  type="button"
-                  onClick={() => navigateFlowStep('store')}
-                  aria-label="Back to store"
-                  className="w-11 h-11 -ml-2 rounded-full flex items-center justify-center text-text hover:bg-border/40 shrink-0 cursor-pointer"
-                >
-                  <ArrowLeft className="w-5 h-5" />
-                </button>
-                <div className="min-w-0 flex-1">
-                  <h1 className="font-display text-[18px] sm:text-[20px] font-extrabold text-text break-words">
-                    About {settings.shopName}
-                  </h1>
+      {checkoutStep === 'about' && (() => {
+        const about = settings.aboutPage;
+        const coverSrc =
+          about?.coverImage?.trim() || '/assets/images/hero_artisanal_feast_1793975537331.webp';
+        const tagline = about?.tagline?.trim() || '';
+        const story = about?.story?.trim() || '';
+        const cards = [...(about?.sections || [])].sort(
+          (a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0)
+        );
+        const openingHours = about?.openingHours?.trim() || '';
+        const address = about?.address?.trim() || '';
+        const rawMapLink = about?.mapLink?.trim() || '';
+        const safeMapLink =
+          rawMapLink && /^https?:\/\//i.test(rawMapLink)
+            ? rawMapLink
+            : address
+            ? `https://maps.google.com/?q=${encodeURIComponent(address)}`
+            : '';
+        const supportPhone = about?.supportPhone?.trim() || '';
+        const whatsappRaw = about?.whatsappNumber?.trim() || '';
+        const whatsappNumDigits = whatsappRaw.replace(/\D/g, '');
+        const aboutWaHref = whatsappNumDigits
+          ? `https://wa.me/${whatsappNumDigits}?text=${encodeURIComponent(
+              `Hi ${settings.shopName}, I have a question.`
+            )}`
+          : '';
+        const instaUrl =
+          about?.socialLinks?.instagram?.trim() &&
+          /^https?:\/\//i.test(about.socialLinks.instagram.trim())
+            ? about.socialLinks.instagram.trim()
+            : '';
+        const fbUrl =
+          about?.socialLinks?.facebook?.trim() &&
+          /^https?:\/\//i.test(about.socialLinks.facebook.trim())
+            ? about.socialLinks.facebook.trim()
+            : '';
+        const ytUrl =
+          about?.socialLinks?.youtube?.trim() &&
+          /^https?:\/\//i.test(about.socialLinks.youtube.trim())
+            ? about.socialLinks.youtube.trim()
+            : '';
+        const hasSocialLinks = Boolean(instaUrl || fbUrl || ytUrl);
+        const hasOwnerContent = Boolean(
+          tagline ||
+            story ||
+            cards.length > 0 ||
+            openingHours ||
+            address ||
+            safeMapLink ||
+            supportPhone ||
+            whatsappNumDigits ||
+            hasSocialLinks
+        );
+
+        return (
+          <div className="min-h-dvh w-full max-w-full overflow-x-hidden bg-bg text-text pb-36 box-border">
+            <div className="sticky top-0 z-20 w-full max-w-full bg-surface border-b border-border">
+              <div className="w-full max-w-[720px] mx-auto px-4 min-h-[54px] flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                  <button
+                    type="button"
+                    onClick={() => navigateFlowStep('store')}
+                    aria-label="Back to store"
+                    className="w-11 h-11 -ml-2 rounded-full flex items-center justify-center text-text hover:bg-border/40 shrink-0 cursor-pointer"
+                  >
+                    <ArrowLeft className="w-5 h-5" />
+                  </button>
+                  <div className="min-w-0 flex-1">
+                    <h1 className="font-display text-[18px] sm:text-[20px] font-extrabold text-text break-words">
+                      About {settings.shopName}
+                    </h1>
+                  </div>
                 </div>
               </div>
+            </div>
+
+            <div className="w-full max-w-[720px] mx-auto px-4 pt-4 space-y-4 min-w-0 box-border">
+              {/* Cover Image + Brand Header + Story */}
+              <div className="rounded-2xl border border-border bg-surface overflow-hidden min-w-0 max-w-full box-border shadow-2xs">
+                <SafeImage
+                  src={coverSrc}
+                  alt={settings.shopName}
+                  className="w-full h-44 sm:h-56 object-cover object-center"
+                  containerClassName="w-full h-44 sm:h-56 bg-bg overflow-hidden"
+                />
+                <div className="p-4 sm:p-6 space-y-3 min-w-0">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-11 h-11 rounded-2xl bg-soft-tint text-primary flex items-center justify-center shrink-0 border border-primary/20">
+                      <Flame className="w-5 h-5" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <h2 className="font-display text-lg font-extrabold text-text break-words">
+                        {settings.shopName}
+                      </h2>
+                      {tagline ? (
+                        <p className="text-[13px] font-medium text-muted break-words">
+                          {tagline}
+                        </p>
+                      ) : null}
+                    </div>
+                  </div>
+
+                  {story ? (
+                    <p className="text-[14px] text-muted leading-relaxed whitespace-pre-line break-words pt-1">
+                      {story}
+                    </p>
+                  ) : !hasOwnerContent ? (
+                    <p className="text-[14px] text-muted leading-relaxed break-words pt-1">
+                      Welcome to {settings.shopName}! Every dish is freshly prepared in our kitchen
+                      with carefully chosen ingredients and delivered straight to your doorstep.
+                    </p>
+                  ) : null}
+                </div>
+              </div>
+
+              {/* Custom About Section Cards (Sorted) */}
+              {cards.length > 0 && (
+                <div className="grid grid-cols-1 gap-3 min-w-0">
+                  {cards.map((card) => (
+                    <div
+                      key={card.id}
+                      className="rounded-2xl border border-border bg-surface p-4 sm:p-5 space-y-1.5 min-w-0 max-w-full box-border shadow-2xs"
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        {card.emoji ? (
+                          <span className="w-9 h-9 rounded-xl bg-soft-tint border border-primary/20 flex items-center justify-center text-lg shrink-0">
+                            {card.emoji}
+                          </span>
+                        ) : null}
+                        <h3 className="text-[15px] font-extrabold text-text break-words min-w-0 flex-1">
+                          {card.title}
+                        </h3>
+                      </div>
+                      <p className="text-[14px] text-muted leading-relaxed whitespace-pre-line break-words">
+                        {card.text}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Opening Hours */}
+              {openingHours && (
+                <div className="rounded-2xl border border-border bg-surface p-4 sm:p-5 space-y-2 min-w-0 max-w-full box-border shadow-2xs">
+                  <h3 className="text-[15px] font-extrabold text-text flex items-center gap-2">
+                    <Clock className="w-4 h-4 text-primary shrink-0" />
+                    <span>Opening Hours</span>
+                  </h3>
+                  <p className="text-[14px] text-text font-semibold whitespace-pre-line break-words">
+                    {openingHours}
+                  </p>
+                </div>
+              )}
+
+              {/* Address & Open in Maps */}
+              {(address || safeMapLink) && (
+                <div className="rounded-2xl border border-border bg-surface p-4 sm:p-5 space-y-3 min-w-0 max-w-full box-border shadow-2xs">
+                  <h3 className="text-[15px] font-extrabold text-text flex items-center gap-2">
+                    <MapPin className="w-4 h-4 text-primary shrink-0" />
+                    <span>Address & Location</span>
+                  </h3>
+                  {address && (
+                    <p className="text-[14px] text-text break-words font-medium whitespace-pre-line">
+                      {address}
+                    </p>
+                  )}
+                  {safeMapLink && (
+                    <a
+                      href={safeMapLink}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="min-h-[44px] px-4 rounded-xl border border-primary/30 bg-soft-tint text-primary text-sm font-bold inline-flex items-center gap-2 hover:opacity-90 cursor-pointer"
+                    >
+                      <span>Open in Maps</span>
+                      <ExternalLink className="w-4 h-4 shrink-0" />
+                    </a>
+                  )}
+                </div>
+              )}
+
+              {/* Call & WhatsApp Buttons */}
+              {(supportPhone || aboutWaHref) && (
+                <div className="rounded-2xl border border-border bg-surface p-4 sm:p-5 space-y-3 min-w-0 max-w-full box-border shadow-2xs">
+                  <h3 className="text-[15px] font-extrabold text-text">Contact Us</h3>
+                  <div className="flex flex-wrap items-center gap-3">
+                    {supportPhone && (
+                      <a
+                        href={`tel:${supportPhone}`}
+                        className="min-h-[44px] px-4 rounded-xl border border-border bg-bg text-text font-bold text-[14px] inline-flex items-center gap-2 hover:bg-border/30 cursor-pointer"
+                      >
+                        <Phone className="w-4 h-4 text-primary shrink-0" />
+                        <span>Call</span>
+                      </a>
+                    )}
+                    {aboutWaHref && (
+                      <a
+                        href={aboutWaHref}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="min-h-[44px] px-4 rounded-xl bg-accent text-white font-bold text-[14px] inline-flex items-center gap-2 hover:opacity-90 cursor-pointer"
+                      >
+                        <MessageCircle className="w-4 h-4 shrink-0" />
+                        <span>WhatsApp</span>
+                      </a>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Social Links (only filled ones) */}
+              {hasSocialLinks && (
+                <div className="rounded-2xl border border-border bg-surface p-4 sm:p-5 space-y-3 min-w-0 max-w-full box-border shadow-2xs">
+                  <h3 className="text-[15px] font-extrabold text-text">Follow Us</h3>
+                  <div className="flex flex-wrap items-center gap-2.5">
+                    {instaUrl && (
+                      <a
+                        href={instaUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="min-h-[44px] px-4 rounded-xl border border-border bg-bg text-text font-bold text-[13px] inline-flex items-center gap-2 hover:border-primary/40 hover:bg-soft-tint cursor-pointer"
+                      >
+                        <Instagram className="w-4 h-4 text-primary shrink-0" />
+                        <span>Instagram</span>
+                      </a>
+                    )}
+                    {fbUrl && (
+                      <a
+                        href={fbUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="min-h-[44px] px-4 rounded-xl border border-border bg-bg text-text font-bold text-[13px] inline-flex items-center gap-2 hover:border-primary/40 hover:bg-soft-tint cursor-pointer"
+                      >
+                        <Facebook className="w-4 h-4 text-primary shrink-0" />
+                        <span>Facebook</span>
+                      </a>
+                    )}
+                    {ytUrl && (
+                      <a
+                        href={ytUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="min-h-[44px] px-4 rounded-xl border border-border bg-bg text-text font-bold text-[13px] inline-flex items-center gap-2 hover:border-primary/40 hover:bg-soft-tint cursor-pointer"
+                      >
+                        <Youtube className="w-4 h-4 text-primary shrink-0" />
+                        <span>YouTube</span>
+                      </a>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
-
-          <div className="w-full max-w-[720px] mx-auto px-4 pt-4 space-y-5 min-w-0 box-border">
-            {/* Restaurant Story */}
-            <div className="rounded-2xl border border-border bg-surface p-4 sm:p-6 space-y-3 min-w-0 max-w-full box-border shadow-2xs">
-              <div className="flex items-center gap-3">
-                <div className="w-12 h-12 rounded-2xl bg-primary/12 text-primary flex items-center justify-center shrink-0">
-                  <Flame className="w-6 h-6" />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <h2 className="font-display text-lg font-extrabold text-text break-words">{settings.shopName}</h2>
-                  <p className="text-xs text-muted truncate">Authentic Artisanal Indian Kitchen</p>
-                </div>
-              </div>
-              <p className="text-[14px] text-muted leading-relaxed break-words pt-1">
-                {settings.heroSubtitle ||
-                  `${settings.shopName} brings freshly prepared artisanal dishes crafted with heirloom spices and passion. Every meal is freshly prepared in our single-shop kitchen to deliver unmatched taste and quality right to your doorstep.`}
-              </p>
-            </div>
-
-            {/* Hours & Timings */}
-            <div className="rounded-2xl border border-border bg-surface p-4 sm:p-5 space-y-2 min-w-0 max-w-full box-border shadow-2xs">
-              <h3 className="text-[15px] font-extrabold text-text flex items-center gap-2">
-                <Clock className="w-4 h-4 text-primary" />
-                <span>Operating Hours</span>
-              </h3>
-              <p className="text-[14px] text-text font-semibold break-words">{settings.weeklyTimings || 'Monday – Sunday: 11:00 AM – 11:30 PM'}</p>
-              <p className="text-[13px] text-muted">Pre-orders accepted when kitchen is busy or closed.</p>
-            </div>
-
-            {/* Address & Location */}
-            <div className="rounded-2xl border border-border bg-surface p-4 sm:p-5 space-y-3 min-w-0 max-w-full box-border shadow-2xs">
-              <h3 className="text-[15px] font-extrabold text-text flex items-center gap-2">
-                <MapPin className="w-4 h-4 text-primary" />
-                <span>Kitchen Location & Delivery Radius</span>
-              </h3>
-              <p className="text-[14px] text-text break-words font-medium">{deliveryZone.shopAddress}</p>
-              <p className="text-[13px] text-muted">Direct delivery within {deliveryZone.radiusKm} km radius from Bandra West, Mumbai.</p>
-              <a
-                href={`https://maps.google.com/?q=${encodeURIComponent(deliveryZone.shopAddress)}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1.5 text-sm font-bold text-primary hover:underline pt-1 cursor-pointer"
-              >
-                <span>View on Google Maps</span>
-                <ExternalLink className="w-4 h-4" />
-              </a>
-            </div>
-
-            {/* Phone & WhatsApp Contact */}
-            <div className="rounded-2xl border border-border bg-surface p-4 sm:p-5 space-y-3 min-w-0 max-w-full box-border shadow-2xs">
-              <h3 className="text-[15px] font-extrabold text-text">Customer Support & WhatsApp</h3>
-              <p className="text-[14px] text-muted">Have questions or special catering requests? Reach out to us directly:</p>
-              <div className="flex flex-wrap items-center gap-3 pt-1">
-                <a
-                  href={`tel:${settings.supportPhone || '+919820144500'}`}
-                  className="min-h-[44px] px-4 rounded-xl border border-border bg-bg text-text font-bold text-[14px] inline-flex items-center gap-2 hover:bg-border/30 cursor-pointer"
-                >
-                  <span>📞 {settings.supportPhone || '+919820144500'}</span>
-                </a>
-                <a
-                  href={whatsappHref}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="min-h-[44px] px-4 rounded-xl bg-accent text-white font-bold text-[14px] inline-flex items-center gap-2 hover:opacity-90 cursor-pointer"
-                >
-                  <span>Chat on WhatsApp →</span>
-                </a>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* =====================================================================
           STOREFRONT VIEW (HOME, MENU & ORDERS TABS — Shown when checkoutStep === 'store')
@@ -3924,34 +4056,6 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                 <span>Use my current GPS location</span>
               </button>
 
-              <div className="space-y-2">
-                <label className="block font-bold text-text text-[14px]">
-                  Select a nearby area (Delivery radius check)
-                </label>
-                <div className="space-y-2">
-                  {LOCATION_PRESETS.map((p, idx) => (
-                    <button
-                      key={idx}
-                      type="button"
-                      onClick={() => {
-                        setGuestAddress(p.address);
-                        setGuestLat(p.lat);
-                        setGuestLng(p.lng);
-                        setLocationPinned(true);
-                      }}
-                      className={`w-full p-3.5 rounded-2xl border text-left transition-colors cursor-pointer ${
-                        locationPinned && guestLat === p.lat && guestLng === p.lng
-                          ? 'border-primary bg-soft-tint font-bold'
-                          : 'border-border bg-bg hover:border-primary/50'
-                      }`}
-                    >
-                      <p className="text-[15px] text-text break-words">{p.label}</p>
-                      <p className="text-[13px] text-muted break-words mt-0.5">{p.address}</p>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
               <div>
                 <label className="block font-bold text-text text-[14px] mb-1.5">
                   Complete flat / building / street address
@@ -3960,9 +4064,38 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   rows={2}
                   value={guestAddress}
                   onChange={(e) => setGuestAddress(e.target.value)}
-                  placeholder="Enter flat no., building name, street & landmark"
+                  placeholder="Enter flat no., building name, and street"
                   className="w-full p-3 rounded-2xl border border-border bg-bg text-[16px] text-text focus:outline-none focus:border-primary"
                 />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-bold text-text text-[14px] mb-1.5">
+                    Landmark (optional)
+                  </label>
+                  <input
+                    type="text"
+                    value={guestLandmark}
+                    onChange={(e) => setGuestLandmark(e.target.value)}
+                    placeholder="Near park, temple, etc."
+                    className="w-full min-h-[46px] px-3 rounded-2xl border border-border bg-bg text-[16px] text-text focus:outline-none focus:border-primary"
+                  />
+                </div>
+                <div>
+                  <label className="block font-bold text-text text-[14px] mb-1.5">
+                    Pincode
+                  </label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    maxLength={6}
+                    value={guestPincode}
+                    onChange={(e) => setGuestPincode(e.target.value.replace(/\D/g, ''))}
+                    placeholder="e.g. 400050"
+                    className="w-full min-h-[46px] px-3 rounded-2xl border border-border bg-bg text-[16px] tabular-nums text-text focus:outline-none focus:border-primary"
+                  />
+                </div>
               </div>
 
               {liveAddressDistance.pinned && (
@@ -3974,8 +4107,8 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   }`}
                 >
                   {liveAddressDistance.within
-                    ? `✓ Delivery available here (${liveAddressDistance.km} km · max ${deliveryZone.radiusKm} km)`
-                    : `✕ Outside delivery area (${liveAddressDistance.km} km · max ${deliveryZone.radiusKm} km)`}
+                    ? '✓ Delivery available at this location'
+                    : 'Sorry, we do not deliver to this location yet.'}
                 </div>
               )}
 
@@ -4343,7 +4476,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
               )}
               {activePolicyModal === 'terms' && (
                 <p>
-                  Deliveries are fulfilled within our {deliveryZone.radiusKm} km Haversine radius around Bandra West. Doorstep delivery requires the 4-digit OTP shown on your tracking link.
+                  Deliveries are fulfilled within our local delivery radius. Doorstep delivery requires the 4-digit OTP shown on your tracking link.
                 </p>
               )}
               {activePolicyModal === 'refund' && (

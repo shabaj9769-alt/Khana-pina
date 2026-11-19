@@ -1,5 +1,7 @@
 import crypto from 'crypto';
 import {
+  AboutPageConfig,
+  AboutPageSectionCard,
   AdminRole,
   AdminSessionRecord,
   AdminUserPublic,
@@ -171,6 +173,22 @@ export function getInitialDatabaseState(): DatabaseState {
       themeAccentColor: '#D9480F',
       themeSurfaceStyle: 'warm',
       theme: { ...DEFAULT_STOREFRONT_THEME },
+      aboutPage: {
+        tagline: '',
+        story: '',
+        coverImage: '',
+        sections: [],
+        openingHours: '',
+        address: '',
+        supportPhone: '',
+        whatsappNumber: '',
+        mapLink: '',
+        socialLinks: {
+          instagram: '',
+          facebook: '',
+          youtube: '',
+        },
+      },
     },
     deliveryZone: {
       shopLat: 19.0607,
@@ -951,10 +969,30 @@ export async function ensureFirebaseSeeded(): Promise<DatabaseState> {
 
   // Hydrate in-memory mirror from Firebase RTDB snapshot
   db.nextOrderSequence = Number(rootVal.counters?.nextOrderSequence || 1046);
+  const rawAbout = rootVal.settings?.aboutPage as Partial<AboutPageConfig> | undefined;
+  const normalizedAboutPage: AboutPageConfig = {
+    tagline: rawAbout?.tagline || '',
+    story: rawAbout?.story || '',
+    coverImage: rawAbout?.coverImage ? normalizeImageUrl(rawAbout.coverImage) : '',
+    sections: recordToArray<AboutPageSectionCard>(rawAbout?.sections).sort(
+      (a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0)
+    ),
+    openingHours: rawAbout?.openingHours || '',
+    address: rawAbout?.address || '',
+    supportPhone: rawAbout?.supportPhone || '',
+    whatsappNumber: rawAbout?.whatsappNumber || '',
+    mapLink: rawAbout?.mapLink || '',
+    socialLinks: {
+      instagram: rawAbout?.socialLinks?.instagram || '',
+      facebook: rawAbout?.socialLinks?.facebook || '',
+      youtube: rawAbout?.socialLinks?.youtube || '',
+    },
+  };
   db.settings = {
     ...db.settings,
     ...rootVal.settings,
     theme: normalizeThemeConfig(rootVal.settings?.theme),
+    aboutPage: normalizedAboutPage,
   };
   db.deliveryZone = { ...db.deliveryZone, ...rootVal.deliveryZone };
   db.categories = recordToArray<Category>(rootVal.categories)
