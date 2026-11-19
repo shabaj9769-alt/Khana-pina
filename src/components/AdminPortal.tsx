@@ -25,7 +25,11 @@ import {
   Copy,
   Check,
   Bell,
-  MoreHorizontal,
+  Menu,
+  LayoutDashboard,
+  CalendarClock,
+  CheckCircle2,
+  XCircle,
   X,
   KeyRound,
   Palette,
@@ -87,8 +91,9 @@ interface AdminPortalProps {
   onBackToStorefront?: () => void;
 }
 
-// 8 top-level navigation groups
+// Top-level navigation groups
 type AdminTopSection =
+  | 'dashboard'
   | 'orders'
   | 'menu'
   | 'storefront'
@@ -97,6 +102,9 @@ type AdminTopSection =
   | 'delivery'
   | 'finance'
   | 'settings';
+
+type OrdersFolderTab = 'live' | 'advance' | 'delivered' | 'cancelled';
+type OrdersDateFilter = 'TODAY' | 'YESTERDAY' | '7D' | 'ALL';
 
 export const AdminPortal: React.FC<AdminPortalProps> = ({
   onRefreshStore,
@@ -133,8 +141,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     () => getCachedShopName() || 'Food Ordering'
   );
 
-  // Navigation State (8 clean sections)
-  const [activeSection, setActiveSection] = useState<AdminTopSection>('orders');
+  // Navigation State
+  const [activeSection, setActiveSection] = useState<AdminTopSection>('dashboard');
   const [menuSubTab, setMenuSubTab] = useState<'items' | 'categories'>('items');
   const [storefrontSubTab, setStorefrontSubTab] = useState<'homepage' | 'banners' | 'theme' | 'about'>(
     'homepage'
@@ -143,7 +151,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const [financeSubTab, setFinanceSubTab] = useState<'payments' | 'reports'>('payments');
   const [settingsSubTab, setSettingsSubTab] = useState<'shop' | 'users'>('shop');
 
-  const [moreDrawerOpen, setMoreDrawerOpen] = useState(false);
+  const [navDrawerOpen, setNavDrawerOpen] = useState(false);
   const [notificationDrawerOpen, setNotificationDrawerOpen] = useState(false);
   const [unreadOrdersCount, setUnreadOrdersCount] = useState(0);
 
@@ -175,9 +183,12 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   );
   const audioCtxRef = useRef<AudioContext | null>(null);
 
-  // Order Filters
-  const [orderStatusFilter, setOrderStatusFilter] = useState<string>('ALL');
+  // Order Filters & Folders
+  const [ordersFolder, setOrdersFolder] = useState<OrdersFolderTab>('live');
+  const [ordersDateFilter, setOrdersDateFilter] = useState<OrdersDateFilter>('TODAY');
   const [orderSearch, setOrderSearch] = useState('');
+  const [selectedOrderDetailsId, setSelectedOrderDetailsId] = useState<string | null>(null);
+  const [nowTick, setNowTick] = useState<number>(() => Date.now());
   const [prepTimeSelections, setPrepTimeSelections] = useState<Record<string, number>>({});
   const [cancelReasonModalOrder, setCancelReasonModalOrder] = useState<OrderRecord | null>(null);
   const [cancelReasonTemplate, setCancelReasonTemplate] = useState('Item Out of Stock');
@@ -617,6 +628,12 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     };
   }, [adminUser, firebaseCustomToken, firebaseClientConfig, soundEnabled, soundVolume]);
 
+  // Refresh clock tick every 60s for "Due soon" advance booking indicators
+  useEffect(() => {
+    const id = setInterval(() => setNowTick(Date.now()), 60_000);
+    return () => clearInterval(id);
+  }, []);
+
   // Save Admin Personal Theme to server
   const handleSaveAdminPersonalTheme = async (mode: ThemeMode, accent: string) => {
     setAdminThemeMode(mode);
@@ -752,6 +769,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       setLoginPassword('');
       setLoginTotpCode('');
       setRequiresTwoFactor(false);
+      setActiveSection('dashboard');
       await fetchBootstrap();
       showToast(`Signed in as ${data.user.name}`);
     } catch {
@@ -1257,20 +1275,126 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     }
   };
 
-  // Filtered Orders
-  const filteredOrders = useMemo(() => {
-    return orders.filter((o) => {
-      if (orderStatusFilter !== 'ALL' && o.status !== orderStatusFilter) return false;
-      if (orderSearch.trim()) {
-        const q = orderSearch.toLowerCase();
-        const matchId = o.orderNumber.toLowerCase().includes(q);
-        const matchName = o.customerName.toLowerCase().includes(q);
-        const matchPhone = o.customerPhone.toLowerCase().includes(q);
-        if (!matchId && !matchName && !matchPhone) return false;
-      }
+  // Order Folder Helpers & Categorization
+  const isAdvanceBookingOrder = (o: OrderRecord) =>
+    Boolean(o.scheduledFor && o.scheduledFor.trim().length > 0);
+
+  const isLiveOrderStatus = (status: OrderStatus) =>
+    status === 'PLACED' ||
+    status === 'ACCEPTED' ||
+    status === 'PREPARING' ||
+    status === 'READY' ||
+    status === 'OUT_FOR_DELIVERY';
+
+  const getSafeTimestampMs = (iso?: string | null) => {
+    if (!iso) return 0;
+    const ms = new Date(iso).getTime();
+    return Number.isFinite(ms) ? ms : 0;
+  };
+
+  const {
+    liveOrders,
+    advanceOrders,
+    deliveredOrdersAll,
+    cancelledOrdersAll,
+    deliveredTodayCount,
+    cancelledTodayCount,
+    advanceUpcomingCount,
+    filteredFolderOrders,
+  } = useMemo(() => {
+    const startOfToday = new Date(nowTick);
+    startOfToday.setHours(0, 0, 0, 0);
+    const startOfTodayMs = startOfToday.getTime();
+    const startOfYesterdayMs = startOfTodayMs - 24 * 3600 * 1000;
+    const last7DaysMs = startOfTodayMs - 6 * 24 * 3600 * 1000;
+
+    const live = orders
+      .filter((o) => isLiveOrderStatus(o.status) && !isAdvanceBookingOrder(o))
+      .sort((a, b) => getSafeTimestampMs(b.placedAt) - getSafeTimestampMs(a.placedAt));
+
+    const advance = orders
+      .filter((o) => isLiveOrderStatus(o.status) && isAdvanceBookingOrder(o))
+      .sort((a, b) => {
+        const aSched = getSafeTimestampMs(a.scheduledFor) || getSafeTimestampMs(a.placedAt);
+        const bSched = getSafeTimestampMs(b.scheduledFor) || getSafeTimestampMs(b.placedAt);
+        return aSched - bSched;
+      });
+
+    const delivered = orders
+      .filter((o) => o.status === 'DELIVERED')
+      .sort(
+        (a, b) =>
+          getSafeTimestampMs(b.deliveredAt || b.placedAt) -
+          getSafeTimestampMs(a.deliveredAt || a.placedAt)
+      );
+
+    const cancelled = orders
+      .filter((o) => o.status === 'CANCELLED' || o.status === 'REJECTED')
+      .sort(
+        (a, b) =>
+          getSafeTimestampMs(b.cancelledAt || b.placedAt) -
+          getSafeTimestampMs(a.cancelledAt || a.placedAt)
+      );
+
+    const deliveredToday = delivered.filter(
+      (o) => getSafeTimestampMs(o.deliveredAt || o.placedAt) >= startOfTodayMs
+    ).length;
+
+    const cancelledToday = cancelled.filter(
+      (o) => getSafeTimestampMs(o.cancelledAt || o.placedAt) >= startOfTodayMs
+    ).length;
+
+    const matchesDateFilter = (tsMs: number) => {
+      if (ordersDateFilter === 'ALL') return true;
+      if (ordersDateFilter === 'TODAY') return tsMs >= startOfTodayMs;
+      if (ordersDateFilter === 'YESTERDAY')
+        return tsMs >= startOfYesterdayMs && tsMs < startOfTodayMs;
+      if (ordersDateFilter === '7D') return tsMs >= last7DaysMs;
       return true;
-    });
-  }, [orders, orderStatusFilter, orderSearch]);
+    };
+
+    let baseFolderList: OrderRecord[] = live;
+    if (ordersFolder === 'advance') {
+      baseFolderList = advance;
+    } else if (ordersFolder === 'delivered') {
+      baseFolderList = delivered.filter((o) =>
+        matchesDateFilter(getSafeTimestampMs(o.deliveredAt || o.placedAt))
+      );
+    } else if (ordersFolder === 'cancelled') {
+      baseFolderList = cancelled.filter((o) =>
+        matchesDateFilter(getSafeTimestampMs(o.cancelledAt || o.placedAt))
+      );
+    }
+
+    const q = orderSearch.trim().toLowerCase();
+    const searched = q
+      ? baseFolderList.filter(
+          (o) =>
+            o.orderNumber.toLowerCase().includes(q) ||
+            o.customerName.toLowerCase().includes(q) ||
+            o.customerPhone.toLowerCase().includes(q)
+        )
+      : baseFolderList;
+
+    return {
+      liveOrders: live,
+      advanceOrders: advance,
+      deliveredOrdersAll: delivered,
+      cancelledOrdersAll: cancelled,
+      deliveredTodayCount: deliveredToday,
+      cancelledTodayCount: cancelledToday,
+      advanceUpcomingCount: advance.length,
+      filteredFolderOrders: searched,
+    };
+  }, [orders, ordersFolder, ordersDateFilter, orderSearch, nowTick]);
+
+  const selectedOrderDetails = useMemo(
+    () =>
+      selectedOrderDetailsId
+        ? orders.find((o) => o.id === selectedOrderDetailsId) || null
+        : null,
+    [orders, selectedOrderDetailsId]
+  );
 
   // Filtered Menu Items
   const filteredMenuItems = useMemo(() => {
@@ -1543,7 +1667,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   }
 
   // ============================================================================
-  // NAVIGATION DEFINITIONS (8 Sections)
+  // NAVIGATION DEFINITIONS (9 Sections)
   // ============================================================================
   const navItems: {
     id: AdminTopSection;
@@ -1551,6 +1675,12 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     icon: React.FC<{ className?: string }>;
     badge?: number;
   }[] = [
+    {
+      id: 'dashboard',
+      label: 'Dashboard',
+      icon: LayoutDashboard,
+      badge: liveOrders.length,
+    },
     {
       id: 'orders',
       label: 'Orders',
@@ -1571,6 +1701,403 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const primaryContrastRatio = getContrastRatio(themeDraft.primaryColor, primaryContrastColor);
   const wcagPassesAA = primaryContrastRatio >= 4.5;
 
+  const formatScheduledDateTime = (scheduledFor?: string | null) => {
+    if (!scheduledFor) return '';
+    const d = new Date(scheduledFor);
+    if (Number.isNaN(d.getTime())) return scheduledFor;
+    return d.toLocaleString([], {
+      weekday: 'short',
+      day: 'numeric',
+      month: 'short',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  };
+
+  const isAdvanceOrderDueSoon = (scheduledFor?: string | null) => {
+    if (!scheduledFor) return false;
+    const ms = new Date(scheduledFor).getTime();
+    if (!Number.isFinite(ms)) return false;
+    return ms - nowTick <= 60 * 60 * 1000;
+  };
+
+  const renderOrderStatusActionButtons = (order: OrderRecord) => {
+    const prepMins = prepTimeSelections[order.id] ?? 25;
+    if (!isLiveOrderStatus(order.status)) return null;
+    return (
+      <div
+        className="pt-3 border-t border-border space-y-2"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {order.status === 'PLACED' && (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <span className="text-xs font-semibold text-muted">Prep time (mins):</span>
+              <div className="flex gap-1">
+                {[15, 25, 35, 45].map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() =>
+                      setPrepTimeSelections({
+                        ...prepTimeSelections,
+                        [order.id]: m,
+                      })
+                    }
+                    className={`px-2 py-1 rounded text-xs font-bold cursor-pointer ${
+                      prepMins === m ? 'bg-primary text-primary-contrast' : 'bg-bg text-muted'
+                    }`}
+                  >
+                    {m}m
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => handleOrderStatusUpdate(order.id, 'ACCEPTED')}
+                className="min-h-[42px] rounded-xl bg-emerald-600 text-white text-xs font-bold cursor-pointer"
+              >
+                Accept ({prepMins}m)
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setCancelReasonModalOrder(order);
+                  setCancelReasonTemplate('Item Out of Stock');
+                  setCancelCustomReason('');
+                }}
+                className="min-h-[42px] rounded-xl bg-red-500/15 text-red-600 text-xs font-bold cursor-pointer"
+              >
+                Reject / Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
+        {order.status === 'ACCEPTED' && (
+          <button
+            type="button"
+            onClick={() => handleOrderStatusUpdate(order.id, 'PREPARING')}
+            className="w-full min-h-[42px] rounded-xl bg-primary text-primary-contrast text-xs font-bold cursor-pointer"
+          >
+            Start Preparing
+          </button>
+        )}
+
+        {order.status === 'PREPARING' && (
+          <button
+            type="button"
+            onClick={() => handleOrderStatusUpdate(order.id, 'READY')}
+            className="w-full min-h-[42px] rounded-xl bg-blue-600 text-white text-xs font-bold cursor-pointer"
+          >
+            Mark Food READY for Pickup
+          </button>
+        )}
+
+        {(order.status === 'READY' ||
+          order.status === 'ACCEPTED' ||
+          order.status === 'PREPARING' ||
+          order.status === 'OUT_FOR_DELIVERY') && (
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+            <select
+              aria-label="Assign Rider"
+              value={order.deliveryBoyId || ''}
+              onChange={(e) => {
+                if (e.target.value) {
+                  handleOrderStatusUpdate(order.id, 'OUT_FOR_DELIVERY', {
+                    deliveryBoyId: e.target.value,
+                  });
+                }
+              }}
+              className="flex-1 min-w-0 min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs text-text"
+            >
+              <option value="">
+                {order.deliveryBoyId
+                  ? 'Reassign Delivery Rider...'
+                  : 'Assign Rider & Dispatch...'}
+              </option>
+              {deliveryBoys
+                .filter((b) => b.isActive)
+                .map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {b.name} ({b.activeOrders} active)
+                  </option>
+                ))}
+            </select>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setKotOrder(order)}
+                className="flex-1 sm:flex-initial min-h-[40px] px-3 rounded-xl border border-border text-xs font-semibold flex items-center justify-center gap-1.5 hover:bg-bg cursor-pointer"
+              >
+                <Printer className="w-3.5 h-3.5" />
+                KOT
+              </button>
+              {order.status !== 'OUT_FOR_DELIVERY' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCancelReasonModalOrder(order);
+                    setCancelReasonTemplate('Customer Requested');
+                    setCancelCustomReason('');
+                  }}
+                  className="flex-1 sm:flex-initial min-h-[40px] px-3 rounded-xl border border-red-500/30 text-red-600 text-xs font-semibold cursor-pointer"
+                >
+                  Cancel
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {order.status === 'OUT_FOR_DELIVERY' && (
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <span className="text-xs text-muted">
+              Delivery PIN: <strong className="font-mono">{order.deliveryOtp}</strong>
+            </span>
+            <button
+              type="button"
+              onClick={() => handleOrderStatusUpdate(order.id, 'DELIVERED')}
+              className="min-h-[38px] px-3 rounded-xl bg-emerald-600 text-white text-xs font-bold cursor-pointer"
+            >
+              Mark Delivered
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderLiveOrderCard = (order: OrderRecord) => {
+    const dueSoon = isAdvanceBookingOrder(order) && isAdvanceOrderDueSoon(order.scheduledFor);
+    return (
+      <div
+        key={order.id}
+        onClick={() => setSelectedOrderDetailsId(order.id)}
+        className="bg-surface rounded-2xl border border-border p-3.5 sm:p-4 space-y-3 shadow-xs flex flex-col justify-between min-w-0 cursor-pointer hover:border-primary/40 transition-colors"
+      >
+        <div className="space-y-3 min-w-0">
+          {/* Row 1: Order ID on left, Status badge on right */}
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="font-bold text-base text-text whitespace-nowrap">
+                {order.orderNumber}
+              </span>
+              {dueSoon && (
+                <span className="px-2 py-0.5 rounded-full bg-amber-500 text-white text-[10px] font-bold uppercase shrink-0">
+                  Due soon
+                </span>
+              )}
+            </div>
+            <span
+              className={`px-2.5 py-1 rounded-full text-[11px] font-bold uppercase shrink-0 ${
+                order.status === 'DELIVERED'
+                  ? 'bg-emerald-500/15 text-emerald-600'
+                  : order.status === 'CANCELLED' || order.status === 'REJECTED'
+                  ? 'bg-red-500/15 text-red-600'
+                  : order.status === 'READY'
+                  ? 'bg-blue-500/15 text-blue-600'
+                  : 'bg-amber-500/15 text-amber-600'
+              }`}
+            >
+              {order.status.replace(/_/g, ' ')}
+            </span>
+          </div>
+
+          {/* Row 2: Time + Payment chip + Distance chip */}
+          <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted">
+            <span>
+              {new Date(order.placedAt).toLocaleTimeString([], {
+                hour: '2-digit',
+                minute: '2-digit',
+              })}
+            </span>
+            <span className="px-2 py-0.5 rounded bg-bg font-semibold text-text">
+              {order.paymentMethod === 'COD' ? 'COD' : `Online (${order.paymentStatus})`}
+            </span>
+            <span className="px-2 py-0.5 rounded bg-bg font-medium">{order.distanceKm} km</span>
+            {order.scheduledFor && (
+              <span className="px-2 py-0.5 rounded bg-purple-500/15 text-purple-600 font-semibold break-words">
+                Scheduled: {formatScheduledDateTime(order.scheduledFor)}
+              </span>
+            )}
+          </div>
+
+          <hr className="border-border" />
+
+          {/* Customer Block */}
+          <div className="space-y-1.5 min-w-0">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="font-bold text-sm text-text break-words min-w-0">
+                {order.customerName}
+              </p>
+              <a
+                href={`tel:${order.customerPhone}`}
+                onClick={(e) => e.stopPropagation()}
+                className="px-2.5 py-1 rounded-lg bg-emerald-500/15 text-emerald-600 text-xs font-semibold flex items-center gap-1 shrink-0"
+              >
+                <Phone className="w-3.5 h-3.5" />
+                {order.customerPhone}
+              </a>
+            </div>
+            <div className="flex items-start justify-between gap-2 text-xs text-muted">
+              <p className="break-words min-w-0 flex-1">{order.deliveryAddress}</p>
+              <a
+                href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
+                  order.deliveryAddress
+                )}`}
+                target="_blank"
+                rel="noreferrer"
+                onClick={(e) => e.stopPropagation()}
+                className="text-primary font-semibold shrink-0 hover:underline flex items-center gap-0.5"
+              >
+                <MapPin className="w-3.5 h-3.5" />
+                Maps
+              </a>
+            </div>
+          </div>
+
+          {/* Kitchen Note */}
+          {order.orderNotes && (
+            <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-700 dark:text-amber-300 text-xs break-words">
+              <span className="font-bold">Kitchen Note: </span>
+              {order.orderNotes}
+            </div>
+          )}
+
+          {/* Items List */}
+          <div className="space-y-1.5 pt-1">
+            {order.items.map((item, idx) => (
+              <div key={idx} className="text-xs space-y-0.5">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0 flex-1">
+                    <span className="inline-block px-1.5 py-0.5 rounded bg-bg font-bold mr-1.5">
+                      {item.quantity}x
+                    </span>
+                    <span className="font-semibold text-text break-words">{item.itemName}</span>
+                    {(item.variantName || (item.addons && item.addons.length > 0)) && (
+                      <p className="text-[11px] text-muted break-words pl-6">
+                        {item.variantName ? `Variant: ${item.variantName}` : ''}
+                        {item.addons?.length
+                          ? ` • Add-ons: ${item.addons.map((a) => a.name).join(', ')}`
+                          : ''}
+                      </p>
+                    )}
+                    {item.itemNote && (
+                      <p className="text-[11px] text-amber-600 font-medium pl-6 break-words">
+                        Note: &ldquo;{item.itemNote}&rdquo;
+                      </p>
+                    )}
+                  </div>
+                  <span className="font-semibold text-text shrink-0">₹{item.lineTotal}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <hr className="border-border" />
+
+          {/* Bill Total */}
+          <div className="flex items-center justify-between gap-2 text-xs">
+            <span className="text-muted min-w-0 truncate">
+              Total (incl. ₹{order.gstAmount} GST & ₹{order.deliveryFee} del)
+            </span>
+            <span className="text-sm font-bold text-text shrink-0">₹{order.grandTotal}</span>
+          </div>
+        </div>
+
+        {renderOrderStatusActionButtons(order)}
+      </div>
+    );
+  };
+
+  const renderCompactFolderOrderCard = (order: OrderRecord) => {
+    const isAdvance = ordersFolder === 'advance';
+    const isCancelled = ordersFolder === 'cancelled';
+    const dueSoon = isAdvance && isAdvanceOrderDueSoon(order.scheduledFor);
+    const itemsSummary = order.items
+      .map((it) => `${it.quantity}x ${it.itemName}`)
+      .join(', ');
+
+    return (
+      <div
+        key={order.id}
+        onClick={() => setSelectedOrderDetailsId(order.id)}
+        className="bg-surface rounded-2xl border border-border p-3.5 sm:p-4 space-y-2.5 shadow-xs cursor-pointer hover:border-primary/40 transition-colors min-w-0"
+      >
+        <div className="flex items-start justify-between gap-2 min-w-0">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="font-bold text-sm sm:text-base text-text whitespace-nowrap">
+                {order.orderNumber}
+              </span>
+              {dueSoon && (
+                <span className="px-2 py-0.5 rounded-full bg-amber-500 text-white text-[10px] font-bold uppercase shrink-0">
+                  Due soon
+                </span>
+              )}
+            </div>
+            <p className="text-sm font-semibold text-text break-words mt-0.5">
+              {order.customerName}
+            </p>
+          </div>
+          <span
+            className={`px-2.5 py-1 rounded-full text-[10px] sm:text-[11px] font-bold uppercase shrink-0 ${
+              order.status === 'DELIVERED'
+                ? 'bg-emerald-500/15 text-emerald-600'
+                : order.status === 'CANCELLED' || order.status === 'REJECTED'
+                ? 'bg-red-500/15 text-red-600'
+                : order.status === 'READY'
+                ? 'bg-blue-500/15 text-blue-600'
+                : 'bg-amber-500/15 text-amber-600'
+            }`}
+          >
+            {order.status.replace(/_/g, ' ')}
+          </span>
+        </div>
+
+        {isAdvance && order.scheduledFor && (
+          <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-purple-500/10 border border-purple-500/20 text-purple-700 dark:text-purple-300 text-xs font-semibold">
+            <CalendarClock className="w-3.5 h-3.5 shrink-0" />
+            <span className="break-words min-w-0">
+              Scheduled: {formatScheduledDateTime(order.scheduledFor)}
+            </span>
+          </div>
+        )}
+
+        <p className="text-xs text-muted break-words line-clamp-2">{itemsSummary}</p>
+
+        {isCancelled && order.cancelReason && (
+          <div className="p-2 rounded-xl bg-red-500/10 border border-red-500/20 text-red-600 text-xs break-words">
+            <span className="font-bold">Reason: </span>
+            {order.cancelReason}
+          </div>
+        )}
+
+        <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-border text-xs">
+          <div className="flex items-center gap-2 flex-wrap text-muted min-w-0">
+            <span className="px-2 py-0.5 rounded bg-bg font-semibold text-text">
+              {order.paymentMethod === 'COD' ? 'COD' : 'Online'}
+            </span>
+            <span>
+              {new Date(order.placedAt).toLocaleString([], {
+                day: 'numeric',
+                month: 'short',
+                hour: '2-digit',
+                minute: '2-digit',
+              })}
+            </span>
+          </div>
+          <span className="text-sm font-bold text-text shrink-0">₹{order.grandTotal}</span>
+        </div>
+
+        {isLiveOrderStatus(order.status) && renderOrderStatusActionButtons(order)}
+      </div>
+    );
+  };
+
   return (
     <div className="min-h-[100dvh] w-full max-w-[100vw] overflow-x-clip bg-bg text-text flex flex-col lg:flex-row">
       {/* ========================================================================
@@ -1583,9 +2110,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
               {shopInitial}
             </div>
             <div className="min-w-0">
-              <h2 className="font-bold text-sm text-text truncate">
-                {displayShopName}
-              </h2>
+              <h2 className="font-bold text-sm text-text truncate">{displayShopName}</h2>
               <p className="text-[11px] text-muted truncate">
                 {adminUser.name} • {formatRoleLabel(adminUser.role)}
               </p>
@@ -1683,58 +2208,65 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       {/* ========================================================================
           MAIN CONTENT WRAPPER
       ======================================================================== */}
-      <div className="flex-1 flex flex-col min-w-0 pb-20 lg:pb-6">
-        {/* TOP HEADER BAR */}
-        <header className="sticky top-0 z-30 bg-surface border-b border-border px-2.5 sm:px-6 py-2.5 flex flex-wrap items-center justify-between gap-2 min-w-0">
-          <div className="flex items-center gap-2 min-w-0 flex-1">
-            <div className="lg:hidden w-8 h-8 rounded-lg bg-primary text-primary-contrast flex items-center justify-center font-bold text-sm shrink-0">
+      <div className="flex-1 flex flex-col min-w-0 pb-6">
+        {/* TOP HEADER BAR: Shop Logo/Name, Open/Closed pill, Notification Bell, Hamburger Menu */}
+        <header className="sticky top-0 z-30 bg-surface border-b border-border px-2.5 sm:px-6 py-2.5 flex items-center justify-between gap-2 min-w-0">
+          <button
+            type="button"
+            onClick={() => setActiveSection('dashboard')}
+            className="flex items-center gap-2 min-w-0 flex-1 text-left cursor-pointer"
+          >
+            <div className="w-8 h-8 rounded-lg bg-primary text-primary-contrast flex items-center justify-center font-bold text-sm shrink-0">
               {shopInitial}
             </div>
             <div className="min-w-0">
               <h1 className="text-sm sm:text-base font-bold text-text truncate">
                 {displayShopName}
               </h1>
-              <p className="text-[11px] text-muted hidden sm:block">
+              <p className="text-[11px] text-muted hidden sm:block truncate">
                 {formatRoleLabel(adminRole)} • Kitchen Admin
               </p>
             </div>
-          </div>
+          </button>
 
-          <div className="flex items-center gap-1 sm:gap-2 shrink-0">
-            {/* Sound Toggle */}
-            <button
-              onClick={() => setSoundEnabled(!soundEnabled)}
-              className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl border border-border flex items-center justify-center text-muted hover:bg-bg cursor-pointer"
-              title={soundEnabled ? 'Mute order chime' : 'Unmute order chime'}
-            >
-              {soundEnabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
-            </button>
-
-            {/* Personal Dark Mode Toggle (Mobile/Quick) */}
-            <button
-              onClick={() =>
-                handleSaveAdminPersonalTheme(
-                  adminThemeMode === 'dark' ? 'light' : 'dark',
-                  adminAccentColor
-                )
-              }
-              className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl border border-border flex items-center justify-center text-muted hover:bg-bg cursor-pointer"
-              title="Toggle Admin Dark/Light theme"
-            >
-              {adminThemeMode === 'dark' ? (
-                <Sun className="w-4 h-4 text-amber-400" />
-              ) : (
-                <Moon className="w-4 h-4" />
-              )}
-            </button>
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+            {/* Open / Closed Pill */}
+            {shopSettings && (
+              <button
+                type="button"
+                role="switch"
+                aria-checked={shopSettings.isOpen}
+                aria-label="Shop open status"
+                onClick={() =>
+                  canEditMenu &&
+                  handleUpdateShopSettings({
+                    isOpen: !shopSettings.isOpen,
+                  })
+                }
+                disabled={!canEditMenu}
+                className={`min-h-[34px] px-2.5 rounded-full border text-[11px] font-bold flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-60 shrink-0 ${
+                  shopSettings.isOpen
+                    ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border-emerald-500/30'
+                    : 'bg-red-500/15 text-red-600 border-red-500/30'
+                }`}
+              >
+                <span
+                  className={`w-2 h-2 rounded-full shrink-0 ${
+                    shopSettings.isOpen ? 'bg-emerald-500' : 'bg-red-500'
+                  }`}
+                />
+                <span>{shopSettings.isOpen ? 'OPEN' : 'CLOSED'}</span>
+              </button>
+            )}
 
             {/* Bell Icon with Unread New Orders Badge */}
             <button
+              type="button"
               onClick={() => {
                 setNotificationDrawerOpen(!notificationDrawerOpen);
                 setUnreadOrdersCount(0);
               }}
-              className="relative w-8 h-8 sm:w-9 sm:h-9 rounded-xl border border-border flex items-center justify-center text-text hover:bg-bg cursor-pointer"
+              className="relative w-9 h-9 rounded-xl border border-border flex items-center justify-center text-text hover:bg-bg cursor-pointer shrink-0"
               aria-label="Notifications"
             >
               <Bell className="w-4 h-4" />
@@ -1745,85 +2277,37 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
               )}
             </button>
 
-            {/* Refresh Button */}
-            <button
-              onClick={fetchBootstrap}
-              className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl border border-border flex items-center justify-center text-muted hover:bg-bg cursor-pointer"
-              title="Refresh data"
-            >
-              <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
-            </button>
-          </div>
-
-          {/* Shop-wide Accepting Orders / Open-Closed One-Tap Switch */}
-          {shopSettings && (
+            {/* Hamburger Menu Icon */}
             <button
               type="button"
-              role="switch"
-              aria-checked={shopSettings.isOpen}
-              aria-label="Accepting orders"
-              onClick={() =>
-                canEditMenu &&
-                handleUpdateShopSettings({
-                  isOpen: !shopSettings.isOpen,
-                })
-              }
-              disabled={!canEditMenu}
-              className={`w-full sm:w-auto sm:order-none min-h-[36px] px-3 rounded-full border text-xs font-bold flex items-center justify-between sm:justify-start gap-2.5 transition-colors cursor-pointer disabled:opacity-60 ${
-                shopSettings.isOpen
-                  ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border-emerald-500/30'
-                  : 'bg-red-500/15 text-red-600 border-red-500/30'
-              }`}
+              onClick={() => setNavDrawerOpen(true)}
+              className="w-9 h-9 rounded-xl border border-border flex items-center justify-center text-text hover:bg-bg cursor-pointer shrink-0"
+              aria-label="Open menu"
             >
-              <span className="whitespace-nowrap">Accepting orders</span>
-              <span className="flex items-center gap-1.5 shrink-0">
-                <span
-                  className={`relative inline-flex h-4 w-7 items-center rounded-full transition-colors ${
-                    shopSettings.isOpen ? 'bg-emerald-500' : 'bg-red-500/60'
-                  }`}
-                >
-                  <span
-                    className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${
-                      shopSettings.isOpen ? 'translate-x-3.5' : 'translate-x-0.5'
-                    }`}
-                  />
-                </span>
-                <span>{shopSettings.isOpen ? 'OPEN' : 'CLOSED'}</span>
-              </span>
+              <Menu className="w-4 h-4" />
             </button>
-          )}
+          </div>
         </header>
 
         {/* NOTIFICATION DRAWER */}
         {notificationDrawerOpen && (
-          <div className="bg-surface border-b border-border px-4 py-3 text-xs flex flex-wrap items-center justify-between gap-2">
-            <div className="flex items-center gap-3 flex-wrap">
+          <div className="bg-surface border-b border-border px-3 sm:px-6 py-3 text-xs flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2.5 flex-wrap">
               <span className="font-semibold text-text">
                 New Orders: {orders.filter((o) => o.status === 'PLACED').length}
               </span>
               <button
                 type="button"
                 onClick={requestNotificationPermission}
-                className="px-2.5 py-1 rounded-lg bg-primary/10 text-primary font-bold cursor-pointer"
+                className="px-2.5 py-1.5 rounded-lg bg-primary/10 text-primary font-bold cursor-pointer"
               >
                 {browserNotifPermission === 'granted'
                   ? '✓ Browser Alerts Active'
                   : 'Enable Background Browser Alerts'}
               </button>
-              <div className="flex items-center gap-1.5">
-                <span className="text-muted">Volume:</span>
-                <input
-                  type="range"
-                  min="0.1"
-                  max="1"
-                  step="0.1"
-                  value={soundVolume}
-                  onChange={(e) => setSoundVolume(Number(e.target.value))}
-                  className="w-20"
-                />
-              </div>
             </div>
             <button
+              type="button"
               onClick={() => setNotificationDrawerOpen(false)}
               className="text-muted hover:text-text font-semibold cursor-pointer"
             >
@@ -1835,352 +2319,269 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         {/* ======================================================================
             MAIN SECTION BODY
         ====================================================================== */}
-        <main className="flex-1 p-3 sm:p-6 max-w-6xl w-full mx-auto space-y-6">
+        <main className="flex-1 p-3 sm:p-6 max-w-6xl w-full mx-auto space-y-5">
           {/* ====================================================================
-              1. ORDERS SECTION
+              0. LIVE DASHBOARD (Default Landing Screen)
+          ==================================================================== */}
+          {activeSection === 'dashboard' && (
+            <div className="space-y-4">
+              {/* a) Shop Open / Closed Switch at Top */}
+              {shopSettings && (
+                <div className="bg-surface rounded-2xl border border-border p-3.5 sm:p-4 flex items-center justify-between gap-3 shadow-xs">
+                  <div className="min-w-0">
+                    <p className="text-sm font-bold text-text truncate">
+                      {shopSettings.isOpen ? 'Shop is Open' : 'Shop is Closed'}
+                    </p>
+                    <p className="text-xs text-muted truncate">
+                      {shopSettings.isOpen
+                        ? 'Customers can place orders right now'
+                        : 'New live orders are paused'}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={shopSettings.isOpen}
+                    aria-label="Toggle shop open or closed"
+                    disabled={!canEditMenu}
+                    onClick={() =>
+                      canEditMenu &&
+                      handleUpdateShopSettings({
+                        isOpen: !shopSettings.isOpen,
+                      })
+                    }
+                    className={`min-h-[40px] px-3 rounded-full border text-xs font-bold flex items-center gap-2 transition-colors cursor-pointer disabled:opacity-60 shrink-0 ${
+                      shopSettings.isOpen
+                        ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border-emerald-500/30'
+                        : 'bg-red-500/15 text-red-600 border-red-500/30'
+                    }`}
+                  >
+                    <span
+                      className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+                        shopSettings.isOpen ? 'bg-emerald-500' : 'bg-red-500/60'
+                      }`}
+                    >
+                      <span
+                        className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
+                          shopSettings.isOpen ? 'translate-x-4.5' : 'translate-x-1'
+                        }`}
+                      />
+                    </span>
+                    <span>{shopSettings.isOpen ? 'OPEN' : 'CLOSED'}</span>
+                  </button>
+                </div>
+              )}
+
+              {/* b) 3 Summary Cards in a Row */}
+              <div className="grid grid-cols-3 gap-2 sm:gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOrdersFolder('delivered');
+                    setOrdersDateFilter('TODAY');
+                    setActiveSection('orders');
+                  }}
+                  className="min-w-0 text-left bg-surface rounded-2xl border border-border p-2.5 sm:p-4 hover:border-primary/50 transition-colors cursor-pointer flex flex-col justify-between gap-1"
+                >
+                  <div className="flex items-center justify-between gap-1">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                    <span className="text-[10px] text-muted font-medium">Today</span>
+                  </div>
+                  <p className="text-xl sm:text-2xl font-bold text-text leading-tight">
+                    {deliveredTodayCount}
+                  </p>
+                  <p className="text-[11px] sm:text-xs font-semibold text-text leading-tight break-words">
+                    Delivered
+                  </p>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOrdersFolder('cancelled');
+                    setOrdersDateFilter('TODAY');
+                    setActiveSection('orders');
+                  }}
+                  className="min-w-0 text-left bg-surface rounded-2xl border border-border p-2.5 sm:p-4 hover:border-primary/50 transition-colors cursor-pointer flex flex-col justify-between gap-1"
+                >
+                  <div className="flex items-center justify-between gap-1">
+                    <XCircle className="w-4 h-4 text-red-600 shrink-0" />
+                    <span className="text-[10px] text-muted font-medium">Today</span>
+                  </div>
+                  <p className="text-xl sm:text-2xl font-bold text-text leading-tight">
+                    {cancelledTodayCount}
+                  </p>
+                  <p className="text-[11px] sm:text-xs font-semibold text-text leading-tight break-words">
+                    Cancelled
+                  </p>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOrdersFolder('advance');
+                    setActiveSection('orders');
+                  }}
+                  className="min-w-0 text-left bg-surface rounded-2xl border border-border p-2.5 sm:p-4 hover:border-primary/50 transition-colors cursor-pointer flex flex-col justify-between gap-1"
+                >
+                  <div className="flex items-center justify-between gap-1">
+                    <CalendarClock className="w-4 h-4 text-purple-600 shrink-0" />
+                    <span className="text-[10px] text-muted font-medium">Upcoming</span>
+                  </div>
+                  <p className="text-xl sm:text-2xl font-bold text-text leading-tight">
+                    {advanceUpcomingCount}
+                  </p>
+                  <p className="text-[11px] sm:text-xs font-semibold text-text leading-tight break-words">
+                    Advance Bookings
+                  </p>
+                </button>
+              </div>
+
+              {/* c) LIVE ORDERS List Below */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <h2 className="text-base sm:text-lg font-bold text-text truncate">
+                      Live Orders
+                    </h2>
+                    <span className="px-2 py-0.5 rounded-full bg-primary/15 text-primary text-xs font-bold shrink-0">
+                      {liveOrders.length}
+                    </span>
+                  </div>
+                </div>
+
+                {liveOrders.length === 0 ? (
+                  <div className="bg-surface rounded-2xl border border-border p-8 text-center space-y-1.5">
+                    <p className="text-sm font-semibold text-text">No live orders right now</p>
+                    <p className="text-xs text-muted">
+                      New orders will appear at the top automatically with a sound alert.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                    {liveOrders.map((order) => renderLiveOrderCard(order))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* ====================================================================
+              1. ORDERS SECTION (4 Folders + Date Filter + Search)
           ==================================================================== */}
           {activeSection === 'orders' && (
             <div className="space-y-4">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                <div>
-                  <h2 className="text-lg font-bold text-text">Live Kitchen Orders</h2>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                <div className="min-w-0">
+                  <h2 className="text-lg font-bold text-text">Orders</h2>
                   <p className="text-xs text-muted">
-                    Accept, mark ready, assign rider, or punch in manual phone orders
+                    Tap any order card to view full details
                   </p>
                 </div>
-                <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  type="button"
+                  onClick={() => setManualOrderModalOpen(true)}
+                  className="min-h-[40px] px-3.5 rounded-xl bg-primary text-primary-contrast text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer self-start sm:self-auto shrink-0"
+                >
+                  <Plus className="w-4 h-4" />
+                  Manual Phone Order
+                </button>
+              </div>
+
+              {/* Search Box */}
+              <div className="relative w-full">
+                <Search className="w-4 h-4 text-muted absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={orderSearch}
+                  onChange={(e) => setOrderSearch(e.target.value)}
+                  placeholder="Search order number, customer name, or phone..."
+                  className="w-full min-h-[42px] pl-9 pr-9 rounded-xl border border-border bg-surface text-xs text-text focus:outline-none focus:border-primary"
+                />
+                {orderSearch && (
                   <button
                     type="button"
-                    onClick={() => setManualOrderModalOpen(true)}
-                    className="min-h-[40px] px-3.5 rounded-xl bg-primary text-primary-contrast text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                    onClick={() => setOrderSearch('')}
+                    aria-label="Clear search"
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-muted hover:text-text cursor-pointer"
                   >
-                    <Plus className="w-4 h-4" />
-                    Manual Phone Order
+                    <X className="w-3.5 h-3.5" />
                   </button>
-                  <div className="relative flex-1 min-w-[180px] sm:w-60">
-                    <Search className="w-4 h-4 text-muted absolute left-3 top-1/2 -translate-y-1/2" />
-                    <input
-                      type="text"
-                      value={orderSearch}
-                      onChange={(e) => setOrderSearch(e.target.value)}
-                      placeholder="Search order number, name, phone..."
-                      className="w-full min-h-[40px] pl-9 pr-3 rounded-xl border border-border bg-surface text-xs text-text focus:outline-none focus:border-primary"
-                    />
-                  </div>
+                )}
+              </div>
+
+              {/* 4 Folder Tabs (Horizontally Scrollable with Count Badges) */}
+              <div className="flex items-center gap-2 overflow-x-auto pb-1 -mx-1 px-1">
+                {(
+                  [
+                    { id: 'live', label: 'Live', count: liveOrders.length },
+                    { id: 'advance', label: 'Advance Booking', count: advanceOrders.length },
+                    { id: 'delivered', label: 'Delivered', count: deliveredOrdersAll.length },
+                    { id: 'cancelled', label: 'Cancelled', count: cancelledOrdersAll.length },
+                  ] as const
+                ).map((tab) => {
+                  const active = ordersFolder === tab.id;
+                  return (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      onClick={() => setOrdersFolder(tab.id)}
+                      className={`min-h-[40px] px-3.5 rounded-xl text-xs font-bold flex items-center gap-2 whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
+                        active
+                          ? 'bg-primary text-primary-contrast'
+                          : 'bg-surface border border-border text-text hover:bg-bg'
+                      }`}
+                    >
+                      <span>{tab.label}</span>
+                      <span
+                        className={`px-1.5 py-0.5 rounded-full text-[10px] font-bold ${
+                          active
+                            ? 'bg-surface/20 text-primary-contrast'
+                            : 'bg-bg text-muted'
+                        }`}
+                      >
+                        {tab.count}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Date Filter for Delivered & Cancelled Folders */}
+              {(ordersFolder === 'delivered' || ordersFolder === 'cancelled') && (
+                <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
+                  {(
+                    [
+                      { id: 'TODAY', label: 'Today' },
+                      { id: 'YESTERDAY', label: 'Yesterday' },
+                      { id: '7D', label: 'Last 7 days' },
+                      { id: 'ALL', label: 'All' },
+                    ] as const
+                  ).map((df) => (
+                    <button
+                      key={df.id}
+                      type="button"
+                      onClick={() => setOrdersDateFilter(df.id)}
+                      className={`min-h-[34px] px-3 rounded-xl text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer ${
+                        ordersDateFilter === df.id
+                          ? 'bg-primary/15 text-primary border border-primary/30'
+                          : 'bg-surface border border-border text-muted hover:text-text'
+                      }`}
+                    >
+                      {df.label}
+                    </button>
+                  ))}
                 </div>
-              </div>
+              )}
 
-              {/* Status Filter Pills */}
-              <div className="flex flex-wrap gap-1.5">
-                {[
-                  'ALL',
-                  'PLACED',
-                  'ACCEPTED',
-                  'PREPARING',
-                  'READY',
-                  'OUT_FOR_DELIVERY',
-                  'DELIVERED',
-                  'CANCELLED',
-                ].map((st) => (
-                  <button
-                    key={st}
-                    onClick={() => setOrderStatusFilter(st)}
-                    className={`min-h-[36px] px-3 rounded-xl text-xs font-semibold transition-colors cursor-pointer ${
-                      orderStatusFilter === st
-                        ? 'bg-primary text-primary-contrast'
-                        : 'bg-surface border border-border text-muted hover:bg-bg'
-                    }`}
-                  >
-                    {st.replace(/_/g, ' ')}
-                  </button>
-                ))}
-              </div>
-
-              {/* Orders List */}
-              {filteredOrders.length === 0 ? (
+              {/* Orders Folder List */}
+              {filteredFolderOrders.length === 0 ? (
                 <div className="bg-surface rounded-2xl border border-border p-8 text-center text-sm text-muted">
-                  No matching orders found.
+                  No orders in this folder.
                 </div>
               ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {filteredOrders.map((order) => {
-                    const prepMins = prepTimeSelections[order.id] ?? 25;
-                    return (
-                      <div
-                        key={order.id}
-                        className="bg-surface rounded-2xl border border-border p-4 space-y-3 shadow-xs flex flex-col justify-between min-w-0"
-                      >
-                        <div className="space-y-3 min-w-0">
-                          {/* Row 1: Order ID on left, Status badge on right */}
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="font-bold text-base text-text whitespace-nowrap">
-                              {order.orderNumber}
-                            </span>
-                            <span
-                              className={`px-2.5 py-1 rounded-full text-[11px] font-bold uppercase ${
-                                order.status === 'DELIVERED'
-                                  ? 'bg-emerald-500/15 text-emerald-600'
-                                  : order.status === 'CANCELLED' || order.status === 'REJECTED'
-                                  ? 'bg-red-500/15 text-red-600'
-                                  : order.status === 'READY'
-                                  ? 'bg-blue-500/15 text-blue-600'
-                                  : 'bg-amber-500/15 text-amber-600'
-                              }`}
-                            >
-                              {order.status.replace(/_/g, ' ')}
-                            </span>
-                          </div>
-
-                          {/* Row 2: Time + Payment chip + Distance chip */}
-                          <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
-                            <span>
-                              {new Date(order.placedAt).toLocaleTimeString([], {
-                                hour: '2-digit',
-                                minute: '2-digit',
-                              })}
-                            </span>
-                            <span className="px-2 py-0.5 rounded bg-bg font-semibold text-text">
-                              {order.paymentMethod === 'COD'
-                                ? 'COD'
-                                : `ONLINE (${order.paymentStatus})`}
-                            </span>
-                            <span className="px-2 py-0.5 rounded bg-bg font-medium">
-                              {order.distanceKm} km
-                            </span>
-                            {order.scheduledFor && (
-                              <span className="px-2 py-0.5 rounded bg-purple-500/15 text-purple-600 font-semibold">
-                                Scheduled: {order.scheduledFor}
-                              </span>
-                            )}
-                          </div>
-
-                          <hr className="border-border" />
-
-                          {/* Customer Block */}
-                          <div className="space-y-1.5 min-w-0">
-                            <div className="flex flex-wrap items-center justify-between gap-2">
-                              <p className="font-bold text-sm text-text break-words min-w-0">
-                                {order.customerName}
-                              </p>
-                              <a
-                                href={`tel:${order.customerPhone}`}
-                                className="px-2.5 py-1 rounded-lg bg-emerald-500/15 text-emerald-600 text-xs font-semibold flex items-center gap-1 shrink-0"
-                              >
-                                <Phone className="w-3.5 h-3.5" />
-                                {order.customerPhone}
-                              </a>
-                            </div>
-                            <div className="flex items-start justify-between gap-2 text-xs text-muted">
-                              <p className="break-words min-w-0 flex-1">{order.deliveryAddress}</p>
-                              <a
-                                href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
-                                  order.deliveryAddress
-                                )}`}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="text-primary font-semibold shrink-0 hover:underline flex items-center gap-0.5"
-                              >
-                                <MapPin className="w-3.5 h-3.5" />
-                                Maps
-                              </a>
-                            </div>
-                          </div>
-
-                          {/* Kitchen Note */}
-                          {order.orderNotes && (
-                            <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-700 dark:text-amber-300 text-xs break-words">
-                              <span className="font-bold">Kitchen Note: </span>
-                              {order.orderNotes}
-                            </div>
-                          )}
-
-                          {/* Items List */}
-                          <div className="space-y-1.5 pt-1">
-                            {order.items.map((item, idx) => (
-                              <div key={idx} className="text-xs space-y-0.5">
-                                <div className="flex items-start justify-between gap-2">
-                                  <div className="min-w-0 flex-1">
-                                    <span className="inline-block px-1.5 py-0.5 rounded bg-bg font-bold mr-1.5">
-                                      {item.quantity}x
-                                    </span>
-                                    <span className="font-semibold text-text break-words">
-                                      {item.itemName}
-                                    </span>
-                                    {(item.variantName ||
-                                      (item.addons && item.addons.length > 0)) && (
-                                      <p className="text-[11px] text-muted break-words pl-6">
-                                        {item.variantName ? `Variant: ${item.variantName}` : ''}
-                                        {item.addons?.length
-                                          ? ` • Add-ons: ${item.addons.map((a) => a.name).join(', ')}`
-                                          : ''}
-                                      </p>
-                                    )}
-                                    {item.itemNote && (
-                                      <p className="text-[11px] text-amber-600 font-medium pl-6 break-words">
-                                        Note: &ldquo;{item.itemNote}&rdquo;
-                                      </p>
-                                    )}
-                                  </div>
-                                  <span className="font-semibold text-text shrink-0">
-                                    ₹{item.lineTotal}
-                                  </span>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-
-                          <hr className="border-border" />
-
-                          {/* Bill Total + Rider Assignment */}
-                          <div className="flex items-center justify-between text-xs">
-                            <span className="text-muted">
-                              Total (incl. ₹{order.gstAmount} GST & ₹{order.deliveryFee} del)
-                            </span>
-                            <span className="text-sm font-bold text-text">
-                              ₹{order.grandTotal}
-                            </span>
-                          </div>
-                        </div>
-
-                        {/* Action Buttons */}
-                        <div className="pt-3 border-t border-border space-y-2">
-                          {order.status === 'PLACED' && (
-                            <div className="space-y-2">
-                              <div className="flex items-center justify-between gap-2">
-                                <span className="text-xs font-semibold text-muted">
-                                  Prep time (mins):
-                                </span>
-                                <div className="flex gap-1">
-                                  {[15, 25, 35, 45].map((m) => (
-                                    <button
-                                      key={m}
-                                      type="button"
-                                      onClick={() =>
-                                        setPrepTimeSelections({
-                                          ...prepTimeSelections,
-                                          [order.id]: m,
-                                        })
-                                      }
-                                      className={`px-2 py-1 rounded text-xs font-bold cursor-pointer ${
-                                        prepMins === m
-                                          ? 'bg-primary text-primary-contrast'
-                                          : 'bg-bg text-muted'
-                                      }`}
-                                    >
-                                      {m}m
-                                    </button>
-                                  ))}
-                                </div>
-                              </div>
-                              <div className="grid grid-cols-2 gap-2">
-                                <button
-                                  onClick={() => handleOrderStatusUpdate(order.id, 'ACCEPTED')}
-                                  className="min-h-[42px] rounded-xl bg-emerald-600 text-white text-xs font-bold cursor-pointer"
-                                >
-                                  Accept ({prepMins}m)
-                                </button>
-                                <button
-                                  onClick={() => {
-                                    setCancelReasonModalOrder(order);
-                                    setCancelReasonTemplate('Item Out of Stock');
-                                    setCancelCustomReason('');
-                                  }}
-                                  className="min-h-[42px] rounded-xl bg-red-500/15 text-red-600 text-xs font-bold cursor-pointer"
-                                >
-                                  Reject / Cancel
-                                </button>
-                              </div>
-                            </div>
-                          )}
-
-                          {order.status === 'ACCEPTED' && (
-                            <button
-                              onClick={() => handleOrderStatusUpdate(order.id, 'PREPARING')}
-                              className="w-full min-h-[42px] rounded-xl bg-primary text-primary-contrast text-xs font-bold cursor-pointer"
-                            >
-                              Start Preparing
-                            </button>
-                          )}
-
-                          {order.status === 'PREPARING' && (
-                            <button
-                              onClick={() => handleOrderStatusUpdate(order.id, 'READY')}
-                              className="w-full min-h-[42px] rounded-xl bg-blue-600 text-white text-xs font-bold cursor-pointer"
-                            >
-                              Mark Food READY for Pickup
-                            </button>
-                          )}
-
-                          {(order.status === 'READY' ||
-                            order.status === 'ACCEPTED' ||
-                            order.status === 'PREPARING' ||
-                            order.status === 'OUT_FOR_DELIVERY') && (
-                            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-                              <select
-                                aria-label="Assign Rider"
-                                value={order.deliveryBoyId || ''}
-                                onChange={(e) => {
-                                  if (e.target.value) {
-                                    handleOrderStatusUpdate(order.id, 'OUT_FOR_DELIVERY', {
-                                      deliveryBoyId: e.target.value,
-                                    });
-                                  }
-                                }}
-                                className="flex-1 min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs text-text"
-                              >
-                                <option value="">
-                                  {order.deliveryBoyId
-                                    ? 'Reassign Delivery Rider...'
-                                    : 'Assign Rider & Dispatch...'}
-                                </option>
-                                {deliveryBoys
-                                  .filter((b) => b.isActive)
-                                  .map((b) => (
-                                    <option key={b.id} value={b.id}>
-                                      {b.name} ({b.activeOrders} active)
-                                    </option>
-                                  ))}
-                              </select>
-                              <button
-                                onClick={() => setKotOrder(order)}
-                                className="min-h-[40px] px-3 rounded-xl border border-border text-xs font-semibold flex items-center justify-center gap-1.5 hover:bg-bg cursor-pointer"
-                              >
-                                <Printer className="w-3.5 h-3.5" />
-                                Reprint KOT
-                              </button>
-                              {order.status !== 'OUT_FOR_DELIVERY' && (
-                                <button
-                                  onClick={() => {
-                                    setCancelReasonModalOrder(order);
-                                    setCancelReasonTemplate('Customer Requested');
-                                    setCancelCustomReason('');
-                                  }}
-                                  className="min-h-[40px] px-3 rounded-xl border border-red-500/30 text-red-600 text-xs font-semibold cursor-pointer"
-                                >
-                                  Cancel
-                                </button>
-                              )}
-                            </div>
-                          )}
-
-                          {order.status === 'OUT_FOR_DELIVERY' && (
-                            <div className="flex items-center justify-between gap-2">
-                              <span className="text-xs text-muted">
-                                Delivery PIN:{' '}
-                                <strong className="font-mono">{order.deliveryOtp}</strong>
-                              </span>
-                              <button
-                                onClick={() => handleOrderStatusUpdate(order.id, 'DELIVERED')}
-                                className="min-h-[38px] px-3 rounded-xl bg-emerald-600 text-white text-xs font-bold cursor-pointer"
-                              >
-                                Mark Delivered
-                              </button>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                  {filteredFolderOrders.map((order) => renderCompactFolderOrderCard(order))}
                 </div>
               )}
             </div>
@@ -3848,7 +4249,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
                   {/* Sticky Save Button */}
                   {canEditMenu && (
-                    <div className="sticky bottom-16 lg:bottom-4 z-20 bg-surface/95 backdrop-blur-xs border border-border rounded-2xl p-3 shadow-md">
+                    <div className="sticky bottom-4 z-20 bg-surface/95 backdrop-blur-xs border border-border rounded-2xl p-3 shadow-md">
                       <button
                         type="button"
                         onClick={() => {
@@ -5166,84 +5567,425 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       </div>
 
       {/* ========================================================================
-          MOBILE BOTTOM NAVIGATION (4 Primary + "More" Sheet)
+          SLIDE-IN LEFT NAVIGATION DRAWER (All Screen Widths)
       ======================================================================== */}
-      <nav className="lg:hidden fixed bottom-0 left-0 right-0 z-30 bg-surface border-t border-border px-1 sm:px-2 py-1.5 grid grid-cols-5 gap-0.5 sm:gap-1">
-        {(['orders', 'menu', 'storefront', 'finance'] as AdminTopSection[]).map((secId) => {
-          const item = navItems.find((n) => n.id === secId)!;
-          const Icon = item.icon;
-          const active = activeSection === secId && !moreDrawerOpen;
-          return (
-            <button
-              key={secId}
-              onClick={() => {
-                setActiveSection(secId);
-                setMoreDrawerOpen(false);
-              }}
-              className={`min-h-[44px] min-w-0 px-1 rounded-xl flex flex-col items-center justify-center gap-0.5 text-[10px] sm:text-[11px] font-semibold cursor-pointer ${
-                active ? 'text-primary bg-primary/10' : 'text-muted'
-              }`}
-            >
-              <Icon className="w-4 h-4 shrink-0" />
-              <span className="truncate w-full text-center">{item.label}</span>
-            </button>
-          );
-        })}
-        <button
-          onClick={() => setMoreDrawerOpen(!moreDrawerOpen)}
-          className={`min-h-[44px] min-w-0 px-1 rounded-xl flex flex-col items-center justify-center gap-0.5 text-[10px] sm:text-[11px] font-semibold cursor-pointer ${
-            moreDrawerOpen ? 'text-primary bg-primary/10' : 'text-muted'
+      <div
+        className={`fixed inset-0 z-50 transition-all duration-200 ${
+          navDrawerOpen
+            ? 'opacity-100 pointer-events-auto visible'
+            : 'opacity-0 pointer-events-none invisible'
+        }`}
+        aria-hidden={!navDrawerOpen}
+      >
+        {/* Overlay */}
+        <div
+          className="fixed inset-0 bg-black/50"
+          onClick={() => setNavDrawerOpen(false)}
+        />
+
+        {/* Drawer Panel (80% width, max 320px, scrollable) */}
+        <aside
+          className={`fixed inset-y-0 left-0 w-[80vw] max-w-[320px] bg-surface border-r border-border shadow-xl flex flex-col transform transition-transform duration-200 ease-out ${
+            navDrawerOpen ? 'translate-x-0' : '-translate-x-full'
           }`}
         >
-          <MoreHorizontal className="w-4 h-4 shrink-0" />
-          <span>More</span>
-        </button>
-      </nav>
-
-      {/* MOBILE "MORE" SHEET */}
-      {moreDrawerOpen && (
-        <div className="lg:hidden fixed inset-0 z-40 bg-black/50 flex flex-col justify-end">
-          <div className="bg-surface rounded-t-2xl p-4 space-y-2 pb-24 border-t border-border">
-            <div className="flex items-center justify-between pb-2 border-b border-border">
-              <span className="font-bold text-sm text-text">More Admin Sections</span>
-              <button onClick={() => setMoreDrawerOpen(false)} className="p-1 text-muted">
-                <X className="w-5 h-5" />
-              </button>
+          {/* Drawer Header: Shop + Close */}
+          <div className="p-4 border-b border-border flex items-center justify-between gap-2 shrink-0">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className="w-9 h-9 rounded-xl bg-primary text-primary-contrast flex items-center justify-center font-bold shrink-0">
+                {shopInitial}
+              </div>
+              <div className="min-w-0">
+                <h2 className="font-bold text-sm text-text truncate">{displayShopName}</h2>
+                <p className="text-[11px] text-muted truncate">Admin Navigation</p>
+              </div>
             </div>
-            {(['customers', 'marketing', 'delivery', 'settings'] as AdminTopSection[]).map(
-              (secId) => {
-                const item = navItems.find((n) => n.id === secId)!;
+            <button
+              type="button"
+              onClick={() => setNavDrawerOpen(false)}
+              aria-label="Close menu"
+              className="w-9 h-9 rounded-xl border border-border flex items-center justify-center text-muted hover:text-text hover:bg-bg cursor-pointer shrink-0"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          {/* Logged-in User Card */}
+          <div className="px-4 py-3 border-b border-border bg-bg/60 flex items-center justify-between gap-2 shrink-0">
+            <div className="min-w-0">
+              <p className="text-xs font-bold text-text truncate">{adminUser.name}</p>
+              <p className="text-[11px] text-muted truncate">{adminUser.email}</p>
+            </div>
+            <span className="px-2 py-0.5 rounded-full bg-primary/15 text-primary text-[10px] font-bold uppercase shrink-0">
+              {formatRoleLabel(adminUser.role)}
+            </span>
+          </div>
+
+          {/* Scrollable Body: All Pages + Quick Controls */}
+          <div className="flex-1 overflow-y-auto p-3 space-y-4">
+            <nav className="space-y-1">
+              {navItems.map((item) => {
                 const Icon = item.icon;
+                const active = activeSection === item.id;
                 return (
                   <button
-                    key={secId}
+                    key={item.id}
+                    type="button"
                     onClick={() => {
-                      setActiveSection(secId);
-                      setMoreDrawerOpen(false);
+                      setActiveSection(item.id);
+                      setNavDrawerOpen(false);
                     }}
-                    className="w-full min-h-[44px] px-3 rounded-xl flex items-center gap-3 text-xs font-semibold text-text hover:bg-bg"
+                    className={`w-full min-h-[44px] px-3.5 py-2.5 rounded-xl text-xs font-semibold flex items-center justify-between transition-colors cursor-pointer ${
+                      active
+                        ? 'bg-primary text-primary-contrast'
+                        : 'text-text hover:bg-bg'
+                    }`}
                   >
-                    <Icon className="w-4 h-4 text-primary" />
-                    {item.label}
+                    <span className="flex items-center gap-3 min-w-0">
+                      <Icon className="w-4 h-4 shrink-0" />
+                      <span className="truncate">{item.label}</span>
+                    </span>
+                    {item.badge ? (
+                      <span
+                        className={`px-2 py-0.5 rounded-full text-[10px] font-bold shrink-0 ${
+                          active
+                            ? 'bg-surface text-primary'
+                            : 'bg-primary text-primary-contrast'
+                        }`}
+                      >
+                        {item.badge}
+                      </span>
+                    ) : null}
                   </button>
                 );
-              }
-            )}
-            <div className="pt-2 border-t border-border flex gap-2">
+              })}
+            </nav>
+
+            {/* Quick Utilities (Sound/Volume, Dark Mode, Refresh) */}
+            <div className="pt-3 border-t border-border space-y-2.5">
+              <p className="px-1 text-[10px] font-bold uppercase tracking-wider text-muted">
+                Quick Controls
+              </p>
+
+              {/* Sound & Volume */}
+              <div className="p-2.5 rounded-xl bg-bg border border-border space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-semibold text-text flex items-center gap-2">
+                    {soundEnabled ? (
+                      <Volume2 className="w-4 h-4 text-primary shrink-0" />
+                    ) : (
+                      <VolumeX className="w-4 h-4 text-muted shrink-0" />
+                    )}
+                    Order Alert Sound
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setSoundEnabled(!soundEnabled)}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-bold cursor-pointer ${
+                      soundEnabled
+                        ? 'bg-emerald-500/15 text-emerald-600'
+                        : 'bg-surface border border-border text-muted'
+                    }`}
+                  >
+                    {soundEnabled ? 'On' : 'Muted'}
+                  </button>
+                </div>
+                {soundEnabled && (
+                  <div className="flex items-center gap-2 text-[11px] text-muted">
+                    <span>Volume</span>
+                    <input
+                      type="range"
+                      aria-label="Order chime volume"
+                      min="0.1"
+                      max="1"
+                      step="0.1"
+                      value={soundVolume}
+                      onChange={(e) => setSoundVolume(Number(e.target.value))}
+                      className="flex-1 min-w-0"
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* Dark / Light Mode */}
+              <div className="p-2.5 rounded-xl bg-bg border border-border flex items-center justify-between gap-2">
+                <span className="text-xs font-semibold text-text flex items-center gap-2">
+                  {adminThemeMode === 'dark' ? (
+                    <Moon className="w-4 h-4 text-amber-400 shrink-0" />
+                  ) : (
+                    <Sun className="w-4 h-4 text-primary shrink-0" />
+                  )}
+                  Dark Mode
+                </span>
+                <div className="flex items-center gap-1">
+                  {(['light', 'dark', 'auto'] as ThemeMode[]).map((m) => (
+                    <button
+                      key={m}
+                      type="button"
+                      onClick={() => handleSaveAdminPersonalTheme(m, adminAccentColor)}
+                      className={`px-2 py-1 rounded text-[10px] font-bold uppercase cursor-pointer ${
+                        adminThemeMode === m
+                          ? 'bg-primary text-primary-contrast'
+                          : 'bg-surface text-muted border border-border'
+                      }`}
+                    >
+                      {m}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Refresh Data */}
               <button
+                type="button"
+                onClick={async () => {
+                  await fetchBootstrap();
+                  showToast('Refreshed');
+                }}
+                className="w-full min-h-[42px] px-3 rounded-xl bg-bg border border-border text-xs font-semibold text-text hover:bg-surface flex items-center justify-between cursor-pointer"
+              >
+                <span className="flex items-center gap-2">
+                  <RefreshCw className={`w-4 h-4 text-primary ${isLoading ? 'animate-spin' : ''}`} />
+                  Refresh Orders & Data
+                </span>
+                <span className="text-[11px] text-muted">Sync</span>
+              </button>
+
+              {/* Change My Password */}
+              <button
+                type="button"
                 onClick={() => {
-                  setMoreDrawerOpen(false);
+                  setNavDrawerOpen(false);
                   setPasswordModalOpen(true);
                 }}
-                className="flex-1 min-h-[42px] rounded-xl border border-border text-xs font-semibold"
+                className="w-full min-h-[42px] px-3 rounded-xl border border-border text-xs font-semibold text-text hover:bg-bg flex items-center gap-2 cursor-pointer"
               >
-                Change Password
+                <KeyRound className="w-4 h-4 text-muted" />
+                Change My Password
+              </button>
+            </div>
+          </div>
+
+          {/* Drawer Footer: Logout */}
+          <div className="p-3 border-t border-border shrink-0">
+            <button
+              type="button"
+              onClick={() => {
+                setNavDrawerOpen(false);
+                handleLogout();
+              }}
+              className="w-full min-h-[44px] px-3 rounded-xl bg-red-500/10 border border-red-500/30 text-xs font-bold text-red-600 hover:bg-red-500/15 flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <LogOut className="w-4 h-4" />
+              Logout
+            </button>
+          </div>
+        </aside>
+      </div>
+
+      {/* ========================================================================
+          ORDER DETAILS MODAL (Opened by tapping any Order Card)
+      ======================================================================== */}
+      {selectedOrderDetails && (
+        <div
+          className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-2.5 sm:p-4 overflow-y-auto"
+          onClick={() => setSelectedOrderDetailsId(null)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-lg bg-surface rounded-2xl border border-border p-4 sm:p-5 space-y-4 max-h-[90dvh] overflow-y-auto text-text"
+          >
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h3 className="text-base font-bold text-text">
+                    {selectedOrderDetails.orderNumber}
+                  </h3>
+                  <span
+                    className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                      selectedOrderDetails.status === 'DELIVERED'
+                        ? 'bg-emerald-500/15 text-emerald-600'
+                        : selectedOrderDetails.status === 'CANCELLED' ||
+                          selectedOrderDetails.status === 'REJECTED'
+                        ? 'bg-red-500/15 text-red-600'
+                        : selectedOrderDetails.status === 'READY'
+                        ? 'bg-blue-500/15 text-blue-600'
+                        : 'bg-amber-500/15 text-amber-600'
+                    }`}
+                  >
+                    {selectedOrderDetails.status.replace(/_/g, ' ')}
+                  </span>
+                </div>
+                <p className="text-xs text-muted mt-0.5">
+                  Placed {new Date(selectedOrderDetails.placedAt).toLocaleString()}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedOrderDetailsId(null)}
+                aria-label="Close order details"
+                className="p-1.5 rounded-lg border border-border text-muted hover:text-text cursor-pointer shrink-0"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {selectedOrderDetails.scheduledFor && (
+              <div className="p-2.5 rounded-xl bg-purple-500/10 border border-purple-500/20 text-purple-700 dark:text-purple-300 text-xs font-semibold flex items-center justify-between gap-2 flex-wrap">
+                <span className="flex items-center gap-1.5">
+                  <CalendarClock className="w-4 h-4 shrink-0" />
+                  Scheduled: {formatScheduledDateTime(selectedOrderDetails.scheduledFor)}
+                </span>
+                {isLiveOrderStatus(selectedOrderDetails.status) &&
+                  isAdvanceOrderDueSoon(selectedOrderDetails.scheduledFor) && (
+                    <span className="px-2 py-0.5 rounded-full bg-amber-500 text-white text-[10px] font-bold uppercase">
+                      Due soon
+                    </span>
+                  )}
+              </div>
+            )}
+
+            {selectedOrderDetails.cancelReason && (
+              <div className="p-2.5 rounded-xl bg-red-500/10 border border-red-500/20 text-red-600 text-xs break-words">
+                <span className="font-bold">Cancel / Reject Reason: </span>
+                {selectedOrderDetails.cancelReason}
+              </div>
+            )}
+
+            {/* Customer & Address */}
+            <div className="p-3 rounded-xl bg-bg border border-border space-y-2 text-xs">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <span className="font-bold text-sm text-text break-words">
+                  {selectedOrderDetails.customerName}
+                </span>
+                <a
+                  href={`tel:${selectedOrderDetails.customerPhone}`}
+                  className="px-2.5 py-1 rounded-lg bg-emerald-500/15 text-emerald-600 font-semibold flex items-center gap-1 shrink-0"
+                >
+                  <Phone className="w-3.5 h-3.5" />
+                  {selectedOrderDetails.customerPhone}
+                </a>
+              </div>
+              <div className="flex items-start justify-between gap-2 text-muted">
+                <p className="break-words min-w-0 flex-1">
+                  {selectedOrderDetails.deliveryAddress}
+                </p>
+                <a
+                  href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
+                    selectedOrderDetails.deliveryAddress
+                  )}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-primary font-semibold shrink-0 hover:underline flex items-center gap-0.5"
+                >
+                  <MapPin className="w-3.5 h-3.5" />
+                  Maps
+                </a>
+              </div>
+              <div className="flex flex-wrap gap-2 pt-1 text-[11px] text-muted">
+                <span className="px-2 py-0.5 rounded bg-surface border border-border font-semibold text-text">
+                  {selectedOrderDetails.paymentMethod === 'COD'
+                    ? 'COD'
+                    : `Online (${selectedOrderDetails.paymentStatus})`}
+                </span>
+                <span className="px-2 py-0.5 rounded bg-surface border border-border">
+                  {selectedOrderDetails.distanceKm} km away
+                </span>
+                {selectedOrderDetails.deliveryBoyName && (
+                  <span className="px-2 py-0.5 rounded bg-surface border border-border font-semibold text-text">
+                    Rider: {selectedOrderDetails.deliveryBoyName}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {selectedOrderDetails.orderNotes && (
+              <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-700 dark:text-amber-300 text-xs break-words">
+                <span className="font-bold">Kitchen Note: </span>
+                {selectedOrderDetails.orderNotes}
+              </div>
+            )}
+
+            {/* Items */}
+            <div className="space-y-2">
+              <h4 className="text-xs font-bold uppercase tracking-wider text-muted">Items</h4>
+              <div className="divide-y divide-border rounded-xl border border-border bg-bg px-3">
+                {selectedOrderDetails.items.map((item, idx) => (
+                  <div key={idx} className="py-2.5 text-xs flex items-start justify-between gap-2">
+                    <div className="min-w-0 flex-1 space-y-0.5">
+                      <p className="font-semibold text-text break-words">
+                        <span className="font-bold mr-1.5">{item.quantity}x</span>
+                        {item.itemName}
+                      </p>
+                      {(item.variantName || (item.addons && item.addons.length > 0)) && (
+                        <p className="text-[11px] text-muted break-words">
+                          {item.variantName ? `Variant: ${item.variantName}` : ''}
+                          {item.addons?.length
+                            ? ` • Add-ons: ${item.addons.map((a) => a.name).join(', ')}`
+                            : ''}
+                        </p>
+                      )}
+                      {item.itemNote && (
+                        <p className="text-[11px] text-amber-600 font-medium break-words">
+                          Note: &ldquo;{item.itemNote}&rdquo;
+                        </p>
+                      )}
+                    </div>
+                    <span className="font-bold text-text shrink-0">₹{item.lineTotal}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Bill Breakdown */}
+            <div className="p-3 rounded-xl bg-bg border border-border space-y-1.5 text-xs">
+              <div className="flex justify-between text-muted">
+                <span>Item Total</span>
+                <span>₹{selectedOrderDetails.itemTotal}</span>
+              </div>
+              <div className="flex justify-between text-muted">
+                <span>Delivery Fee</span>
+                <span>₹{selectedOrderDetails.deliveryFee}</span>
+              </div>
+              <div className="flex justify-between text-muted">
+                <span>GST</span>
+                <span>₹{selectedOrderDetails.gstAmount}</span>
+              </div>
+              {selectedOrderDetails.discountAmount > 0 && (
+                <div className="flex justify-between text-emerald-600 font-medium">
+                  <span>
+                    Discount{' '}
+                    {selectedOrderDetails.couponCode
+                      ? `(${selectedOrderDetails.couponCode})`
+                      : ''}
+                  </span>
+                  <span>-₹{selectedOrderDetails.discountAmount}</span>
+                </div>
+              )}
+              <div className="flex justify-between font-bold text-sm text-text pt-1.5 border-t border-border">
+                <span>Grand Total</span>
+                <span>₹{selectedOrderDetails.grandTotal}</span>
+              </div>
+            </div>
+
+            {/* Actions */}
+            {renderOrderStatusActionButtons(selectedOrderDetails)}
+
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setKotOrder(selectedOrderDetails)}
+                className="min-h-[38px] px-3 rounded-xl border border-border text-xs font-semibold flex items-center gap-1.5 hover:bg-bg cursor-pointer"
+              >
+                <Printer className="w-3.5 h-3.5" />
+                Print KOT
               </button>
               <button
-                onClick={handleLogout}
-                className="flex-1 min-h-[42px] rounded-xl bg-red-500/15 text-red-600 text-xs font-bold"
+                type="button"
+                onClick={() => setSelectedOrderDetailsId(null)}
+                className="min-h-[38px] px-4 rounded-xl bg-primary text-primary-contrast text-xs font-bold cursor-pointer"
               >
-                Sign Out
+                Close
               </button>
             </div>
           </div>
@@ -6163,7 +6905,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
       {/* Toast Notification */}
       {toastMsg && (
-        <div className="fixed bottom-20 lg:bottom-6 right-4 z-50 bg-text text-bg px-4 py-3 rounded-xl shadow-lg text-xs font-semibold">
+        <div className="fixed bottom-5 right-4 z-50 bg-text text-bg px-4 py-3 rounded-xl shadow-lg text-xs font-semibold">
           {toastMsg}
         </div>
       )}
