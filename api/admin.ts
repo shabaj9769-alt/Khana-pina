@@ -1963,7 +1963,7 @@ export default async function handler(req: Request, res: Response) {
         phone: cleanPhone,
         isActive: true,
         activeOrders: 0,
-        accessToken: `rider_token_${crypto.randomBytes(8).toString('hex')}`,
+        accessToken: `rider_token_${crypto.randomBytes(24).toString('hex')}`,
         tokenExpiresAt: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString(),
         dailyPin: String(Math.floor(1000 + Math.random() * 9000)),
       };
@@ -1990,7 +1990,7 @@ export default async function handler(req: Request, res: Response) {
         res.status(404).json({ error: 'Rider not found' });
         return;
       }
-      rider.accessToken = `rider_token_${crypto.randomBytes(8).toString('hex')}`;
+      rider.accessToken = `rider_token_${crypto.randomBytes(24).toString('hex')}`;
       rider.tokenExpiresAt = new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString();
       rider.dailyPin = String(Math.floor(1000 + Math.random() * 9000));
       rider.isActive = true;

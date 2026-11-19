@@ -115,9 +115,6 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
   const [submittingReview, setSubmittingReview] = useState(false);
   const [reviewFeedback, setReviewFeedback] = useState<string | null>(null);
 
-  const [riderOtpInput, setRiderOtpInput] = useState('');
-  const [riderOtpMsg, setRiderOtpMsg] = useState<string | null>(null);
-
   const complaintTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const prevStatusRef = useRef<OrderStatus | null>(matchingInitialOrder?.status || null);
 
@@ -501,41 +498,6 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
                 </a>
               )}
             </div>
-
-            {order.status !== 'DELIVERED' && (
-              <div className="flex items-center gap-2 w-full sm:w-auto pt-2 sm:pt-0 border-t sm:border-t-0 border-border">
-                <input
-                  type="text"
-                  maxLength={4}
-                  value={riderOtpInput}
-                  onChange={(e) => setRiderOtpInput(e.target.value.replace(/\D/g, ''))}
-                  placeholder="Enter OTP"
-                  className="min-w-0 flex-1 sm:w-28 min-h-[44px] px-3 text-[13px] tabular-nums border border-border bg-surface text-text rounded-xl"
-                />
-                <button
-                  type="button"
-                  onClick={async () => {
-                    setRiderOtpMsg(null);
-                    const res = await fetch('/api/rider/rider_token_ramesh_01/deliver', {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ orderId: order.id, otp: riderOtpInput }),
-                    });
-                    const data = await res.json();
-                    if (res.ok) {
-                      setOrder(data.order);
-                      setRiderOtpMsg('Delivered!');
-                    } else {
-                      setRiderOtpMsg(data.error || 'OTP error');
-                    }
-                  }}
-                  className="min-h-[44px] px-3.5 rounded-xl bg-primary text-primary-contrast text-[13px] font-semibold whitespace-nowrap shrink-0 cursor-pointer"
-                >
-                  Verify OTP
-                </button>
-              </div>
-            )}
-            {riderOtpMsg && <p className="text-[13px] text-muted">{riderOtpMsg}</p>}
           </div>
           );
         })()}

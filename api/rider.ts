@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import type { Request, Response } from 'express';
 import { createFirebaseCustomToken, getRtdb } from './_lib/firebaseAdmin.ts';
 import { applyCorsAndSecurityHeaders, getClientIp } from './_lib/security.ts';
@@ -89,7 +90,43 @@ export default async function handler(req: Request, res: Response) {
         res.status(404).json({ error: 'Assigned order not found' });
         return;
       }
-      if (String(otp || '').trim() !== order.deliveryOtp) {
+      if (order.status !== 'OUT_FOR_DELIVERY') {
+        res.status(400).json({ error: 'Order is not out for delivery' });
+        return;
+      }
+
+      const rtdb = getRtdb();
+      const safeOrderId = String(order.id).replace(/[.#$/[\]:]/g, '_');
+      const otpLimitSnap = await rtdb.ref(`rateLimits/deliver_otp/${safeOrderId}`).get();
+      const otpLimitData = otpLimitSnap.exists() ? otpLimitSnap.val() : null;
+      if (
+        otpLimitData &&
+        typeof otpLimitData.expiresAt === 'number' &&
+        otpLimitData.expiresAt > Date.now() &&
+        Number(otpLimitData.count) >= 5
+      ) {
+        res.status(429).json({ error: 'Too many incorrect OTP attempts' });
+        return;
+      }
+
+      const providedOtpBuf = Buffer.from(String(otp ?? '').trim(), 'utf8');
+      const expectedOtpBuf = Buffer.from(String(order.deliveryOtp ?? '').trim(), 'utf8');
+      const otpValid =
+        providedOtpBuf.length > 0 &&
+        providedOtpBuf.length === expectedOtpBuf.length &&
+        crypto.timingSafeEqual(providedOtpBuf, expectedOtpBuf);
+
+      if (!otpValid) {
+        const otpAllowed = await checkFirebaseRateLimit(
+          'deliver_otp',
+          order.id,
+          5,
+          15 * 60 * 1000
+        );
+        if (!otpAllowed) {
+          res.status(429).json({ error: 'Too many incorrect OTP attempts' });
+          return;
+        }
         res.status(400).json({
           error:
             'Incorrect 4-digit Delivery OTP. Please ask the customer for the OTP shown on their tracking link.',
@@ -114,7 +151,6 @@ export default async function handler(req: Request, res: Response) {
           !['DELIVERED', 'CANCELLED', 'REJECTED'].includes(o.status)
       ).length;
 
-      const rtdb = getRtdb();
       await Promise.all([
         payment ? rtdb.ref(`payments/${payment.id}`).set(payment) : Promise.resolve(),
         rtdb.ref(`deliveryBoys/${rider.id}`).set(rider),

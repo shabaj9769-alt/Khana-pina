@@ -22,6 +22,7 @@ import {
   syncOrderRealtimePaths,
 } from '../../server';
 import { getRtdb } from '../../api/_lib/firebaseAdmin';
+import riderHandler from '../../api/rider';
 import { OrderRecord, PaymentRecord } from '../types';
 
 async function seedTestOrderAndPayment(overrides: {
@@ -408,5 +409,121 @@ describe('Aangan Kitchen Core & Bypass-Proof Razorpay Suite', () => {
       keySecret: '',
       webhookSecret: '',
     });
+  });
+
+  it('10. Seeded rider access tokens are random (not hardcoded) with 30-day expiry', async () => {
+    await ensureFirebaseSeeded();
+    expect(db.deliveryBoys.length).toBeGreaterThanOrEqual(2);
+    const seen = new Set<string>();
+    for (const rider of db.deliveryBoys) {
+      expect(rider.accessToken).toMatch(/^rider_token_[0-9a-f]{48}$/);
+      expect(rider.accessToken).not.toBe('rider_token_ramesh_01');
+      expect(rider.accessToken).not.toBe('rider_token_imran_02');
+      expect(seen.has(rider.accessToken)).toBe(false);
+      seen.add(rider.accessToken);
+      expect(rider.tokenExpiresAt).toBeTruthy();
+      expect(new Date(rider.tokenExpiresAt!).getTime()).toBeGreaterThan(Date.now());
+    }
+  });
+
+  it('11. Rider deliver endpoint enforces OUT_FOR_DELIVERY status, timing-safe OTP, and 5-attempt per-order lockout', async () => {
+    await ensureFirebaseSeeded();
+    const rider = db.deliveryBoys.find((r) => r.isActive)!;
+
+    const callDeliver = async (token: string, orderId: string, otp: string, ip = '10.0.0.10') => {
+      let statusCode = 200;
+      let jsonBody: any = null;
+      const req = {
+        method: 'POST',
+        originalUrl: `/api/rider/${encodeURIComponent(token)}/deliver`,
+        url: `/api/rider/${encodeURIComponent(token)}/deliver`,
+        headers: { 'x-forwarded-for': ip },
+        params: { accessToken: token },
+        query: {},
+        body: { orderId, otp },
+        socket: { remoteAddress: ip },
+      } as any;
+      const res = {
+        setHeader: () => res,
+        status: (code: number) => {
+          statusCode = code;
+          return res;
+        },
+        json: (payload: any) => {
+          jsonBody = payload;
+          return res;
+        },
+        end: () => res,
+      } as any;
+      await riderHandler(req, res);
+      return { statusCode, jsonBody };
+    };
+
+    // 1. Non-OUT_FOR_DELIVERY statuses must be rejected with 400
+    for (const badStatus of ['PLACED', 'PREPARING', 'DELIVERED', 'CANCELLED'] as const) {
+      const { order } = await seedTestOrderAndPayment({
+        orderId: `ord_rider_status_${badStatus}_${Date.now()}`,
+        orderNumber: `AAN-R-${badStatus}`,
+        razorpayOrderId: `rzp_rider_${badStatus}_${Date.now()}`,
+        grandTotal: 320,
+        status: badStatus,
+        paymentStatus: 'PENDING',
+      });
+      order.deliveryBoyId = rider.id;
+      await syncOrderRealtimePaths(order);
+
+      const res = await callDeliver(rider.accessToken, order.id, order.deliveryOtp, '10.0.0.11');
+      expect(res.statusCode).toBe(400);
+      expect(res.jsonBody).toEqual({ error: 'Order is not out for delivery' });
+      expect(order.paymentStatus).toBe('PENDING');
+    }
+
+    // 2. 4 wrong attempts + 1 valid OTP on OUT_FOR_DELIVERY succeeds without blocking rider
+    const { order: okOrder } = await seedTestOrderAndPayment({
+      orderId: `ord_rider_ok_${Date.now()}`,
+      orderNumber: 'AAN-R-OK',
+      razorpayOrderId: `rzp_rider_ok_${Date.now()}`,
+      grandTotal: 450,
+      status: 'OUT_FOR_DELIVERY',
+      paymentStatus: 'PENDING',
+    });
+    okOrder.deliveryBoyId = rider.id;
+    await syncOrderRealtimePaths(okOrder);
+
+    for (let i = 0; i < 4; i++) {
+      const bad = await callDeliver(rider.accessToken, okOrder.id, '0000', '10.0.0.12');
+      expect(bad.statusCode).toBe(400);
+    }
+    const success = await callDeliver(rider.accessToken, okOrder.id, okOrder.deliveryOtp, '10.0.0.12');
+    expect(success.statusCode).toBe(200);
+    expect(success.jsonBody.order.status).toBe('DELIVERED');
+    expect(success.jsonBody.order.paymentStatus).toBe('PAID');
+
+    // 3. 5 wrong attempts triggers 429 lockout on subsequent attempt (even with valid OTP)
+    const { order: lockedOrder } = await seedTestOrderAndPayment({
+      orderId: `ord_rider_lock_${Date.now()}`,
+      orderNumber: 'AAN-R-LOCK',
+      razorpayOrderId: `rzp_rider_lock_${Date.now()}`,
+      grandTotal: 500,
+      status: 'OUT_FOR_DELIVERY',
+      paymentStatus: 'PENDING',
+    });
+    lockedOrder.deliveryBoyId = rider.id;
+    await syncOrderRealtimePaths(lockedOrder);
+
+    for (let i = 0; i < 5; i++) {
+      const bad = await callDeliver(rider.accessToken, lockedOrder.id, '9999', '10.0.0.13');
+      expect(bad.statusCode).toBe(400);
+    }
+    const blocked = await callDeliver(
+      rider.accessToken,
+      lockedOrder.id,
+      lockedOrder.deliveryOtp,
+      '10.0.0.13'
+    );
+    expect(blocked.statusCode).toBe(429);
+    expect(blocked.jsonBody).toEqual({ error: 'Too many incorrect OTP attempts' });
+    expect(lockedOrder.status).toBe('OUT_FOR_DELIVERY');
+    expect(lockedOrder.paymentStatus).toBe('PENDING');
   });
 });
