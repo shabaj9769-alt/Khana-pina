@@ -16,6 +16,7 @@ import {
   refreshHydrationCache,
   syncOrderRealtimePaths,
 } from './_lib/store.ts';
+import { notifyTelegramDeliveredOrder } from './_lib/telegram.ts';
 import { DeliveryBoy } from '../src/types.ts';
 
 function toPublicDeliveryBoy(r: DeliveryBoy) {
@@ -250,6 +251,8 @@ export default async function handler(req: Request, res: Response) {
         syncOrderRealtimePaths(order),
       ]);
       refreshHydrationCache();
+
+      await notifyTelegramDeliveredOrder(order, rider.name || 'Rider');
 
       res.json({ order });
       return;

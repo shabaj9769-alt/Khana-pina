@@ -258,6 +258,11 @@ export interface OrderRecord {
   deliveryBoyName?: string;
   deliveryBoyPhone?: string;
   cancelReason?: string;
+  cancelledBy?: 'customer' | 'kitchen' | 'payment_failed' | 'auto_expired';
+  refundPending?: boolean;
+  telegramNewSent?: boolean;
+  telegramCancelSent?: boolean;
+  telegramDeliveredSent?: boolean;
   placedAt: string;
   acceptedAt?: string;
   preparedAt?: string;
@@ -422,6 +427,8 @@ export interface PublicTrackingProjection {
   deliveryBoyName: string | null;
   deliveryBoyPhone: string | null;
   cancelReason: string | null;
+  cancelledBy?: 'customer' | 'kitchen' | 'payment_failed' | 'auto_expired';
+  refundPending?: boolean;
   itemTotal: number;
   deliveryFee: number;
   gstAmount: number;

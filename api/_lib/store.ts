@@ -33,6 +33,7 @@ import {
 import { DEFAULT_STOREFRONT_THEME, normalizeThemeConfig } from '../../src/utils/themeTokens.ts';
 import { getRtdb } from './firebaseAdmin.ts';
 import { hashPasswordScrypt, isRazorpayConfigured, parseCookies, verifyJwtRaw } from './security.ts';
+import { notifyTelegramCancelledOrder } from './telegram.ts';
 
 // Image URLs (Optimized <80KB WebP assets)
 export function normalizeImageUrl(url?: string | null): string {
@@ -808,6 +809,8 @@ export function buildPublicTrackingProjection(order: OrderRecord): PublicTrackin
     deliveryBoyName: order.deliveryBoyName || null,
     deliveryBoyPhone: order.deliveryBoyPhone || null,
     cancelReason: order.cancelReason || null,
+    ...(order.cancelledBy ? { cancelledBy: order.cancelledBy } : {}),
+    ...(order.refundPending ? { refundPending: order.refundPending } : {}),
     itemTotal: order.itemTotal,
     deliveryFee: order.deliveryFee,
     gstAmount: order.gstAmount,
@@ -1290,6 +1293,8 @@ export async function expireSingleOrderIfStale(
     order.paymentStatus = 'FAILED';
     order.cancelReason = 'Order expired: Online payment was not completed within 10 minutes';
     order.cancelledAt = nowIso;
+    order.cancelledBy = 'auto_expired';
+    order.updatedAt = nowIso;
 
     const pay = payment || db.payments.find((p) => p.orderId === order.id);
     if (pay) {
@@ -1298,6 +1303,7 @@ export async function expireSingleOrderIfStale(
       await getRtdb().ref(`payments/${pay.id}`).set(pay);
     }
     await syncOrderRealtimePaths(order);
+    await notifyTelegramCancelledOrder(order, 'Auto-expired');
     return true;
   }
   return false;
@@ -1622,6 +1628,8 @@ export async function expireStaleOrdersLazy(options?: {
       order.paymentStatus = 'FAILED';
       order.cancelReason = 'Order expired: Online payment was not completed within 10 minutes';
       order.cancelledAt = nowIso;
+      order.cancelledBy = 'auto_expired';
+      order.updatedAt = nowIso;
 
       const pay = db.payments.find((p) => p.orderId === order.id);
       if (pay) {
@@ -1631,6 +1639,7 @@ export async function expireStaleOrdersLazy(options?: {
       }
 
       await syncOrderRealtimePaths(order);
+      await notifyTelegramCancelledOrder(order, 'Auto-expired');
       expiredOrders.push(order);
     }
   }

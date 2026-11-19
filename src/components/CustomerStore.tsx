@@ -49,6 +49,7 @@ import { calculateHaversineKm } from '../utils/haversine.ts';
 import { getCachedShopName, optimizeAssetUrl, normalizeImageUrl } from '../utils/themeTokens.ts';
 import { SafeImage } from './SafeImage.tsx';
 import { formatOrderPlacedAt, syncServerTimeFromResponse } from '../utils/formatOrderTime.ts';
+import { FirebaseClientConfig, subscribeToCustomerTracking } from '../utils/firebaseClient.ts';
 
 interface ResolvedHomeSection extends HomeSection {
   items: MenuItem[];
@@ -67,6 +68,7 @@ interface HomePayload {
   onlinePaymentEnabled?: boolean;
   demoMode?: boolean;
   turnstileSiteKey?: string | null;
+  firebaseClientConfig?: FirebaseClientConfig | null;
 }
 
 interface CustomerStoreProps {
@@ -290,6 +292,11 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
   const [lookupPhone, setLookupPhone] = useState('');
   const [lookupBusy, setLookupBusy] = useState(false);
   const [lookupError, setLookupError] = useState<string | null>(null);
+  const [cancelOrderTarget, setCancelOrderTarget] = useState<OrderRecord | null>(null);
+  const [cancelReasonChoice, setCancelReasonChoice] = useState('');
+  const [cancelCustomNote, setCancelCustomNote] = useState('');
+  const [cancelOrderBusy, setCancelOrderBusy] = useState(false);
+  const [cancelOrderError, setCancelOrderError] = useState<string | null>(null);
 
   // Policy Modal
   const [activePolicyModal, setActivePolicyModal] = useState<'privacy' | 'terms' | 'refund' | null>(
@@ -681,6 +688,82 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
       loadRecentOrders();
     }
   }, [activeSubTab, homeData?.demoMode]);
+
+  const activeRecentTokensKey = useMemo(
+    () =>
+      recentOrders
+        .filter((o) => !['DELIVERED', 'CANCELLED', 'REJECTED'].includes(o.status))
+        .map((o) => o.trackingToken)
+        .join(','),
+    [recentOrders]
+  );
+
+  useEffect(() => {
+    if (activeSubTab !== 'orders' || !activeRecentTokensKey) return;
+    const tokens = activeRecentTokensKey.split(',').filter(Boolean);
+    const unsubs = tokens.map((tok) =>
+      subscribeToCustomerTracking({
+        trackingToken: tok,
+        firebaseConfig: homeData?.firebaseClientConfig || null,
+        onUpdate: (proj) => {
+          setRecentOrders((prev) =>
+            prev.map((o) =>
+              o.trackingToken === proj.trackingToken
+                ? {
+                    ...o,
+                    status: proj.status,
+                    paymentStatus: proj.paymentStatus,
+                    deliveryBoyName: proj.deliveryBoyName || undefined,
+                    deliveryBoyPhone: proj.deliveryBoyPhone || undefined,
+                    cancelReason: proj.cancelReason || undefined,
+                    cancelledBy: proj.cancelledBy,
+                    refundPending: proj.refundPending,
+                  }
+                : o
+            )
+          );
+        },
+      })
+    );
+    return () => {
+      for (const unsub of unsubs) unsub();
+    };
+  }, [activeSubTab, activeRecentTokensKey]);
+
+  const handleConfirmCustomerCancelOrder = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!cancelOrderTarget) return;
+    setCancelOrderBusy(true);
+    setCancelOrderError(null);
+    const parts = [cancelReasonChoice.trim(), cancelCustomNote.trim()].filter(Boolean);
+    const reason = parts.join(' - ');
+    try {
+      const res = await fetch('/api/orders/cancel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          orderId: cancelOrderTarget.id,
+          trackingToken: cancelOrderTarget.trackingToken,
+          reason: reason || undefined,
+        }),
+      });
+      syncServerTimeFromResponse(res);
+      const data = await res.json();
+      if (!res.ok || !data.order) {
+        setCancelOrderError(data.error || 'Could not cancel order.');
+        void loadRecentOrders();
+        return;
+      }
+      setRecentOrders((prev) =>
+        prev.map((o) => (o.id === data.order.id ? data.order : o))
+      );
+      setCancelOrderTarget(null);
+    } catch {
+      setCancelOrderError('Network error while cancelling order.');
+    } finally {
+      setCancelOrderBusy(false);
+    }
+  };
 
   // Reset COD OTP state if phone number changes
   useEffect(() => {
@@ -3902,6 +3985,42 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                       {ord.status === 'DELIVERED' ? 'View details' : 'Track live'}
                     </button>
                   </div>
+
+                  {(ord.status === 'PLACED' || ord.status === 'ACCEPTED') && (
+                    <div className="flex items-center justify-end">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCancelOrderTarget(ord);
+                          setCancelReasonChoice('');
+                          setCancelCustomNote('');
+                          setCancelOrderError(null);
+                        }}
+                        className="min-h-[36px] px-3 py-1.5 rounded-xl border border-red-500/40 text-red-600 hover:bg-red-500/10 text-[13px] font-semibold whitespace-nowrap cursor-pointer"
+                      >
+                        Cancel Order
+                      </button>
+                    </div>
+                  )}
+
+                  {(ord.status === 'PREPARING' ||
+                    ord.status === 'READY' ||
+                    ord.status === 'OUT_FOR_DELIVERY') && (
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-[13px] text-muted">
+                      <span className="min-w-0 break-words">
+                        Order ban raha hai - cancel karne ke liye kitchen ko call karein
+                      </span>
+                      {settings.supportPhone && (
+                        <a
+                          href={`tel:${settings.supportPhone.replace(/[^+\d]/g, '')}`}
+                          className="min-h-[36px] px-3 py-1.5 rounded-xl border border-border bg-bg text-[12px] font-semibold text-primary inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+                        >
+                          <Phone className="w-3.5 h-3.5 shrink-0" />
+                          <span>{settings.supportPhone}</span>
+                        </a>
+                      )}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -4540,6 +4659,73 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
               Close
             </button>
           </div>
+        </div>
+      )}
+
+      {cancelOrderTarget && (
+        <div
+          className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-3 sm:p-4"
+          onClick={() => !cancelOrderBusy && setCancelOrderTarget(null)}
+        >
+          <form
+            onSubmit={handleConfirmCustomerCancelOrder}
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-sm bg-surface rounded-2xl border border-border p-4 sm:p-5 space-y-3.5 text-text"
+          >
+            <h3 className="font-display text-base font-bold text-text">
+              Cancel Order #{cancelOrderTarget.orderNumber}?
+            </h3>
+            <p className="text-[13px] text-muted">
+              Are you sure you want to cancel this order?
+            </p>
+            <div className="space-y-2.5">
+              <select
+                value={cancelReasonChoice}
+                onChange={(e) => setCancelReasonChoice(e.target.value)}
+                aria-label="Cancellation reason"
+                className="w-full min-h-[42px] px-3 rounded-xl border border-border bg-bg text-sm text-text"
+              >
+                <option value="">Select reason (optional)</option>
+                <option value="Ordered by mistake">Ordered by mistake</option>
+                <option value="Changed my mind">Changed my mind</option>
+                <option value="Taking too long">Taking too long</option>
+                <option value="Want to change items or address">
+                  Want to change items or address
+                </option>
+                <option value="Other">Other</option>
+              </select>
+              <input
+                type="text"
+                maxLength={200}
+                value={cancelCustomNote}
+                onChange={(e) => setCancelCustomNote(e.target.value)}
+                placeholder="Additional note (optional)"
+                className="w-full min-h-[42px] px-3 rounded-xl border border-border bg-bg text-sm text-text"
+              />
+            </div>
+            {cancelOrderError && (
+              <p className="text-[13px] font-semibold text-red-600 break-words">
+                {cancelOrderError}
+              </p>
+            )}
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button
+                type="button"
+                disabled={cancelOrderBusy}
+                onClick={() => setCancelOrderTarget(null)}
+                className="min-h-[40px] px-4 rounded-xl border border-border bg-bg text-[13px] font-semibold text-text cursor-pointer"
+              >
+                Keep Order
+              </button>
+              <button
+                type="submit"
+                disabled={cancelOrderBusy}
+                className="min-h-[40px] px-4 rounded-xl bg-red-600 text-white text-[13px] font-semibold cursor-pointer disabled:opacity-50"
+              >
+                {cancelOrderBusy ? 'Cancelling...' : 'Confirm Cancel'}
+              </button>
+            </div>
+          </form>
         </div>
       )}
     </div>

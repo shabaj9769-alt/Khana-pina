@@ -13,6 +13,7 @@ import {
   syncOrderRealtimePaths,
   verifyAndIncrementMenuStockSalesTx,
 } from './store.ts';
+import { notifyTelegramCancelledOrder, notifyTelegramNewOrder } from './telegram.ts';
 import { OrderRecord, PaymentRecord, RefundRecord } from '../../src/types.ts';
 
 export interface RazorpayGatewayPaymentEntity {
@@ -416,6 +417,7 @@ export async function verifyRazorpayPaymentAuthoritative(params: {
     syncOrderRealtimePaths(order),
   ]);
   refreshHydrationCache();
+  await notifyTelegramNewOrder(order);
 
   return {
     status: 200,
@@ -559,6 +561,9 @@ export async function processRazorpayWebhookAuthoritative(params: {
   }
   payment.updatedAt = new Date().toISOString();
 
+  let markedPaidNow = false;
+  let cancelledByFailedPayment = false;
+
   if (event === 'payment.captured' || event === 'order.paid') {
     if (rzpPaymentId) {
       const lock = await claimPaymentIdForOrderTx(rzpPaymentId, order.id);
@@ -629,6 +634,7 @@ export async function processRazorpayWebhookAuthoritative(params: {
     payment.status = 'VERIFIED';
     if (order.paymentStatus !== 'PAID') {
       order.paymentStatus = 'PAID';
+      markedPaidNow = true;
       const cust = db.customers[order.customerPhone];
       if (cust) {
         cust.orderCount += 1;
@@ -644,11 +650,14 @@ export async function processRazorpayWebhookAuthoritative(params: {
     }
   } else if (event === 'payment.failed') {
     if (order.paymentStatus !== 'PAID') {
+      cancelledByFailedPayment = order.status !== 'CANCELLED' && order.status !== 'REJECTED';
       payment.status = 'FAILED';
       order.paymentStatus = 'FAILED';
       order.status = 'CANCELLED';
       order.cancelReason = 'Payment failed at gateway webhook';
       order.cancelledAt = new Date().toISOString();
+      order.cancelledBy = 'payment_failed';
+      order.updatedAt = payment.updatedAt;
     }
   } else if (event === 'refund.processed') {
     payment.status = 'REFUNDED';
@@ -677,6 +686,13 @@ export async function processRazorpayWebhookAuthoritative(params: {
     syncOrderRealtimePaths(order),
   ]);
   refreshHydrationCache();
+
+  if (markedPaidNow) {
+    await notifyTelegramNewOrder(order);
+  }
+  if (cancelledByFailedPayment) {
+    await notifyTelegramCancelledOrder(order, 'Payment failed');
+  }
 
   return {
     status: 200,
@@ -767,6 +783,7 @@ export async function processRazorpayRefundAuthoritative(params: {
   const order = db.orders.find((o) => o.id === payment.orderId);
   if (order) {
     order.paymentStatus = 'REFUNDED';
+    order.refundPending = false;
     await syncOrderRealtimePaths(order);
   }
 

@@ -14,6 +14,7 @@ import {
 } from './_lib/security.ts';
 import {
   allocateNextOrderSequenceTx,
+  buildPublicTrackingProjection,
   calculateAuthoritativeBill,
   checkFirebaseRateLimit,
   claimCouponUsageTx,
@@ -29,6 +30,7 @@ import {
   syncOrderRealtimePaths,
   verifyAndIncrementMenuStockSalesTx,
 } from './_lib/store.ts';
+import { notifyTelegramCancelledOrder, notifyTelegramNewOrder } from './_lib/telegram.ts';
 
 const OrderPlacementSchema = z.object({
   customerName: z.string().trim().min(2).max(120),
@@ -223,6 +225,131 @@ export default async function handler(req: Request, res: Response) {
       }
 
       res.json({ order });
+      return;
+    }
+
+    // 5b. POST /api/orders/cancel (Customer self-cancel while PLACED or ACCEPTED)
+    if (req.method === 'POST' && path.endsWith('/orders/cancel')) {
+      const allowed = await checkFirebaseRateLimit('orders_cancel', clientIp, 30, 15 * 60 * 1000);
+      if (!allowed) {
+        res.status(429).json({ error: 'Too many cancel attempts from this IP. Please wait.' });
+        return;
+      }
+      await expireStaleOrdersLazy({ minIntervalMs: 45_000 });
+
+      const parsed = z
+        .object({
+          orderId: z.string().trim().min(1).max(120).optional(),
+          trackingToken: z.string().trim().min(8).max(120).optional(),
+          orderNumber: z.string().trim().min(3).max(32).optional(),
+          phone: z
+            .string()
+            .trim()
+            .regex(/^[6-9]\d{9}$/, 'Enter the 10-digit mobile number used for the order')
+            .optional(),
+          reason: z.string().max(300).optional(),
+        })
+        .safeParse(req.body);
+
+      if (!parsed.success) {
+        res.status(400).json({
+          error: parsed.error.issues[0]?.message || 'Valid order verification details required.',
+        });
+        return;
+      }
+
+      const { orderId, trackingToken, orderNumber, phone, reason } = parsed.data;
+      let order: OrderRecord | undefined;
+
+      if (trackingToken && orderId) {
+        order = db.orders.find(
+          (o) => o.id === orderId && o.trackingToken === trackingToken
+        );
+      } else if (trackingToken && !orderId) {
+        order = db.orders.find((o) => o.trackingToken === trackingToken);
+      } else if (orderNumber && phone) {
+        const cleanOrderNo = orderNumber.toUpperCase();
+        const cleanPhone = phone.replace(/\D/g, '');
+        order = db.orders.find(
+          (o) =>
+            (o.orderNumber.toUpperCase() === cleanOrderNo ||
+              o.orderNumber.toUpperCase() === `AAN-${cleanOrderNo.replace(/^AAN-/i, '')}`) &&
+            o.customerPhone === cleanPhone
+        );
+      } else {
+        res.status(400).json({
+          error: 'Order verification (orderId + trackingToken or orderNumber + phone) is required.',
+        });
+        return;
+      }
+
+      if (!order) {
+        res.status(404).json({ error: 'Order not found or verification failed.' });
+        return;
+      }
+
+      if (order.status !== 'PLACED' && order.status !== 'ACCEPTED') {
+        res.status(409).json({
+          error:
+            'Kitchen ne order banana shuru kar diya hai. Cancel ke liye kripya kitchen ko call karein.',
+        });
+        return;
+      }
+
+      const nowIso = new Date().toISOString();
+      const cleanReason = String(reason || '')
+        .replace(/[<>]/g, '')
+        .trim()
+        .slice(0, 300);
+
+      order.status = 'CANCELLED';
+      order.cancelledAt = nowIso;
+      order.cancelReason = cleanReason || 'Cancelled by customer';
+      order.cancelledBy = 'customer';
+      order.updatedAt = nowIso;
+
+      let updatedPayment: PaymentRecord | undefined;
+      if (order.paymentMethod === 'RAZORPAY' && order.paymentStatus === 'PAID') {
+        order.refundPending = true;
+      } else if (order.paymentStatus === 'PENDING') {
+        order.paymentStatus = 'FAILED';
+        updatedPayment = db.payments.find((p) => p.orderId === order.id);
+        if (updatedPayment) {
+          updatedPayment.status = 'FAILED';
+          updatedPayment.updatedAt = nowIso;
+        }
+      }
+
+      const rtdb = getRtdb();
+      const riderUpdates: Promise<void>[] = [];
+      if (order.deliveryBoyId) {
+        const rider = db.deliveryBoys.find((r) => r.id === order.deliveryBoyId);
+        if (rider) {
+          rider.activeOrders = db.orders.filter(
+            (o) =>
+              o.deliveryBoyId === rider.id &&
+              !['DELIVERED', 'CANCELLED', 'REJECTED'].includes(o.status)
+          ).length;
+          riderUpdates.push(rtdb.ref(`deliveryBoys/${rider.id}`).set(rider));
+        }
+      }
+
+      clearHomeCache();
+      invalidateHomeHydration();
+
+      await Promise.all([
+        ...riderUpdates,
+        updatedPayment ? rtdb.ref(`payments/${updatedPayment.id}`).set(updatedPayment) : Promise.resolve(),
+        syncOrderRealtimePaths(order),
+      ]);
+      refreshHydrationCache();
+
+      await notifyTelegramCancelledOrder(order, 'Customer');
+
+      res.json({
+        order,
+        trackingProjection: buildPublicTrackingProjection(order),
+      });
       return;
     }
 
@@ -516,6 +643,10 @@ export default async function handler(req: Request, res: Response) {
         syncOrderRealtimePaths(newOrder),
       ]);
       refreshHydrationCache();
+
+      if (method === 'COD') {
+        await notifyTelegramNewOrder(newOrder);
+      }
 
       res.status(201).json({
         order: newOrder,

@@ -2269,19 +2269,17 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 <Printer className="w-3.5 h-3.5" />
                 KOT
               </button>
-              {order.status !== 'OUT_FOR_DELIVERY' && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setCancelReasonModalOrder(order);
-                    setCancelReasonTemplate('Customer Requested');
-                    setCancelCustomReason('');
-                  }}
-                  className="flex-1 sm:flex-initial min-h-[40px] px-3 rounded-xl border border-red-500/30 text-red-600 text-xs font-semibold cursor-pointer"
-                >
-                  Cancel
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={() => {
+                  setCancelReasonModalOrder(order);
+                  setCancelReasonTemplate('Customer Requested');
+                  setCancelCustomReason('');
+                }}
+                className="flex-1 sm:flex-initial min-h-[40px] px-3 rounded-xl border border-red-500/30 text-red-600 text-xs font-semibold cursor-pointer"
+              >
+                Cancel
+              </button>
             </div>
           </div>
         )}

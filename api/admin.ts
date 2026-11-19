@@ -63,6 +63,10 @@ import {
   toPublicAdminUser,
   VerifiedAdminContext,
 } from './_lib/store.ts';
+import {
+  notifyTelegramCancelledOrder,
+  notifyTelegramDeliveredOrder,
+} from './_lib/telegram.ts';
 
 const DeliverySlabSchema = z.object({
   maxKm: z.number().min(0.5).max(100),
@@ -1057,6 +1061,9 @@ export default async function handler(req: Request, res: Response) {
         }
       }
 
+      let becameCancelled = false;
+      let becameDelivered = false;
+
       if (status && status !== order.status) {
         const validStatuses: OrderStatus[] = [
           'PLACED',
@@ -1077,6 +1084,8 @@ export default async function handler(req: Request, res: Response) {
           res.status(400).json({ error: 'Invalid 4-digit customer Delivery OTP' });
           return;
         }
+        const wasCancelled = order.status === 'CANCELLED' || order.status === 'REJECTED';
+        const wasDelivered = order.status === 'DELIVERED';
         order.status = nextStatus;
         if (nextStatus === 'ACCEPTED') order.acceptedAt = nowIso;
         if (nextStatus === 'PREPARING') order.preparedAt = nowIso;
@@ -1085,10 +1094,20 @@ export default async function handler(req: Request, res: Response) {
         if (nextStatus === 'DELIVERED') {
           order.deliveredAt = nowIso;
           order.paymentStatus = 'PAID';
+          if (!wasDelivered) {
+            becameDelivered = true;
+          }
         }
         if (nextStatus === 'CANCELLED' || nextStatus === 'REJECTED') {
           order.cancelledAt = nowIso;
           order.cancelReason = cancelReason || `Order ${nextStatus.toLowerCase()} by kitchen`;
+          order.cancelledBy = 'kitchen';
+          if (order.paymentMethod === 'RAZORPAY' && order.paymentStatus === 'PAID') {
+            order.refundPending = true;
+          }
+          if (!wasCancelled) {
+            becameCancelled = true;
+          }
         }
 
         await logAudit(
@@ -1113,6 +1132,12 @@ export default async function handler(req: Request, res: Response) {
         }),
         syncOrderRealtimePaths(order, previousRiderId),
       ]);
+
+      if (becameCancelled) {
+        await notifyTelegramCancelledOrder(order, 'Kitchen');
+      } else if (becameDelivered) {
+        await notifyTelegramDeliveredOrder(order, 'Admin');
+      }
 
       res.json({ order });
       return;

@@ -126,6 +126,12 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
   const [submittingReview, setSubmittingReview] = useState(false);
   const [reviewFeedback, setReviewFeedback] = useState<string | null>(null);
 
+  const [cancelModalOpen, setCancelModalOpen] = useState(false);
+  const [cancelReasonChoice, setCancelReasonChoice] = useState('');
+  const [cancelCustomNote, setCancelCustomNote] = useState('');
+  const [cancelBusy, setCancelBusy] = useState(false);
+  const [cancelError, setCancelError] = useState<string | null>(null);
+
   const complaintTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const prevStatusRef = useRef<OrderStatus | null>(matchingInitialOrder?.status || null);
 
@@ -227,6 +233,8 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
                 deliveryBoyName: proj.deliveryBoyName || undefined,
                 deliveryBoyPhone: proj.deliveryBoyPhone || undefined,
                 cancelReason: proj.cancelReason || undefined,
+                cancelledBy: proj.cancelledBy,
+                refundPending: proj.refundPending,
               }
             : prev
         );
@@ -234,6 +242,43 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
     });
     return () => unsub();
   }, [trackingToken, order?.status === 'DELIVERED']);
+
+  const handleConfirmCancelOrder = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!order) return;
+    setCancelBusy(true);
+    setCancelError(null);
+    const parts = [cancelReasonChoice.trim(), cancelCustomNote.trim()].filter(Boolean);
+    const reason = parts.join(' - ');
+    try {
+      const res = await fetch('/api/orders/cancel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          orderId: order.id,
+          trackingToken: order.trackingToken,
+          reason: reason || undefined,
+        }),
+      });
+      syncServerTimeFromResponse(res);
+      const data = await res.json();
+      if (!res.ok || !data.order) {
+        setCancelError(data.error || 'Could not cancel order.');
+        void fetchTrackingData({ silent: true });
+        return;
+      }
+      setOrder(data.order);
+      onOrderLoaded?.(data.order);
+      if (data.trackingProjection) {
+        setLiveProjection(data.trackingProjection);
+      }
+      setCancelModalOpen(false);
+    } catch {
+      setCancelError('Network error while cancelling order.');
+    } finally {
+      setCancelBusy(false);
+    }
+  };
 
   const handleSubmitReview = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -538,6 +583,11 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
                 A full refund of ₹{order.grandTotal} has been initiated to your original payment method.
               </p>
             )}
+            {order.paymentMethod === 'RAZORPAY' && order.paymentStatus === 'PAID' && (
+              <p>
+                Online payment refund (₹{order.grandTotal}) will be processed manually by the kitchen.
+              </p>
+            )}
           </div>
         ) : !isDelivered ? (
           <div className="space-y-2.5">
@@ -598,6 +648,42 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
             })}
           </div>
         ) : null}
+
+        {(order.status === 'PLACED' || order.status === 'ACCEPTED') && (
+          <div className="pt-2 border-t border-border flex items-center justify-end">
+            <button
+              type="button"
+              onClick={() => {
+                setCancelReasonChoice('');
+                setCancelCustomNote('');
+                setCancelError(null);
+                setCancelModalOpen(true);
+              }}
+              className="min-h-[38px] px-3.5 py-1.5 rounded-xl border border-red-500/40 text-red-600 hover:bg-red-500/10 text-[13px] font-semibold whitespace-nowrap cursor-pointer"
+            >
+              Cancel Order
+            </button>
+          </div>
+        )}
+
+        {(order.status === 'PREPARING' ||
+          order.status === 'READY' ||
+          order.status === 'OUT_FOR_DELIVERY') && (
+          <div className="pt-2 border-t border-border flex flex-wrap items-center justify-between gap-2 text-[13px] text-muted">
+            <span className="min-w-0 break-words">
+              Order ban raha hai - cancel karne ke liye kitchen ko call karein
+            </span>
+            {shopInfo?.supportPhone && (
+              <a
+                href={`tel:${shopInfo.supportPhone.replace(/[^+\d]/g, '')}`}
+                className="min-h-[36px] px-3 py-1.5 rounded-xl border border-border bg-bg text-[12px] font-semibold text-primary inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                <Phone className="w-3.5 h-3.5 shrink-0" />
+                <span>{shopInfo.supportPhone}</span>
+              </a>
+            )}
+          </div>
+        )}
       </section>
 
       {/* Printable Invoice & Feedback */}
@@ -735,6 +821,71 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
           <span>Back to menu</span>
         </button>
       </div>
+
+      {cancelModalOpen && (
+        <div
+          className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-3 sm:p-4"
+          onClick={() => !cancelBusy && setCancelModalOpen(false)}
+        >
+          <form
+            onSubmit={handleConfirmCancelOrder}
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-sm bg-surface rounded-2xl border border-border p-4 sm:p-5 space-y-3.5 text-text"
+          >
+            <h3 className="font-display text-base font-bold text-text">
+              Cancel Order #{order.orderNumber}?
+            </h3>
+            <p className="text-[13px] text-muted">
+              Are you sure you want to cancel this order?
+            </p>
+            <div className="space-y-2.5">
+              <select
+                value={cancelReasonChoice}
+                onChange={(e) => setCancelReasonChoice(e.target.value)}
+                aria-label="Cancellation reason"
+                className="w-full min-h-[42px] px-3 rounded-xl border border-border bg-bg text-sm text-text"
+              >
+                <option value="">Select reason (optional)</option>
+                <option value="Ordered by mistake">Ordered by mistake</option>
+                <option value="Changed my mind">Changed my mind</option>
+                <option value="Taking too long">Taking too long</option>
+                <option value="Want to change items or address">
+                  Want to change items or address
+                </option>
+                <option value="Other">Other</option>
+              </select>
+              <input
+                type="text"
+                maxLength={200}
+                value={cancelCustomNote}
+                onChange={(e) => setCancelCustomNote(e.target.value)}
+                placeholder="Additional note (optional)"
+                className="w-full min-h-[42px] px-3 rounded-xl border border-border bg-bg text-sm text-text"
+              />
+            </div>
+            {cancelError && (
+              <p className="text-[13px] font-semibold text-red-600 break-words">{cancelError}</p>
+            )}
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button
+                type="button"
+                disabled={cancelBusy}
+                onClick={() => setCancelModalOpen(false)}
+                className="min-h-[40px] px-4 rounded-xl border border-border bg-bg text-[13px] font-semibold text-text cursor-pointer"
+              >
+                Keep Order
+              </button>
+              <button
+                type="submit"
+                disabled={cancelBusy}
+                className="min-h-[40px] px-4 rounded-xl bg-red-600 text-white text-[13px] font-semibold cursor-pointer disabled:opacity-50"
+              >
+                {cancelBusy ? 'Cancelling...' : 'Confirm Cancel'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
     </div>
   );
 };
