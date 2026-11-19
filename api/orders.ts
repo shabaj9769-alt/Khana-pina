@@ -357,7 +357,7 @@ export default async function handler(req: Request, res: Response) {
       }
       if (!bill.withinZone) {
         res.status(400).json({
-          error: `Delivery not available in your area (${bill.distanceKm} km away; max delivery radius is ${bill.maxRadiusKm} km).`,
+          error: 'Sorry, we do not deliver to this location yet.',
         });
         return;
       }

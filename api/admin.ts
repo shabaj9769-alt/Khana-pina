@@ -156,7 +156,7 @@ const DeliveryZoneUpdateSchema = z
   .object({
     shopLat: z.number().min(-90).max(90).optional(),
     shopLng: z.number().min(-180).max(180).optional(),
-    shopAddress: z.string().trim().min(5).max(300).optional(),
+    shopAddress: z.string().trim().min(2).max(300).optional(),
     radiusKm: z.number().min(0.5).max(50).optional(),
     zoneEnabled: z.boolean().optional(),
   })
@@ -1593,7 +1593,7 @@ export default async function handler(req: Request, res: Response) {
       let zonePayload = deliveryZone && typeof deliveryZone === 'object' ? { ...deliveryZone } : undefined;
       if (settings && typeof settings === 'object') {
         const settingsCopy = { ...settings } as Record<string, unknown>;
-        for (const k of ['shopLat', 'shopLng', 'radiusKm'] as const) {
+        for (const k of ['shopLat', 'shopLng', 'radiusKm', 'shopAddress'] as const) {
           if (settingsCopy[k] !== undefined) {
             zonePayload = { ...(zonePayload || {}), [k]: settingsCopy[k] };
             delete settingsCopy[k];
@@ -1609,7 +1609,7 @@ export default async function handler(req: Request, res: Response) {
         db.settings = { ...db.settings, ...parsedSettings.data };
       }
 
-      for (const k of ['shopLat', 'shopLng', 'radiusKm'] as const) {
+      for (const k of ['shopLat', 'shopLng', 'radiusKm', 'shopAddress'] as const) {
         if (body[k] !== undefined) {
           zonePayload = { ...(zonePayload || {}), [k]: body[k] };
         }
@@ -1645,6 +1645,138 @@ export default async function handler(req: Request, res: Response) {
       );
       res.json({ settings: db.settings, deliveryZone: db.deliveryZone });
       return;
+    }
+
+    // 20b. POST /api/admin/resolve-map-link (Safely resolves short Google Maps links to lat/lng)
+    if (method === 'POST' && subPath === '/resolve-map-link') {
+      const admin = await verifyAdminAuthorized(req, res, ['owner', 'manager']);
+      if (!admin) return;
+      const parsed = z
+        .object({
+          url: z.string().trim().url().max(1000),
+        })
+        .safeParse(req.body || {});
+      if (!parsed.success) {
+        res.status(400).json({ error: 'Please paste a valid Google Maps link' });
+        return;
+      }
+
+      const isAllowedMapsHost = (hostname: string) => {
+        const h = hostname.toLowerCase();
+        return (
+          h === 'maps.app.goo.gl' ||
+          h === 'goo.gl' ||
+          h === 'g.co' ||
+          h === 'maps.google.com' ||
+          h === 'google.com' ||
+          h === 'www.google.com' ||
+          h.startsWith('maps.google.') ||
+          h.startsWith('www.google.')
+        );
+      };
+
+      const extractCoordsFromText = (raw: string): { lat: number; lng: number } | null => {
+        if (!raw) return null;
+        let decoded = raw;
+        try {
+          decoded = decodeURIComponent(raw);
+        } catch {
+          decoded = raw;
+        }
+        const patterns: RegExp[] = [
+          /@(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)/,
+          /!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)/,
+          /[?&](?:q|query|ll|center|sll)=(-?\d+(?:\.\d+)?)\s*[,+\s]+\s*(-?\d+(?:\.\d+)?)/i,
+          /\/search\/(-?\d+(?:\.\d+)?)\s*,\s*\+?(-?\d+(?:\.\d+)?)/i,
+          /\/dir\/[^/]*\/(-?\d+(?:\.\d+)?)\s*,\s*\+?(-?\d+(?:\.\d+)?)/i,
+          /ll=(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)/i,
+          /center=(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)/i,
+        ];
+        for (const re of patterns) {
+          const m = decoded.match(re);
+          if (m) {
+            const lat = Number(m[1]);
+            const lng = Number(m[2]);
+            if (
+              Number.isFinite(lat) &&
+              Number.isFinite(lng) &&
+              lat >= -90 &&
+              lat <= 90 &&
+              lng >= -180 &&
+              lng <= 180 &&
+              !(lat === 0 && lng === 0)
+            ) {
+              return {
+                lat: Number(lat.toFixed(6)),
+                lng: Number(lng.toFixed(6)),
+              };
+            }
+          }
+        }
+        return null;
+      };
+
+      try {
+        let currentUrl = parsed.data.url;
+        const parsedInitial = new URL(currentUrl);
+        if (
+          (parsedInitial.protocol !== 'https:' && parsedInitial.protocol !== 'http:') ||
+          !isAllowedMapsHost(parsedInitial.hostname)
+        ) {
+          res.status(400).json({ error: 'Please paste a valid Google Maps link' });
+          return;
+        }
+
+        const directMatch = extractCoordsFromText(currentUrl);
+        if (directMatch) {
+          res.json({ ...directMatch, resolvedUrl: currentUrl });
+          return;
+        }
+
+        for (let hop = 0; hop < 5; hop++) {
+          const r = await fetch(currentUrl, {
+            method: 'GET',
+            redirect: 'manual',
+            signal: AbortSignal.timeout(5000),
+            headers: { 'User-Agent': 'Mozilla/5.0' },
+          });
+          const loc = r.headers.get('location');
+          if (loc && r.status >= 300 && r.status < 400) {
+            const nextUrl = new URL(loc, currentUrl).toString();
+            const nextParsed = new URL(nextUrl);
+            if (!isAllowedMapsHost(nextParsed.hostname)) {
+              break;
+            }
+            const locMatch = extractCoordsFromText(nextUrl);
+            if (locMatch) {
+              res.json({ ...locMatch, resolvedUrl: nextUrl });
+              return;
+            }
+            currentUrl = nextUrl;
+            continue;
+          }
+
+          if (r.ok) {
+            const html = (await r.text()).slice(0, 120_000);
+            const htmlMatch = extractCoordsFromText(html);
+            if (htmlMatch) {
+              res.json({ ...htmlMatch, resolvedUrl: currentUrl });
+              return;
+            }
+          }
+          break;
+        }
+
+        res.status(400).json({
+          error: 'Could not read a pinned location from that link. Try opening it in Google Maps and copying the full link.',
+        });
+        return;
+      } catch {
+        res.status(400).json({
+          error: 'Could not open that short link. Please paste the full Google Maps link instead.',
+        });
+        return;
+      }
     }
 
     // 21. Coupons CRUD

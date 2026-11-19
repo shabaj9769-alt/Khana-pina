@@ -341,7 +341,11 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
   // Delivery Location & Fee State
   const [locationInput, setLocationInput] = useState('');
-  const [locationDetectStatus, setLocationDetectStatus] = useState<'idle' | 'detected' | 'invalid'>('idle');
+  const [locationDetectStatus, setLocationDetectStatus] = useState<
+    'idle' | 'resolving' | 'detected' | 'invalid'
+  >('idle');
+  const [locationLinkError, setLocationLinkError] = useState<string | null>(null);
+  const [gpsErrorMessage, setGpsErrorMessage] = useState<string | null>(null);
   const [isGettingGps, setIsGettingGps] = useState(false);
   const [deliveryFeeInput, setDeliveryFeeInput] = useState<number>(40);
 
@@ -357,9 +361,11 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     }
 
     const patterns: RegExp[] = [
-      /@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/,
+      /@(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)/,
       /!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)/,
-      /[?&](?:q|query|ll|center)=(-?\d+(?:\.\d+)?)\s*[, ]\s*(-?\d+(?:\.\d+)?)/i,
+      /[?&](?:q|query|ll|center|sll)=(-?\d+(?:\.\d+)?)\s*[,+\s]+\s*(-?\d+(?:\.\d+)?)/i,
+      /\/search\/(-?\d+(?:\.\d+)?)\s*,\s*\+?(-?\d+(?:\.\d+)?)/i,
+      /\/dir\/[^/]*\/(-?\d+(?:\.\d+)?)\s*,\s*\+?(-?\d+(?:\.\d+)?)/i,
       /geo:(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/i,
       /^\s*(-?\d+(?:\.\d+)?)\s*[,;\s]\s*(-?\d+(?:\.\d+)?)\s*$/,
     ];
@@ -385,6 +391,55 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       }
     }
     return null;
+  };
+
+  const handleLocationLinkChange = async (val: string) => {
+    setLocationInput(val);
+    setLocationLinkError(null);
+    const trimmed = val.trim();
+    if (!trimmed) {
+      setLocationDetectStatus('idle');
+      return;
+    }
+
+    const extracted = extractCoordsFromLocationInput(trimmed);
+    if (extracted) {
+      setDeliveryZone((prev) =>
+        prev ? { ...prev, shopLat: extracted.lat, shopLng: extracted.lng } : prev
+      );
+      setLocationDetectStatus('detected');
+      setGpsErrorMessage(null);
+      return;
+    }
+
+    if (/^https?:\/\/(?:maps\.app\.goo\.gl|goo\.gl\/maps|g\.co\/kgs|maps\.google\.|www\.google\.[^/]+\/maps|google\.[^/]+\/maps)/i.test(trimmed)) {
+      setLocationDetectStatus('resolving');
+      try {
+        const res = await adminFetch('/api/admin/resolve-map-link', {
+          method: 'POST',
+          body: JSON.stringify({ url: trimmed }),
+        });
+        const d = await res.json().catch(() => ({}));
+        if (res.ok && typeof d.lat === 'number' && typeof d.lng === 'number') {
+          setDeliveryZone((prev) =>
+            prev ? { ...prev, shopLat: d.lat, shopLng: d.lng } : prev
+          );
+          setLocationDetectStatus('detected');
+          setGpsErrorMessage(null);
+        } else {
+          setLocationDetectStatus('invalid');
+          setLocationLinkError(
+            d.error || 'Could not read a pinned location from that link. Try pasting the full Google Maps link or "lat, long".'
+          );
+        }
+      } catch {
+        setLocationDetectStatus('invalid');
+        setLocationLinkError('Could not read that link right now. Please try pasting the full Google Maps link.');
+      }
+      return;
+    }
+
+    setLocationDetectStatus('invalid');
   };
 
   const formatRoleLabel = (role: AdminRole) =>
@@ -1537,9 +1592,11 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   // Use Current GPS Location Handler
   const handleUseCurrentLocation = () => {
     if (!navigator.geolocation) {
+      setGpsErrorMessage('Location is not supported on this browser. Please paste a Google Maps link below.');
       showToast('Location is not supported on this browser');
       return;
     }
+    setGpsErrorMessage(null);
     setIsGettingGps(true);
     navigator.geolocation.getCurrentPosition(
       async (pos) => {
@@ -1550,12 +1607,23 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         );
         setLocationInput('');
         setLocationDetectStatus('idle');
+        setLocationLinkError(null);
         await handleUpdateShopSettings(undefined, { shopLat: lat, shopLng: lng });
         setIsGettingGps(false);
       },
-      () => {
+      (err) => {
         setIsGettingGps(false);
-        showToast('Could not read your current location');
+        if (err && err.code === 1) {
+          setGpsErrorMessage(
+            'Location permission was denied. Please allow location access in your browser settings, or paste a Google Maps link below.'
+          );
+          showToast('Location permission denied');
+        } else {
+          setGpsErrorMessage(
+            'Could not read your current location. Please try again or paste a Google Maps link below.'
+          );
+          showToast('Could not read your current location');
+        }
       },
       { enableHighAccuracy: true, timeout: 10000 }
     );
@@ -4539,66 +4607,66 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
           ==================================================================== */}
           {activeSection === 'delivery' && (
             <div className="space-y-5">
-              {/* Top Card: Shop Location & Delivery Radius */}
+              {/* Top Card: Shop Location & Delivery Area */}
               {shopSettings && deliveryZone && (
                 <div className="bg-surface rounded-2xl border border-border p-4 space-y-4">
                   <div>
                     <h2 className="text-sm sm:text-base font-bold text-text">
-                      Shop Location &amp; Delivery Radius
+                      Shop Location &amp; Delivery Area
                     </h2>
                     <p className="text-xs text-muted">
-                      Set your kitchen location, delivery distance, minimum order, and delivery fee
+                      Set your shop location, delivery distance, minimum order, delivery fee, and GST
                     </p>
                   </div>
 
                   {/* Use Current GPS Location Button */}
-                  <button
-                    type="button"
-                    disabled={!canEditMenu || isGettingGps}
-                    onClick={handleUseCurrentLocation}
-                    className="w-full min-h-[44px] px-4 rounded-xl bg-primary/10 border border-primary/30 text-primary text-xs sm:text-sm font-bold flex items-center justify-center gap-2 hover:bg-primary/15 transition-colors cursor-pointer disabled:opacity-60"
-                  >
-                    <LocateFixed className={`w-4 h-4 shrink-0 ${isGettingGps ? 'animate-spin' : ''}`} />
-                    <span>{isGettingGps ? 'Getting current location...' : 'Use my current location'}</span>
-                  </button>
+                  <div className="space-y-2">
+                    <button
+                      type="button"
+                      disabled={!canEditMenu || isGettingGps}
+                      onClick={handleUseCurrentLocation}
+                      className="w-full min-h-[46px] px-4 rounded-xl bg-primary/10 border border-primary/30 text-primary text-xs sm:text-sm font-bold flex items-center justify-center gap-2 hover:bg-primary/15 transition-colors cursor-pointer disabled:opacity-60"
+                    >
+                      <LocateFixed className={`w-4 h-4 shrink-0 ${isGettingGps ? 'animate-spin' : ''}`} />
+                      <span>{isGettingGps ? 'Getting current location...' : 'Use my current location'}</span>
+                    </button>
+
+                    {gpsErrorMessage && (
+                      <div className="p-2.5 rounded-xl bg-red-500/10 border border-red-500/30 text-red-600 text-xs flex items-start gap-2">
+                        <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                        <span className="break-words min-w-0">{gpsErrorMessage}</span>
+                      </div>
+                    )}
+                  </div>
 
                   {/* Paste Google Maps Link or Location */}
                   <div>
                     <label className="block text-xs font-semibold text-muted mb-1">
-                      Paste a Google Maps link
+                      Paste a Google Maps link (or &ldquo;lat, long&rdquo;)
                     </label>
                     <input
                       type="text"
                       value={locationInput}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        setLocationInput(val);
-                        if (!val.trim()) {
-                          setLocationDetectStatus('idle');
-                          return;
-                        }
-                        const extracted = extractCoordsFromLocationInput(val);
-                        if (extracted) {
-                          setDeliveryZone((prev) =>
-                            prev ? { ...prev, shopLat: extracted.lat, shopLng: extracted.lng } : prev
-                          );
-                          setLocationDetectStatus('detected');
-                        } else {
-                          setLocationDetectStatus('invalid');
-                        }
-                      }}
-                      placeholder="Paste Google Maps link here..."
+                      onChange={(e) => handleLocationLinkChange(e.target.value)}
+                      placeholder="Paste Google Maps link (maps.app.goo.gl or google.com/maps)..."
                       className="w-full min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs text-text"
                     />
+                    {locationDetectStatus === 'resolving' && (
+                      <p className="mt-1 text-[11px] font-semibold text-muted flex items-center gap-1.5">
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin shrink-0" />
+                        <span>Reading Google Maps link...</span>
+                      </p>
+                    )}
                     {locationDetectStatus === 'detected' && (
                       <p className="mt-1 text-[11px] font-semibold text-emerald-600 flex items-center gap-1">
                         <Check className="w-3.5 h-3.5 shrink-0" />
-                        Location updated from link. Tap Save to apply.
+                        <span>Location found from link. Tap Save to apply.</span>
                       </p>
                     )}
                     {locationDetectStatus === 'invalid' && (
-                      <p className="mt-1 text-[11px] text-amber-600">
-                        Paste a full Google Maps link with a pinned place so we can read the location.
+                      <p className="mt-1 text-[11px] text-amber-600 break-words">
+                        {locationLinkError ||
+                          'Paste a Google Maps link (maps.app.goo.gl or google.com/maps) or "lat, long" so we can read the location.'}
                       </p>
                     )}
                   </div>
@@ -4610,8 +4678,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         <MapPin className="w-4 h-4" />
                       </div>
                       <div className="min-w-0">
-                        <p className="font-bold text-text truncate">
-                          {deliveryZone.shopAddress || 'Kitchen location saved'}
+                        <p className="font-bold text-text break-words">
+                          {deliveryZone.shopAddress || 'Shop location saved'}
                         </p>
                         <p className="text-[11px] text-muted">
                           Delivery within {deliveryZone.radiusKm} km of this pin
@@ -4629,13 +4697,32 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                     </a>
                   </div>
 
+                  {/* Shop Address Text Field */}
+                  <div>
+                    <label className="block text-xs font-semibold text-muted mb-1">
+                      Shop Address
+                    </label>
+                    <input
+                      type="text"
+                      value={deliveryZone.shopAddress}
+                      onChange={(e) =>
+                        setDeliveryZone({
+                          ...deliveryZone,
+                          shopAddress: e.target.value,
+                        })
+                      }
+                      placeholder="Enter your shop address..."
+                      className="w-full min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs text-text"
+                    />
+                  </div>
+
                   {/* Radius Slider 1 to 25 km (step 0.5) */}
                   <div className="space-y-1.5">
                     <div className="flex items-center justify-between gap-2">
                       <label htmlFor="delivery-radius-slider" className="text-xs font-semibold text-muted">
                         Delivery Radius
                       </label>
-                      <span className="px-2.5 py-0.5 rounded-lg bg-primary/10 text-primary text-xs font-bold">
+                      <span className="px-2.5 py-0.5 rounded-lg bg-primary/10 text-primary text-xs font-bold shrink-0">
                         {deliveryZone.radiusKm} km
                       </span>
                     </div>
@@ -4660,8 +4747,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                     </div>
                   </div>
 
-                  {/* Minimum Order & Delivery Fee */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {/* Minimum Order, Delivery Fee & GST */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     <div>
                       <label className="block text-xs font-semibold text-muted mb-1">
                         Minimum Order (₹)
@@ -4691,15 +4778,40 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         className="w-full min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs"
                       />
                     </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-muted mb-1">
+                        GST (%)
+                      </label>
+                      <input
+                        type="number"
+                        min={0}
+                        max={28}
+                        step={0.5}
+                        value={shopSettings.gstPercent}
+                        onChange={(e) =>
+                          setShopSettings({
+                            ...shopSettings,
+                            gstPercent: Number(e.target.value),
+                          })
+                        }
+                        className="w-full min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs"
+                      />
+                    </div>
                   </div>
 
                   {canEditMenu && (
                     <button
                       type="button"
-                      onClick={() =>
+                      onClick={() => {
+                        const trimmedAddress = deliveryZone.shopAddress.trim();
+                        if (trimmedAddress.length < 2) {
+                          showToast('Please enter your shop address');
+                          return;
+                        }
                         handleUpdateShopSettings(
                           {
                             minOrderAmount: Math.max(0, Number(shopSettings.minOrderAmount) || 0),
+                            gstPercent: Math.max(0, Math.min(28, Number(shopSettings.gstPercent) || 0)),
                             deliverySlabs: [
                               {
                                 maxKm: Math.max(1, Number(deliveryZone.radiusKm) || 1),
@@ -4710,11 +4822,12 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                           {
                             shopLat: deliveryZone.shopLat,
                             shopLng: deliveryZone.shopLng,
+                            shopAddress: trimmedAddress,
                             radiusKm: deliveryZone.radiusKm,
                           }
-                        )
-                      }
-                      className="min-h-[40px] px-5 rounded-xl bg-primary text-primary-contrast text-xs font-bold cursor-pointer"
+                        );
+                      }}
+                      className="min-h-[42px] px-5 rounded-xl bg-primary text-primary-contrast text-xs font-bold cursor-pointer"
                     >
                       Save
                     </button>
