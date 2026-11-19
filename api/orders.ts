@@ -23,6 +23,8 @@ import {
   expireStaleOrdersLazy,
   findVerifiedCodOtpSession,
   getCodOtpSession,
+  invalidateHomeHydration,
+  refreshHydrationCache,
   saveCodOtpSession,
   syncOrderRealtimePaths,
   verifyAndIncrementMenuStockSalesTx,
@@ -165,7 +167,7 @@ export default async function handler(req: Request, res: Response) {
         res.status(429).json({ error: 'Too many tracking requests from this IP.' });
         return;
       }
-      await expireStaleOrdersLazy();
+      await expireStaleOrdersLazy({ minIntervalMs: 45_000 });
       const { tokens } = req.body || {};
       if (!Array.isArray(tokens)) {
         res.json({ orders: [] });
@@ -186,7 +188,7 @@ export default async function handler(req: Request, res: Response) {
         res.status(429).json({ error: 'Too many order lookup requests from this IP.' });
         return;
       }
-      await expireStaleOrdersLazy();
+      await expireStaleOrdersLazy({ minIntervalMs: 45_000 });
       const parsed = z
         .object({
           orderNumber: z.string().trim().min(3).max(32),
@@ -316,12 +318,20 @@ export default async function handler(req: Request, res: Response) {
       }
 
       // Firebase RTDB transaction rate-limits per phone and per IP (1 hour window)
-      const phoneHourlyOk = await checkFirebaseRateLimit(
-        'hourly_phone_order',
-        cleanPhone,
-        db.settings.maxOrdersPerHourPhone,
-        3600 * 1000
-      );
+      const [phoneHourlyOk, ipHourlyOk] = await Promise.all([
+        checkFirebaseRateLimit(
+          'hourly_phone_order',
+          cleanPhone,
+          db.settings.maxOrdersPerHourPhone,
+          3600 * 1000
+        ),
+        checkFirebaseRateLimit(
+          'hourly_ip_order',
+          clientIp,
+          db.settings.maxOrdersPerHourIp,
+          3600 * 1000
+        ),
+      ]);
       if (!phoneHourlyOk) {
         res.status(429).json({
           error: `Rate limit exceeded: Maximum ${db.settings.maxOrdersPerHourPhone} orders per hour allowed per phone number.`,
@@ -329,12 +339,6 @@ export default async function handler(req: Request, res: Response) {
         return;
       }
 
-      const ipHourlyOk = await checkFirebaseRateLimit(
-        'hourly_ip_order',
-        clientIp,
-        db.settings.maxOrdersPerHourIp,
-        3600 * 1000
-      );
       if (!ipHourlyOk) {
         res.status(429).json({
           error: 'Rate limit exceeded: Too many orders from this IP address in the past hour.',
@@ -502,6 +506,7 @@ export default async function handler(req: Request, res: Response) {
 
       if (method === 'COD') {
         clearHomeCache();
+        invalidateHomeHydration();
       }
 
       const rtdb = getRtdb();
@@ -510,6 +515,7 @@ export default async function handler(req: Request, res: Response) {
         rtdb.ref(`payments/${paymentRecord.id}`).set(paymentRecord),
         syncOrderRealtimePaths(newOrder),
       ]);
+      refreshHydrationCache();
 
       res.status(201).json({
         order: newOrder,

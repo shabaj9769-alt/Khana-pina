@@ -73,7 +73,7 @@ interface CustomerStoreProps {
   setActiveSubTab: (tab: 'home' | 'menu' | 'orders') => void;
   cart: CartItem[];
   setCart: React.Dispatch<React.SetStateAction<CartItem[]>>;
-  onOpenTracking: (trackingToken: string) => void;
+  onOpenTracking: (trackingToken: string, initialOrder?: OrderRecord) => void;
   cartDrawerOpen: boolean;
   setCartDrawerOpen: (open: boolean) => void;
   addressModalTrigger?: number;
@@ -974,7 +974,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
     setConfirmedSuccessOrder(null);
     setCheckoutStep('store');
     setCartDrawerOpen(false);
-    onOpenTracking(order.trackingToken);
+    onOpenTracking(order.trackingToken, order);
   };
 
   const launchLiveRazorpayCheckout = (checkoutData: {
@@ -1042,7 +1042,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
           setPaymentFailureMessage(
             'Payment pending — listening to live order status. Do not pay twice.'
           );
-          onOpenTracking(checkoutData.order.trackingToken);
+          onOpenTracking(checkoutData.order.trackingToken, checkoutData.order);
         },
       },
     });
@@ -3639,7 +3639,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                     <div className="flex items-center gap-2 shrink-0">
                       <button
                         type="button"
-                        onClick={() => onOpenTracking(recentOrders[0].trackingToken)}
+                        onClick={() => onOpenTracking(recentOrders[0].trackingToken, recentOrders[0])}
                         className="min-h-[44px] px-3.5 rounded-xl border border-border  bg-surface text-xs font-bold text-text whitespace-nowrap cursor-pointer active:scale-[0.98]"
                       >
                         Track order
@@ -3877,7 +3877,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                     </button>
                     <button
                       type="button"
-                      onClick={() => onOpenTracking(ord.trackingToken)}
+                      onClick={() => onOpenTracking(ord.trackingToken, ord)}
                       className="flex-1 min-h-[44px] px-4 rounded-xl bg-primary text-primary-contrast text-[14px] font-bold whitespace-nowrap cursor-pointer active:scale-[0.98]"
                     >
                       Track live
@@ -4419,11 +4419,11 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   type="button"
                   disabled={verifyingPayment}
                   onClick={() => {
-                    const tok = pendingRazorpayModal.order.trackingToken;
+                    const pendingOrder = pendingRazorpayModal.order;
                     setPendingRazorpayModal(null);
                     setCartDrawerOpen(false);
                     setPaymentFailureMessage('Payment pending — listening to live order status.');
-                    onOpenTracking(tok);
+                    onOpenTracking(pendingOrder.trackingToken, pendingOrder);
                   }}
                   className="w-full min-h-[44px] px-4 rounded-2xl border border-border text-muted hover:text-text text-[13px] font-semibold whitespace-nowrap cursor-pointer disabled:opacity-50"
                 >
@@ -4463,9 +4463,9 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
             <button
               type="button"
               onClick={() => {
-                const tok = confirmedSuccessOrder.trackingToken;
+                const confirmedOrder = confirmedSuccessOrder;
                 setConfirmedSuccessOrder(null);
-                onOpenTracking(tok);
+                onOpenTracking(confirmedOrder.trackingToken, confirmedOrder);
               }}
               className="w-full min-h-[48px] px-5 rounded-2xl bg-primary text-primary-contrast text-[15px] font-extrabold cursor-pointer active:scale-[0.98]"
             >

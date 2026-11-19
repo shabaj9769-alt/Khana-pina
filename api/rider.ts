@@ -6,6 +6,7 @@ import {
   db,
   ensureFirebaseSeeded,
   expireStaleOrdersLazy,
+  refreshHydrationCache,
   syncOrderRealtimePaths,
 } from './_lib/store.ts';
 
@@ -27,15 +28,16 @@ export default async function handler(req: Request, res: Response) {
   if (applyCorsAndSecurityHeaders(req, res)) return;
 
   try {
-    await ensureFirebaseSeeded();
-    await expireStaleOrdersLazy();
-
     const clientIp = getClientIp(req);
-    const allowed = await checkFirebaseRateLimit('rider', clientIp, 120, 15 * 60 * 1000);
+    const [allowed] = await Promise.all([
+      checkFirebaseRateLimit('rider', clientIp, 120, 15 * 60 * 1000),
+      ensureFirebaseSeeded(),
+    ]);
     if (!allowed) {
       res.status(429).json({ error: 'Too many rider requests from this IP.' });
       return;
     }
+    await expireStaleOrdersLazy({ minIntervalMs: 45_000 });
 
     const { accessToken, isDeliver } = extractRiderRoute(req);
     if (!accessToken) {
@@ -118,6 +120,7 @@ export default async function handler(req: Request, res: Response) {
         rtdb.ref(`deliveryBoys/${rider.id}`).set(rider),
         syncOrderRealtimePaths(order),
       ]);
+      refreshHydrationCache();
 
       res.json({ order });
       return;

@@ -753,6 +753,30 @@ export function getInitialDatabaseState(): DatabaseState {
 
 export const db: DatabaseState = getInitialDatabaseState();
 let firebaseSeeded = false;
+let lastHydratedAt = 0;
+let hydratePromise: Promise<DatabaseState> | null = null;
+let lastHomeHydratedAt = 0;
+let homeHydratePromise: Promise<void> | null = null;
+let lastAdminAuthHydratedAt = 0;
+let adminAuthHydratePromise: Promise<void> | null = null;
+let lastExpireStaleAt = 0;
+const HYDRATION_TTL_MS = 8000;
+
+export function invalidateHydration(): void {
+  lastHydratedAt = 0;
+  lastHomeHydratedAt = 0;
+  lastAdminAuthHydratedAt = 0;
+}
+
+export function invalidateHomeHydration(): void {
+  lastHomeHydratedAt = 0;
+}
+
+export function refreshHydrationCache(): void {
+  if (firebaseSeeded) {
+    lastHydratedAt = Date.now();
+  }
+}
 
 export function buildPublicTrackingProjection(order: OrderRecord): PublicTrackingProjection {
   const elapsedMins = Math.max(
@@ -854,6 +878,7 @@ export async function syncOrderRealtimePaths(
   }
 
   await rtdb.ref().update(updates);
+  refreshHydrationCache();
 }
 
 const kolkataDateFormatter = new Intl.DateTimeFormat('en-CA', {
@@ -938,6 +963,7 @@ export async function deleteClosedOrdersAtomic(ordersToDelete: OrderRecord[]): P
   db.payments = db.payments.filter((p) => !deletePaymentIdSet.has(p.id));
 
   await rtdb.ref().update(updates);
+  refreshHydrationCache();
 
   return {
     deletedCount: ordersToDelete.length,
@@ -965,165 +991,464 @@ function arrayToRecordById<T extends Record<string, any>>(
   return out;
 }
 
-export async function ensureFirebaseSeeded(): Promise<DatabaseState> {
+function applySettingsAndZoneToDb(rawSettings: any, rawDeliveryZone: any): void {
+  if (rawSettings) {
+    const rawAbout = rawSettings?.aboutPage as Partial<AboutPageConfig> | undefined;
+    const normalizedAboutPage: AboutPageConfig = {
+      tagline: rawAbout?.tagline || '',
+      story: rawAbout?.story || '',
+      coverImage: rawAbout?.coverImage ? normalizeImageUrl(rawAbout.coverImage) : '',
+      sections: recordToArray<AboutPageSectionCard>(rawAbout?.sections).sort(
+        (a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0)
+      ),
+      openingHours: rawAbout?.openingHours || '',
+      address: rawAbout?.address || '',
+      supportPhone: rawAbout?.supportPhone || '',
+      whatsappNumber: rawAbout?.whatsappNumber || '',
+      mapLink: rawAbout?.mapLink || '',
+      socialLinks: {
+        instagram: rawAbout?.socialLinks?.instagram || '',
+        facebook: rawAbout?.socialLinks?.facebook || '',
+        youtube: rawAbout?.socialLinks?.youtube || '',
+      },
+    };
+    db.settings = {
+      ...db.settings,
+      ...rawSettings,
+      theme: normalizeThemeConfig(rawSettings?.theme),
+      aboutPage: normalizedAboutPage,
+    };
+  }
+  if (rawDeliveryZone) {
+    db.deliveryZone = { ...db.deliveryZone, ...rawDeliveryZone };
+  }
+}
+
+function normalizeOrderRecordFromRtdb(o: OrderRecord): OrderRecord {
+  return {
+    ...o,
+    scheduledFor: o.scheduledFor ?? null,
+    couponCode: o.couponCode ?? null,
+    deliveryBoyId: o.deliveryBoyId ?? null,
+    items: recordToArray<OrderItemRecord>(o.items).map((it) => ({
+      ...it,
+      addons: recordToArray<{ id: string; name: string; price: number }>(it.addons),
+    })),
+  };
+}
+
+export async function ensureHomeDataLoaded(): Promise<void> {
+  const now = Date.now();
+  if (
+    (firebaseSeeded && now - lastHydratedAt < HYDRATION_TTL_MS) ||
+    (lastHomeHydratedAt > 0 && now - lastHomeHydratedAt < HYDRATION_TTL_MS)
+  ) {
+    return;
+  }
+
   const rtdb = getRtdb();
-  const snap = await rtdb.ref().get();
-  const rootVal = snap.val();
+  if (!rtdb.isLiveFirebase) {
+    await ensureFirebaseSeeded();
+    return;
+  }
 
-  if (!rootVal || !rootVal.settings || !rootVal.menuItems) {
-    const initial = getInitialDatabaseState();
-    const trackingMap: Record<string, PublicTrackingProjection> = {};
-    const adminOrdersMap: Record<string, OrderRecord> = {};
-    const riderOrdersMap: Record<string, Record<string, OrderRecord>> = {};
-    const paymentLocksMap: Record<string, { orderId: string; lockedAt: string }> = {};
-    const webhookEventsMap: Record<string, { event: string; processedAt: string }> = {};
+  if (homeHydratePromise) {
+    return homeHydratePromise;
+  }
 
-    for (const ord of initial.orders) {
-      trackingMap[ord.trackingToken] = buildPublicTrackingProjection(ord);
-      if (isOrderVisibleToKitchen(ord)) {
-        adminOrdersMap[ord.id] = ord;
-      }
-      if (ord.deliveryBoyId) {
-        if (!riderOrdersMap[ord.deliveryBoyId]) riderOrdersMap[ord.deliveryBoyId] = {};
-        riderOrdersMap[ord.deliveryBoyId][ord.id] = ord;
-      }
-    }
-    for (const pay of initial.payments) {
-      if (pay.razorpayPaymentId && (pay.status === 'CAPTURED' || pay.status === 'VERIFIED')) {
-        paymentLocksMap[pay.razorpayPaymentId] = {
-          orderId: pay.orderId,
-          lockedAt: pay.updatedAt,
-        };
-      }
-      if (pay.webhookEventId) {
-        webhookEventsMap[pay.webhookEventId] = {
-          event: 'payment.captured',
-          processedAt: pay.updatedAt,
-        };
-      }
+  homeHydratePromise = (async () => {
+    const [
+      settingsSnap,
+      zoneSnap,
+      catSnap,
+      menuSnap,
+      bannerSnap,
+      secSnap,
+      couponSnap,
+    ] = await Promise.all([
+      rtdb.ref('settings').get(),
+      rtdb.ref('deliveryZone').get(),
+      rtdb.ref('categories').get(),
+      rtdb.ref('menuItems').get(),
+      rtdb.ref('banners').get(),
+      rtdb.ref('homeSections').get(),
+      rtdb.ref('coupons').get(),
+    ]);
+
+    if (!settingsSnap.exists() || !menuSnap.exists()) {
+      await ensureFirebaseSeeded();
+      return;
     }
 
-    await rtdb.ref().update({
-      'counters/nextOrderSequence': initial.nextOrderSequence,
-      settings: initial.settings,
-      publicStatus: buildPublicShopStatus(initial.settings),
-      deliveryZone: initial.deliveryZone,
-      categories: arrayToRecordById(initial.categories, 'id'),
-      menuItems: arrayToRecordById(initial.menuItems, 'id'),
-      banners: arrayToRecordById(initial.banners, 'id'),
-      homeSections: arrayToRecordById(initial.homeSections, 'id'),
-      coupons: arrayToRecordById(initial.coupons, 'code'),
-      couponUsages: arrayToRecordById(initial.couponUsages, 'id'),
-      customers: initial.customers,
-      orders: arrayToRecordById(initial.orders, 'id'),
-      payments: arrayToRecordById(initial.payments, 'id'),
-      paymentLocks: paymentLocksMap,
-      webhookEvents: webhookEventsMap,
-      refunds: arrayToRecordById(initial.refunds, 'id'),
-      deliveryBoys: arrayToRecordById(initial.deliveryBoys, 'id'),
-      reviews: arrayToRecordById(initial.reviews, 'id'),
-      adminUsers: arrayToRecordById(initial.adminUsers, 'id'),
-      adminSessions: arrayToRecordById(initial.adminSessions, 'id'),
-      auditLogs: arrayToRecordById(initial.auditLogs, 'id'),
-      blockedList: arrayToRecordById(initial.blockedList, 'id'),
-      broadcasts: arrayToRecordById(initial.broadcasts, 'id'),
-      tracking: trackingMap,
-      adminOrders: adminOrdersMap,
-      riderOrders: riderOrdersMap,
-    });
-    firebaseSeeded = true;
+    applySettingsAndZoneToDb(settingsSnap.val(), zoneSnap.val());
+    db.categories = recordToArray<Category>(catSnap.val())
+      .map((c) => ({ ...c, imageUrl: normalizeImageUrl(c.imageUrl) }))
+      .sort((a, b) => a.sortOrder - b.sortOrder);
+    db.menuItems = recordToArray<MenuItem>(menuSnap.val()).map((m) => ({
+      ...m,
+      imageUrl: normalizeImageUrl(m.imageUrl),
+      variants: recordToArray<ItemVariant>(m.variants),
+      addons: recordToArray<ItemAddon>(m.addons),
+    }));
+    db.banners = recordToArray<Banner>(bannerSnap.val())
+      .map((b) => ({ ...b, imageUrl: normalizeImageUrl(b.imageUrl) }))
+      .sort((a, b) => a.sortOrder - b.sortOrder);
+    db.homeSections = recordToArray<HomeSection>(secSnap.val())
+      .map((s) => ({
+        ...s,
+        scheduleStartHour: s.scheduleStartHour ?? null,
+        scheduleEndHour: s.scheduleEndHour ?? null,
+        itemIds: recordToArray<string>(s.itemIds),
+      }))
+      .sort((a, b) => a.sortOrder - b.sortOrder);
+    db.coupons = recordToArray<Coupon>(couponSnap.val());
+    lastHomeHydratedAt = Date.now();
+  })().finally(() => {
+    homeHydratePromise = null;
+  });
+
+  return homeHydratePromise;
+}
+
+export async function ensureAdminAuthLoaded(): Promise<void> {
+  const now = Date.now();
+  if (
+    (firebaseSeeded && now - lastHydratedAt < HYDRATION_TTL_MS) ||
+    (lastAdminAuthHydratedAt > 0 && now - lastAdminAuthHydratedAt < HYDRATION_TTL_MS)
+  ) {
+    return;
+  }
+
+  const rtdb = getRtdb();
+  if (!rtdb.isLiveFirebase) {
+    await ensureFirebaseSeeded();
+    return;
+  }
+
+  if (adminAuthHydratePromise) {
+    return adminAuthHydratePromise;
+  }
+
+  adminAuthHydratePromise = (async () => {
+    const [usersSnap, sessionsSnap] = await Promise.all([
+      rtdb.ref('adminUsers').get(),
+      rtdb.ref('adminSessions').get(),
+    ]);
+
+    if (!usersSnap.exists()) {
+      await ensureFirebaseSeeded();
+      return;
+    }
+
+    db.adminUsers = recordToArray<AdminUserRecord>(usersSnap.val());
+    db.adminSessions = recordToArray<AdminSessionRecord>(sessionsSnap.val());
+    lastAdminAuthHydratedAt = Date.now();
+  })().finally(() => {
+    adminAuthHydratePromise = null;
+  });
+
+  return adminAuthHydratePromise;
+}
+
+export async function getTrackingRecordFast(trackingToken: string): Promise<{
+  order: OrderRecord | null;
+  payment?: PaymentRecord;
+  review?: ReviewRecord;
+  shopSettings: {
+    shopName: string;
+    fssaiNumber: string;
+    supportPhone: string;
+    shopAddress: string;
+  };
+}> {
+  const rtdb = getRtdb();
+  const now = Date.now();
+
+  if (!rtdb.isLiveFirebase || (firebaseSeeded && now - lastHydratedAt < HYDRATION_TTL_MS)) {
+    await ensureFirebaseSeeded();
+    const order = db.orders.find((o) => o.trackingToken === trackingToken) || null;
+    const payment = order ? db.payments.find((p) => p.orderId === order.id) : undefined;
+    const review = order ? db.reviews.find((r) => r.orderId === order.id) : undefined;
+    return {
+      order,
+      payment,
+      review,
+      shopSettings: {
+        shopName: db.settings.shopName,
+        fssaiNumber: db.settings.fssaiNumber,
+        supportPhone: db.settings.supportPhone,
+        shopAddress: db.deliveryZone.shopAddress,
+      },
+    };
+  }
+
+  const safeToken = trackingToken.replace(/[.#$/[\]]/g, '_');
+  const [trackingSnap, settingsSnap, zoneSnap] = await Promise.all([
+    rtdb.ref(`tracking/${safeToken}`).get(),
+    rtdb.ref('settings').get(),
+    rtdb.ref('deliveryZone').get(),
+  ]);
+
+  if (!settingsSnap.exists()) {
+    await ensureFirebaseSeeded();
+    const order = db.orders.find((o) => o.trackingToken === trackingToken) || null;
+    const payment = order ? db.payments.find((p) => p.orderId === order.id) : undefined;
+    const review = order ? db.reviews.find((r) => r.orderId === order.id) : undefined;
+    return {
+      order,
+      payment,
+      review,
+      shopSettings: {
+        shopName: db.settings.shopName,
+        fssaiNumber: db.settings.fssaiNumber,
+        supportPhone: db.settings.supportPhone,
+        shopAddress: db.deliveryZone.shopAddress,
+      },
+    };
+  }
+
+  applySettingsAndZoneToDb(settingsSnap.val(), zoneSnap.val());
+
+  if (!trackingSnap.exists()) {
+    await ensureFirebaseSeeded();
+    const order = db.orders.find((o) => o.trackingToken === trackingToken) || null;
+    const payment = order ? db.payments.find((p) => p.orderId === order.id) : undefined;
+    const review = order ? db.reviews.find((r) => r.orderId === order.id) : undefined;
+    return {
+      order,
+      payment,
+      review,
+      shopSettings: {
+        shopName: db.settings.shopName,
+        fssaiNumber: db.settings.fssaiNumber,
+        supportPhone: db.settings.supportPhone,
+        shopAddress: db.deliveryZone.shopAddress,
+      },
+    };
+  }
+
+  const projection = trackingSnap.val() as PublicTrackingProjection;
+  const [orderSnap, reviewsSnap, paymentsSnap] = await Promise.all([
+    rtdb.ref(`orders/${projection.orderId}`).get(),
+    rtdb.ref('reviews').get(),
+    rtdb.ref('payments').get(),
+  ]);
+
+  const rawOrder = orderSnap.val() as OrderRecord | null;
+  const order = rawOrder ? normalizeOrderRecordFromRtdb(rawOrder) : null;
+  if (order) {
+    const idx = db.orders.findIndex((o) => o.id === order.id);
+    if (idx >= 0) db.orders[idx] = order;
+    else db.orders.unshift(order);
+  }
+  const allReviews = recordToArray<ReviewRecord>(reviewsSnap.val());
+  const allPayments = recordToArray<PaymentRecord>(paymentsSnap.val());
+  const review = order ? allReviews.find((r) => r.orderId === order.id) : undefined;
+  const payment = order ? allPayments.find((p) => p.orderId === order.id) : undefined;
+  if (review && !db.reviews.some((r) => r.id === review.id)) {
+    db.reviews.unshift(review);
+  }
+  if (payment && !db.payments.some((p) => p.id === payment.id)) {
+    db.payments.unshift(payment);
+  }
+
+  return {
+    order,
+    payment,
+    review,
+    shopSettings: {
+      shopName: db.settings.shopName,
+      fssaiNumber: db.settings.fssaiNumber,
+      supportPhone: db.settings.supportPhone,
+      shopAddress: db.deliveryZone.shopAddress,
+    },
+  };
+}
+
+export async function expireSingleOrderIfStale(
+  order: OrderRecord,
+  payment?: PaymentRecord
+): Promise<boolean> {
+  const now = Date.now();
+  const tenMinsMs = 10 * 60 * 1000;
+  const placedTimeMs = new Date(order.placedAt).getTime();
+  const scheduledTimeMs = order.scheduledFor ? new Date(order.scheduledFor).getTime() : 0;
+  const effectiveReferenceTime =
+    scheduledTimeMs && !Number.isNaN(scheduledTimeMs) && scheduledTimeMs > placedTimeMs
+      ? scheduledTimeMs
+      : placedTimeMs;
+
+  if (effectiveReferenceTime > now) return false;
+  if (
+    order.paymentMethod === 'RAZORPAY' &&
+    order.paymentStatus === 'PENDING' &&
+    order.status === 'PLACED' &&
+    now - placedTimeMs > tenMinsMs
+  ) {
+    const nowIso = new Date().toISOString();
+    order.status = 'CANCELLED';
+    order.paymentStatus = 'FAILED';
+    order.cancelReason = 'Order expired: Online payment was not completed within 10 minutes';
+    order.cancelledAt = nowIso;
+
+    const pay = payment || db.payments.find((p) => p.orderId === order.id);
+    if (pay) {
+      pay.status = 'FAILED';
+      pay.updatedAt = nowIso;
+      await getRtdb().ref(`payments/${pay.id}`).set(pay);
+    }
+    await syncOrderRealtimePaths(order);
+    return true;
+  }
+  return false;
+}
+
+export async function ensureFirebaseSeeded(force = false): Promise<DatabaseState> {
+  const now = Date.now();
+  if (!force && firebaseSeeded && now - lastHydratedAt < HYDRATION_TTL_MS) {
     return db;
   }
 
-  // Hydrate in-memory mirror from Firebase RTDB snapshot
-  db.nextOrderSequence = Number(rootVal.counters?.nextOrderSequence || 1046);
-  const rawAbout = rootVal.settings?.aboutPage as Partial<AboutPageConfig> | undefined;
-  const normalizedAboutPage: AboutPageConfig = {
-    tagline: rawAbout?.tagline || '',
-    story: rawAbout?.story || '',
-    coverImage: rawAbout?.coverImage ? normalizeImageUrl(rawAbout.coverImage) : '',
-    sections: recordToArray<AboutPageSectionCard>(rawAbout?.sections).sort(
-      (a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0)
-    ),
-    openingHours: rawAbout?.openingHours || '',
-    address: rawAbout?.address || '',
-    supportPhone: rawAbout?.supportPhone || '',
-    whatsappNumber: rawAbout?.whatsappNumber || '',
-    mapLink: rawAbout?.mapLink || '',
-    socialLinks: {
-      instagram: rawAbout?.socialLinks?.instagram || '',
-      facebook: rawAbout?.socialLinks?.facebook || '',
-      youtube: rawAbout?.socialLinks?.youtube || '',
-    },
-  };
-  db.settings = {
-    ...db.settings,
-    ...rootVal.settings,
-    theme: normalizeThemeConfig(rootVal.settings?.theme),
-    aboutPage: normalizedAboutPage,
-  };
-  db.deliveryZone = { ...db.deliveryZone, ...rootVal.deliveryZone };
-  db.categories = recordToArray<Category>(rootVal.categories)
-    .map((c) => ({
-      ...c,
-      imageUrl: normalizeImageUrl(c.imageUrl),
-    }))
-    .sort((a, b) => a.sortOrder - b.sortOrder);
-  db.menuItems = recordToArray<MenuItem>(rootVal.menuItems).map((m) => ({
-    ...m,
-    imageUrl: normalizeImageUrl(m.imageUrl),
-    variants: recordToArray<ItemVariant>(m.variants),
-    addons: recordToArray<ItemAddon>(m.addons),
-  }));
-  db.banners = recordToArray<Banner>(rootVal.banners)
-    .map((b) => ({
-      ...b,
-      imageUrl: normalizeImageUrl(b.imageUrl),
-    }))
-    .sort((a, b) => a.sortOrder - b.sortOrder);
-  db.homeSections = recordToArray<HomeSection>(rootVal.homeSections)
-    .map((s) => ({
-      ...s,
-      scheduleStartHour: s.scheduleStartHour ?? null,
-      scheduleEndHour: s.scheduleEndHour ?? null,
-      itemIds: recordToArray<string>(s.itemIds),
-    }))
-    .sort((a, b) => a.sortOrder - b.sortOrder);
-  db.coupons = recordToArray<Coupon>(rootVal.coupons);
-  db.couponUsages = recordToArray<CouponUsageRecord>(rootVal.couponUsages);
-  db.customers = (rootVal.customers || {}) as Record<string, CustomerRecord>;
-  db.orders = recordToArray<OrderRecord>(rootVal.orders)
-    .map((o) => ({
-      ...o,
-      scheduledFor: o.scheduledFor ?? null,
-      couponCode: o.couponCode ?? null,
-      deliveryBoyId: o.deliveryBoyId ?? null,
-      items: recordToArray<OrderItemRecord>(o.items).map((it) => ({
-        ...it,
-        addons: recordToArray<{ id: string; name: string; price: number }>(it.addons),
-      })),
-    }))
-    .sort((a, b) => new Date(b.placedAt).getTime() - new Date(a.placedAt).getTime());
-  db.payments = recordToArray<PaymentRecord>(rootVal.payments).sort(
-    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-  );
-  db.refunds = recordToArray<RefundRecord>(rootVal.refunds).sort(
-    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-  );
-  db.deliveryBoys = recordToArray<DeliveryBoy>(rootVal.deliveryBoys);
-  db.reviews = recordToArray<ReviewRecord>(rootVal.reviews).sort(
-    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-  );
-  db.adminUsers = recordToArray<AdminUserRecord>(rootVal.adminUsers);
-  db.adminSessions = recordToArray<AdminSessionRecord>(rootVal.adminSessions);
-  db.auditLogs = recordToArray<AuditLogRecord>(rootVal.auditLogs).sort(
-    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-  );
-  db.blockedList = recordToArray<BlockedEntry>(rootVal.blockedList);
-  db.broadcasts = recordToArray<BroadcastRecord>(rootVal.broadcasts);
+  if (hydratePromise) {
+    return hydratePromise;
+  }
 
-  firebaseSeeded = true;
-  return db;
+  hydratePromise = (async () => {
+    const rtdb = getRtdb();
+    const snap = await rtdb.ref().get();
+    const rootVal = snap.val();
+
+    if (!rootVal || !rootVal.settings || !rootVal.menuItems) {
+      const initial = getInitialDatabaseState();
+      const trackingMap: Record<string, PublicTrackingProjection> = {};
+      const adminOrdersMap: Record<string, OrderRecord> = {};
+      const riderOrdersMap: Record<string, Record<string, OrderRecord>> = {};
+      const paymentLocksMap: Record<string, { orderId: string; lockedAt: string }> = {};
+      const webhookEventsMap: Record<string, { event: string; processedAt: string }> = {};
+
+      for (const ord of initial.orders) {
+        trackingMap[ord.trackingToken] = buildPublicTrackingProjection(ord);
+        if (isOrderVisibleToKitchen(ord)) {
+          adminOrdersMap[ord.id] = ord;
+        }
+        if (ord.deliveryBoyId) {
+          if (!riderOrdersMap[ord.deliveryBoyId]) riderOrdersMap[ord.deliveryBoyId] = {};
+          riderOrdersMap[ord.deliveryBoyId][ord.id] = ord;
+        }
+      }
+      for (const pay of initial.payments) {
+        if (pay.razorpayPaymentId && (pay.status === 'CAPTURED' || pay.status === 'VERIFIED')) {
+          paymentLocksMap[pay.razorpayPaymentId] = {
+            orderId: pay.orderId,
+            lockedAt: pay.updatedAt,
+          };
+        }
+        if (pay.webhookEventId) {
+          webhookEventsMap[pay.webhookEventId] = {
+            event: 'payment.captured',
+            processedAt: pay.updatedAt,
+          };
+        }
+      }
+
+      await rtdb.ref().update({
+        'counters/nextOrderSequence': initial.nextOrderSequence,
+        settings: initial.settings,
+        publicStatus: buildPublicShopStatus(initial.settings),
+        deliveryZone: initial.deliveryZone,
+        categories: arrayToRecordById(initial.categories, 'id'),
+        menuItems: arrayToRecordById(initial.menuItems, 'id'),
+        banners: arrayToRecordById(initial.banners, 'id'),
+        homeSections: arrayToRecordById(initial.homeSections, 'id'),
+        coupons: arrayToRecordById(initial.coupons, 'code'),
+        couponUsages: arrayToRecordById(initial.couponUsages, 'id'),
+        customers: initial.customers,
+        orders: arrayToRecordById(initial.orders, 'id'),
+        payments: arrayToRecordById(initial.payments, 'id'),
+        paymentLocks: paymentLocksMap,
+        webhookEvents: webhookEventsMap,
+        refunds: arrayToRecordById(initial.refunds, 'id'),
+        deliveryBoys: arrayToRecordById(initial.deliveryBoys, 'id'),
+        reviews: arrayToRecordById(initial.reviews, 'id'),
+        adminUsers: arrayToRecordById(initial.adminUsers, 'id'),
+        adminSessions: arrayToRecordById(initial.adminSessions, 'id'),
+        auditLogs: arrayToRecordById(initial.auditLogs, 'id'),
+        blockedList: arrayToRecordById(initial.blockedList, 'id'),
+        broadcasts: arrayToRecordById(initial.broadcasts, 'id'),
+        tracking: trackingMap,
+        adminOrders: adminOrdersMap,
+        riderOrders: riderOrdersMap,
+      });
+      firebaseSeeded = true;
+      lastHydratedAt = Date.now();
+      lastHomeHydratedAt = lastHydratedAt;
+      lastAdminAuthHydratedAt = lastHydratedAt;
+      return db;
+    }
+
+    // Hydrate in-memory mirror from Firebase RTDB snapshot
+    db.nextOrderSequence = Number(rootVal.counters?.nextOrderSequence || 1046);
+    applySettingsAndZoneToDb(rootVal.settings, rootVal.deliveryZone);
+    db.categories = recordToArray<Category>(rootVal.categories)
+      .map((c) => ({
+        ...c,
+        imageUrl: normalizeImageUrl(c.imageUrl),
+      }))
+      .sort((a, b) => a.sortOrder - b.sortOrder);
+    db.menuItems = recordToArray<MenuItem>(rootVal.menuItems).map((m) => ({
+      ...m,
+      imageUrl: normalizeImageUrl(m.imageUrl),
+      variants: recordToArray<ItemVariant>(m.variants),
+      addons: recordToArray<ItemAddon>(m.addons),
+    }));
+    db.banners = recordToArray<Banner>(rootVal.banners)
+      .map((b) => ({
+        ...b,
+        imageUrl: normalizeImageUrl(b.imageUrl),
+      }))
+      .sort((a, b) => a.sortOrder - b.sortOrder);
+    db.homeSections = recordToArray<HomeSection>(rootVal.homeSections)
+      .map((s) => ({
+        ...s,
+        scheduleStartHour: s.scheduleStartHour ?? null,
+        scheduleEndHour: s.scheduleEndHour ?? null,
+        itemIds: recordToArray<string>(s.itemIds),
+      }))
+      .sort((a, b) => a.sortOrder - b.sortOrder);
+    db.coupons = recordToArray<Coupon>(rootVal.coupons);
+    db.couponUsages = recordToArray<CouponUsageRecord>(rootVal.couponUsages);
+    db.customers = (rootVal.customers || {}) as Record<string, CustomerRecord>;
+    db.orders = recordToArray<OrderRecord>(rootVal.orders)
+      .map(normalizeOrderRecordFromRtdb)
+      .sort((a, b) => new Date(b.placedAt).getTime() - new Date(a.placedAt).getTime());
+    db.payments = recordToArray<PaymentRecord>(rootVal.payments).sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+    db.refunds = recordToArray<RefundRecord>(rootVal.refunds).sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+    db.deliveryBoys = recordToArray<DeliveryBoy>(rootVal.deliveryBoys);
+    db.reviews = recordToArray<ReviewRecord>(rootVal.reviews).sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+    db.adminUsers = recordToArray<AdminUserRecord>(rootVal.adminUsers);
+    db.adminSessions = recordToArray<AdminSessionRecord>(rootVal.adminSessions);
+    db.auditLogs = recordToArray<AuditLogRecord>(rootVal.auditLogs).sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+    db.blockedList = recordToArray<BlockedEntry>(rootVal.blockedList);
+    db.broadcasts = recordToArray<BroadcastRecord>(rootVal.broadcasts);
+
+    firebaseSeeded = true;
+    lastHydratedAt = Date.now();
+    lastHomeHydratedAt = lastHydratedAt;
+    lastAdminAuthHydratedAt = lastHydratedAt;
+    return db;
+  })().finally(() => {
+    hydratePromise = null;
+  });
+
+  return hydratePromise;
 }
 
 export async function persistFullStateToFirebase(): Promise<void> {
@@ -1169,6 +1494,7 @@ export async function persistFullStateToFirebase(): Promise<void> {
     adminOrders: adminOrdersMap,
     riderOrders: riderOrdersMap,
   });
+  refreshHydrationCache();
 }
 
 // =============================================================================
@@ -1258,8 +1584,15 @@ export async function verifyAndIncrementMenuStockSalesTx(
 // Cancels unpaid Razorpay orders > 10m old when orders are read/verified
 // =============================================================================
 
-export async function expireStaleOrdersLazy(): Promise<OrderRecord[]> {
+export async function expireStaleOrdersLazy(options?: {
+  minIntervalMs?: number;
+}): Promise<OrderRecord[]> {
+  const minIntervalMs = options?.minIntervalMs ?? 0;
+  if (minIntervalMs > 0 && Date.now() - lastExpireStaleAt < minIntervalMs) {
+    return [];
+  }
   await ensureFirebaseSeeded();
+  lastExpireStaleAt = Date.now();
   const now = Date.now();
   const tenMinsMs = 10 * 60 * 1000;
   const expiredOrders: OrderRecord[] = [];
@@ -1564,13 +1897,14 @@ export async function authenticateAdminFromTokenOrCookieAsync(
   rawToken?: string,
   cookieHeader?: string
 ): Promise<VerifiedAdminContext | null> {
-  await ensureFirebaseSeeded();
   const cookies = parseCookies(cookieHeader);
   const candidate = rawToken || cookies['aangan_admin_access'];
   if (!candidate) return null;
 
   const payload = verifyJwtRaw(candidate);
   if (!payload || payload.type !== 'access') return null;
+
+  await ensureAdminAuthLoaded();
 
   const user = db.adminUsers.find(
     (u) => u.id === payload.sub && u.isActive && u.role === 'owner'
@@ -1586,8 +1920,11 @@ export async function authenticateAdminFromTokenOrCookieAsync(
     return null;
   }
 
-  session.lastSeenAt = new Date().toISOString();
-  await getRtdb().ref(`adminSessions/${session.id}`).set(session);
+  const lastSeenMs = session.lastSeenAt ? new Date(session.lastSeenAt).getTime() : 0;
+  if (!lastSeenMs || Number.isNaN(lastSeenMs) || Date.now() - lastSeenMs > 5 * 60 * 1000) {
+    session.lastSeenAt = new Date().toISOString();
+    await getRtdb().ref(`adminSessions/${session.id}`).set(session);
+  }
 
   return {
     userId: user.id,

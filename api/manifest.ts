@@ -1,6 +1,6 @@
 import type { Request, Response } from 'express';
 import { applyCorsAndSecurityHeaders } from './_lib/security.ts';
-import { db, ensureFirebaseSeeded } from './_lib/store.ts';
+import { db, ensureHomeDataLoaded } from './_lib/store.ts';
 import { DEFAULT_STOREFRONT_THEME } from '../src/utils/themeTokens.ts';
 
 export default async function handler(req: Request, res: Response) {
@@ -12,7 +12,7 @@ export default async function handler(req: Request, res: Response) {
   }
 
   try {
-    await ensureFirebaseSeeded();
+    await ensureHomeDataLoaded();
 
     const shopName = (db.settings.shopName || 'Food Ordering').trim() || 'Food Ordering';
     const shortName = shopName.slice(0, 12).trim() || 'Food App';

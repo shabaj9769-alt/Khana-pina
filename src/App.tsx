@@ -45,6 +45,7 @@ export default function App() {
   const [activeView, setActiveView] = useState<AppView>('customer');
   const [customerSubTab, setCustomerSubTab] = useState<'home' | 'menu' | 'orders'>('home');
   const [trackingToken, setTrackingToken] = useState<string>('');
+  const [initialTrackingOrder, setInitialTrackingOrder] = useState<OrderRecord | null>(null);
   const [riderToken, setRiderToken] = useState<string>('');
   const [cart, setCart] = useState<CartItem[]>(() => guestAuthLayer.getCart());
   const [cartDrawerOpen, setCartDrawerOpen] = useState(false);
@@ -94,11 +95,14 @@ export default function App() {
         setActiveView('tracking');
       } else if (path.startsWith('/rider')) {
         const rTok = path.replace('/rider/', '').replace('/rider', '').trim();
+        setInitialTrackingOrder(null);
         setRiderToken(rTok);
         setActiveView('rider');
       } else if (path.startsWith('/admin')) {
+        setInitialTrackingOrder(null);
         setActiveView('admin');
       } else {
+        setInitialTrackingOrder(null);
         setActiveView('customer');
         if (hash === '#/cart' || hash === '#/checkout') {
           setCartDrawerOpen(true);
@@ -172,8 +176,9 @@ export default function App() {
     }
   };
 
-  const handleOpenTracking = (token: string) => {
+  const handleOpenTracking = (token: string, initialOrder?: OrderRecord | null) => {
     setCartDrawerOpen(false);
+    setInitialTrackingOrder(initialOrder || null);
     setTrackingToken(token);
     navigateView('tracking', `/#/order/${token}`);
     if (typeof window !== 'undefined') {
@@ -747,8 +752,14 @@ export default function App() {
             </div>
             <OrderTrackingView
               trackingToken={trackingToken}
+              initialOrder={
+                initialTrackingOrder?.trackingToken === trackingToken
+                  ? initialTrackingOrder
+                  : null
+              }
               onBackToStore={() => {
                 setCartDrawerOpen(false);
+                setInitialTrackingOrder(null);
                 setCustomerSubTab('home');
                 navigateView('customer', '/#/');
               }}

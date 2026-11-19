@@ -6,8 +6,9 @@ import {
   buildPublicTrackingProjection,
   checkFirebaseRateLimit,
   db,
-  ensureFirebaseSeeded,
-  expireStaleOrdersLazy,
+  expireSingleOrderIfStale,
+  getTrackingRecordFast,
+  refreshHydrationCache,
 } from './_lib/store.ts';
 
 function extractTrackingRoute(req: Request): { trackingToken: string; isReview: boolean } {
@@ -28,24 +29,23 @@ export default async function handler(req: Request, res: Response) {
   if (applyCorsAndSecurityHeaders(req, res)) return;
 
   try {
-    await ensureFirebaseSeeded();
-    // Requirement 5: Trigger lazy expiry whenever customer tracking is read
-    await expireStaleOrdersLazy();
-
-    const clientIp = getClientIp(req);
-    const allowed = await checkFirebaseRateLimit('tracking', clientIp, 120, 15 * 60 * 1000);
-    if (!allowed) {
-      res.status(429).json({ error: 'Too many tracking requests from this IP.' });
-      return;
-    }
-
     const { trackingToken, isReview } = extractTrackingRoute(req);
     if (!trackingToken) {
       res.status(400).json({ error: 'Missing tracking token' });
       return;
     }
 
-    const order = db.orders.find((o) => o.trackingToken === trackingToken);
+    const clientIp = getClientIp(req);
+    const [allowed, fast] = await Promise.all([
+      checkFirebaseRateLimit('tracking', clientIp, 120, 15 * 60 * 1000),
+      getTrackingRecordFast(trackingToken),
+    ]);
+    if (!allowed) {
+      res.status(429).json({ error: 'Too many tracking requests from this IP.' });
+      return;
+    }
+
+    const order = fast.order;
     if (!order) {
       res.status(404).json({ error: 'Order tracking token not found' });
       return;
@@ -53,19 +53,13 @@ export default async function handler(req: Request, res: Response) {
 
     // GET /api/track/:trackingToken
     if (req.method === 'GET' && !isReview) {
-      const payment = db.payments.find((p) => p.orderId === order.id);
-      const review = db.reviews.find((r) => r.orderId === order.id);
+      await expireSingleOrderIfStale(order, fast.payment);
       res.json({
         order,
         trackingProjection: buildPublicTrackingProjection(order),
-        payment,
-        review,
-        shopSettings: {
-          shopName: db.settings.shopName,
-          fssaiNumber: db.settings.fssaiNumber,
-          supportPhone: db.settings.supportPhone,
-          shopAddress: db.deliveryZone.shopAddress,
-        },
+        payment: fast.payment,
+        review: fast.review,
+        shopSettings: fast.shopSettings,
       });
       return;
     }
@@ -89,7 +83,7 @@ export default async function handler(req: Request, res: Response) {
       const cleanComment = comment.trim();
       const cleanComplaint = complaintText.trim();
 
-      let existing = db.reviews.find((r) => r.orderId === order.id);
+      let existing = fast.review || db.reviews.find((r) => r.orderId === order.id);
       if (existing) {
         existing.rating = numRating;
         existing.comment = cleanComment;
@@ -114,6 +108,7 @@ export default async function handler(req: Request, res: Response) {
       }
 
       await getRtdb().ref(`reviews/${existing.id}`).set(existing);
+      refreshHydrationCache();
       res.json({ review: existing });
       return;
     }

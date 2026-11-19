@@ -46,9 +46,11 @@ import {
   db,
   deleteClosedOrdersAtomic,
   ensureFirebaseSeeded,
+  ensureHomeDataLoaded,
   expireStaleOrdersLazy,
   getOrderArchiveDateKeyIST,
   IMG_HERO,
+  invalidateHomeHydration,
   isClosedOrderStatus,
   isLoginLockedFirebase,
   isOrderVisibleToKitchen,
@@ -56,6 +58,7 @@ import {
   persistFullStateToFirebase,
   purgeNonOwnerAdmins,
   recordLoginFailureFirebase,
+  refreshHydrationCache,
   syncOrderRealtimePaths,
   toPublicAdminUser,
   VerifiedAdminContext,
@@ -193,7 +196,6 @@ export default async function handler(req: Request, res: Response) {
   if (applyCorsAndSecurityHeaders(req, res)) return;
 
   try {
-    await ensureFirebaseSeeded();
     const subPath = getAdminSubPath(req);
     const method = req.method;
     const clientIp = getClientIp(req);
@@ -202,8 +204,9 @@ export default async function handler(req: Request, res: Response) {
       process.env.WHATSAPP_CLOUD_API_TOKEN || process.env.MSG91_AUTH_KEY
     );
 
-    // 1. GET /api/admin/auth-config
+    // 1. GET /api/admin/auth-config (Selective read: does not hydrate full root)
     if (method === 'GET' && subPath === '/auth-config') {
+      await ensureHomeDataLoaded();
       const rzpCfg = getRazorpayConfig();
       res.json({
         shopName: db.settings.shopName,
@@ -216,6 +219,32 @@ export default async function handler(req: Request, res: Response) {
       });
       return;
     }
+
+    // 4 fast-path: GET /api/admin/me (Selective auth read, no blocking custom token generation; /bootstrap issues it)
+    if (method === 'GET' && subPath === '/me') {
+      const admin = await verifyAdminAuthorized(req, res);
+      if (!admin) return;
+      const user = db.adminUsers.find((u) => u.id === admin.userId);
+      if (!user) {
+        res.status(401).json({ error: 'User not found' });
+        return;
+      }
+      res.json({
+        sessionId: admin.sessionId,
+        firebaseCustomToken: null,
+        firebaseClientConfig: process.env.FIREBASE_DB_URL
+          ? {
+              databaseURL: process.env.FIREBASE_DB_URL,
+              apiKey: process.env.VITE_FIREBASE_API_KEY || process.env.FIREBASE_API_KEY || '',
+              projectId: process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID || '',
+            }
+          : null,
+        user: toPublicAdminUser(user),
+      });
+      return;
+    }
+
+    await ensureFirebaseSeeded();
 
     // 2. POST /api/admin/login (Returns JWT + Firebase Custom Token with claims { role, adminId })
     if (method === 'POST' && subPath === '/login') {
@@ -431,33 +460,7 @@ export default async function handler(req: Request, res: Response) {
       return;
     }
 
-    // 4. GET /api/admin/me
-    if (method === 'GET' && subPath === '/me') {
-      const admin = await verifyAdminAuthorized(req, res);
-      if (!admin) return;
-      const user = db.adminUsers.find((u) => u.id === admin.userId);
-      if (!user) {
-        res.status(401).json({ error: 'User not found' });
-        return;
-      }
-      const firebaseCustomToken = await createFirebaseCustomToken(user.id, {
-        role: user.role,
-        adminId: user.id,
-      });
-      res.json({
-        sessionId: admin.sessionId,
-        firebaseCustomToken,
-        firebaseClientConfig: process.env.FIREBASE_DB_URL
-          ? {
-              databaseURL: process.env.FIREBASE_DB_URL,
-              apiKey: process.env.VITE_FIREBASE_API_KEY || process.env.FIREBASE_API_KEY || '',
-              projectId: process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID || '',
-            }
-          : null,
-        user: toPublicAdminUser(user),
-      });
-      return;
-    }
+    // 4. GET /api/admin/me is handled on the selective-read fast path above
 
     // 5. PATCH /api/admin/me/theme
     if (method === 'PATCH' && subPath === '/me/theme') {
@@ -814,15 +817,17 @@ export default async function handler(req: Request, res: Response) {
     if (method === 'GET' && subPath === '/bootstrap') {
       const admin = await verifyAdminAuthorized(req, res);
       if (!admin) return;
-      await purgeNonOwnerAdmins();
-      await expireStaleOrdersLazy();
+      const [, , firebaseCustomToken] = await Promise.all([
+        purgeNonOwnerAdmins(),
+        expireStaleOrdersLazy({ minIntervalMs: 45_000 }),
+        createFirebaseCustomToken(admin.userId, {
+          role: admin.role,
+          adminId: admin.userId,
+        }),
+      ]);
 
       const currentUser = db.adminUsers.find((u) => u.id === admin.userId);
       const rzpCfg = getRazorpayConfig();
-      const firebaseCustomToken = await createFirebaseCustomToken(admin.userId, {
-        role: admin.role,
-        adminId: admin.userId,
-      });
 
       res.json({
         currentUser: currentUser ? toPublicAdminUser(currentUser) : null,
@@ -1092,17 +1097,17 @@ export default async function handler(req: Request, res: Response) {
 
       order.updatedAt = nowIso;
 
-      for (const r of db.deliveryBoys) {
-        r.activeOrders = db.orders.filter(
-          (o) =>
-            o.deliveryBoyId === r.id &&
-            !['DELIVERED', 'CANCELLED', 'REJECTED'].includes(o.status)
-        ).length;
-        await rtdb.ref(`deliveryBoys/${r.id}`).set(r);
-      }
-
-      // Requirement 3(d): Sync tracking/{token}, adminOrders/{id}, and riderOrders/{riderId}/{id} in one multi-path update
-      await syncOrderRealtimePaths(order, previousRiderId);
+      await Promise.all([
+        ...db.deliveryBoys.map((r) => {
+          r.activeOrders = db.orders.filter(
+            (o) =>
+              o.deliveryBoyId === r.id &&
+              !['DELIVERED', 'CANCELLED', 'REJECTED'].includes(o.status)
+          ).length;
+          return rtdb.ref(`deliveryBoys/${r.id}`).set(r);
+        }),
+        syncOrderRealtimePaths(order, previousRiderId),
+      ]);
 
       res.json({ order });
       return;
@@ -1305,6 +1310,8 @@ export default async function handler(req: Request, res: Response) {
         await rtdb.ref(`categories/${created.id}`).set(created);
       }
       clearHomeCache();
+      invalidateHomeHydration();
+      refreshHydrationCache();
       await logAudit(admin.email, admin.role, 'CATEGORY_SAVED', `Saved category ${name}`, clientIp);
       res.json({ categories: db.categories });
       return;
@@ -1322,6 +1329,8 @@ export default async function handler(req: Request, res: Response) {
       db.categories = db.categories.filter((c) => c.id !== catId);
       await rtdb.ref(`categories/${catId}`).remove();
       clearHomeCache();
+      invalidateHomeHydration();
+      refreshHydrationCache();
       await logAudit(
         admin.email,
         admin.role,
@@ -1352,6 +1361,7 @@ export default async function handler(req: Request, res: Response) {
         }
         await persistFullStateToFirebase();
         clearHomeCache();
+        invalidateHomeHydration();
         await logAudit(
           admin.email,
           admin.role,
@@ -1382,6 +1392,7 @@ export default async function handler(req: Request, res: Response) {
         }
         await persistFullStateToFirebase();
         clearHomeCache();
+        invalidateHomeHydration();
         await logAudit(
           admin.email,
           admin.role,
@@ -1429,6 +1440,7 @@ export default async function handler(req: Request, res: Response) {
         }
         await persistFullStateToFirebase();
         clearHomeCache();
+        invalidateHomeHydration();
         await logAudit(
           admin.email,
           admin.role,
@@ -1537,6 +1549,8 @@ export default async function handler(req: Request, res: Response) {
       }
 
       clearHomeCache();
+      invalidateHomeHydration();
+      refreshHydrationCache();
       await logAudit(
         admin.email,
         admin.role,
@@ -1565,6 +1579,8 @@ export default async function handler(req: Request, res: Response) {
 
       await rtdb.ref(`menuItems/${found.id}`).set(found);
       clearHomeCache();
+      invalidateHomeHydration();
+      refreshHydrationCache();
       await logAudit(
         admin.email,
         admin.role,
@@ -1591,6 +1607,7 @@ export default async function handler(req: Request, res: Response) {
       }
       await persistFullStateToFirebase();
       clearHomeCache();
+      invalidateHomeHydration();
       await logAudit(
         admin.email,
         admin.role,
@@ -1640,6 +1657,7 @@ export default async function handler(req: Request, res: Response) {
       }
       await persistFullStateToFirebase();
       clearHomeCache();
+      invalidateHomeHydration();
       await logAudit(
         admin.email,
         admin.role,
@@ -1708,6 +1726,8 @@ export default async function handler(req: Request, res: Response) {
       });
 
       clearHomeCache();
+      invalidateHomeHydration();
+      refreshHydrationCache();
       await logAudit(
         admin.email,
         admin.role,
@@ -1900,6 +1920,8 @@ export default async function handler(req: Request, res: Response) {
       }
       await rtdb.ref(`coupons/${cleanCode}`).set(record);
       clearHomeCache();
+      invalidateHomeHydration();
+      refreshHydrationCache();
       await logAudit(admin.email, admin.role, 'COUPON_SAVED', `Saved coupon ${cleanCode}`, clientIp);
       res.json({ coupons: db.coupons });
       return;
@@ -1912,6 +1934,8 @@ export default async function handler(req: Request, res: Response) {
       db.coupons = db.coupons.filter((c) => c.code !== cleanCode);
       await rtdb.ref(`coupons/${cleanCode}`).remove();
       clearHomeCache();
+      invalidateHomeHydration();
+      refreshHydrationCache();
       await logAudit(
         admin.email,
         admin.role,
@@ -1945,6 +1969,7 @@ export default async function handler(req: Request, res: Response) {
       };
       db.deliveryBoys.push(rider);
       await rtdb.ref(`deliveryBoys/${rider.id}`).set(rider);
+      refreshHydrationCache();
       await logAudit(
         admin.email,
         admin.role,
@@ -1970,6 +1995,7 @@ export default async function handler(req: Request, res: Response) {
       rider.dailyPin = String(Math.floor(1000 + Math.random() * 9000));
       rider.isActive = true;
       await rtdb.ref(`deliveryBoys/${rider.id}`).set(rider);
+      refreshHydrationCache();
       await logAudit(
         admin.email,
         admin.role,
@@ -1993,6 +2019,7 @@ export default async function handler(req: Request, res: Response) {
       rider.isActive = false;
       rider.tokenExpiresAt = new Date(0).toISOString();
       await rtdb.ref(`deliveryBoys/${rider.id}`).set(rider);
+      refreshHydrationCache();
       await logAudit(
         admin.email,
         admin.role,
@@ -2029,6 +2056,7 @@ export default async function handler(req: Request, res: Response) {
         }
       }
       await rtdb.ref(`deliveryBoys/${rider.id}`).set(rider);
+      refreshHydrationCache();
       await logAudit(
         admin.email,
         admin.role,
@@ -2051,6 +2079,7 @@ export default async function handler(req: Request, res: Response) {
       }
       db.deliveryBoys = db.deliveryBoys.filter((r) => r.id !== riderId);
       await rtdb.ref(`deliveryBoys/${riderId}`).remove();
+      refreshHydrationCache();
       await logAudit(
         admin.email,
         admin.role,
@@ -2200,6 +2229,7 @@ export default async function handler(req: Request, res: Response) {
       }
       rev.complaintStatus = 'RESOLVED';
       await rtdb.ref(`reviews/${rev.id}`).set(rev);
+      refreshHydrationCache();
       await logAudit(
         admin.email,
         admin.role,

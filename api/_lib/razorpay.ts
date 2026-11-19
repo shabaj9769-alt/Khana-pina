@@ -7,7 +7,9 @@ import {
   db,
   ensureFirebaseSeeded,
   expireStaleOrdersLazy,
+  invalidateHomeHydration,
   logAudit,
+  refreshHydrationCache,
   syncOrderRealtimePaths,
   verifyAndIncrementMenuStockSalesTx,
 } from './store.ts';
@@ -244,7 +246,7 @@ export async function verifyRazorpayPaymentAuthoritative(params: {
   | { status: number; error: string }
 > {
   await ensureFirebaseSeeded();
-  await expireStaleOrdersLazy();
+  await expireStaleOrdersLazy({ minIntervalMs: 45_000 });
 
   const {
     razorpayOrderId,
@@ -407,9 +409,13 @@ export async function verifyRazorpayPaymentAuthoritative(params: {
     true
   );
   clearHomeCache();
+  invalidateHomeHydration();
 
-  await getRtdb().ref(`payments/${payment.id}`).set(payment);
-  await syncOrderRealtimePaths(order);
+  await Promise.all([
+    getRtdb().ref(`payments/${payment.id}`).set(payment),
+    syncOrderRealtimePaths(order),
+  ]);
+  refreshHydrationCache();
 
   return {
     status: 200,
@@ -634,6 +640,7 @@ export async function processRazorpayWebhookAuthoritative(params: {
         true
       );
       clearHomeCache();
+      invalidateHomeHydration();
     }
   } else if (event === 'payment.failed') {
     if (order.paymentStatus !== 'PAID') {
@@ -665,8 +672,11 @@ export async function processRazorpayWebhookAuthoritative(params: {
     }
   }
 
-  await rtdb.ref(`payments/${payment.id}`).set(payment);
-  await syncOrderRealtimePaths(order);
+  await Promise.all([
+    rtdb.ref(`payments/${payment.id}`).set(payment),
+    syncOrderRealtimePaths(order),
+  ]);
+  refreshHydrationCache();
 
   return {
     status: 200,
@@ -766,6 +776,7 @@ export async function processRazorpayRefundAuthoritative(params: {
     rtdb.ref(`payments/${payment.id}`).set(payment),
     rtdb.ref(`refunds/${refund.id}`).set(refund),
   ]);
+  refreshHydrationCache();
 
   return { refund, order, payment };
 }

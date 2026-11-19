@@ -152,6 +152,34 @@ function formatIstDisplayDate(dateKey: string): string {
   return istDisplayDateFormatter.format(utcNoon);
 }
 
+const ADMIN_USER_CACHE_KEY = 'aangan_admin_user_cache_v1';
+
+function readCachedAdminUser(): AdminUserPublic | null {
+  try {
+    const raw = localStorage.getItem(ADMIN_USER_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<AdminUserPublic> | null;
+    if (parsed && parsed.id && parsed.email && parsed.role === 'owner') {
+      return parsed as AdminUserPublic;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedAdminUser(user: AdminUserPublic | null): void {
+  try {
+    if (user) {
+      localStorage.setItem(ADMIN_USER_CACHE_KEY, JSON.stringify(user));
+    } else {
+      localStorage.removeItem(ADMIN_USER_CACHE_KEY);
+    }
+  } catch {
+    // Ignore storage quota/privacy errors
+  }
+}
+
 export const AdminPortal: React.FC<AdminPortalProps> = ({
   onRefreshStore,
   onRefreshStorefront,
@@ -161,8 +189,11 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     if (onRefreshStorefront) onRefreshStorefront();
   };
   // Authentication State (HttpOnly cookie is primary; state tracks current profile + Firebase Custom Token)
-  const [authChecking, setAuthChecking] = useState(true);
-  const [adminUser, setAdminUser] = useState<AdminUserPublic | null>(null);
+  const initialCachedAdminRef = useRef<AdminUserPublic | null>(readCachedAdminUser());
+  const [authChecking, setAuthChecking] = useState(() => !initialCachedAdminRef.current);
+  const [adminUser, setAdminUser] = useState<AdminUserPublic | null>(
+    () => initialCachedAdminRef.current
+  );
   const [firebaseCustomToken, setFirebaseCustomToken] = useState<string | null>(null);
   const [firebaseClientConfig, setFirebaseClientConfig] = useState<Record<string, string> | null>(
     null
@@ -631,6 +662,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     });
     if (res.status === 401) {
       setAdminUser(null);
+      writeCachedAdminUser(null);
     }
     return res;
   };
@@ -638,9 +670,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const fetchBootstrap = async () => {
     setIsLoading(true);
     try {
-      // Trigger lazy expiry check when Admin panel opens (no cron)
-      await adminFetch('/api/admin/orders/expire-stale', { method: 'POST' }).catch(() => null);
-
       const res = await adminFetch('/api/admin/bootstrap');
       if (!res.ok) return;
       const data = await res.json();
@@ -713,6 +742,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       }
       if (data.currentUser) {
         setAdminUser(data.currentUser);
+        writeCachedAdminUser(data.currentUser);
         if (data.currentUser.themeMode) {
           setAdminThemeMode(data.currentUser.themeMode);
         }
@@ -727,37 +757,73 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     }
   };
 
-  // Verify existing cookie session on mount & fetch live shop name for login screen
+  // Non-blocking fetch for login screen branding / auth config
   useEffect(() => {
+    let cancelled = false;
     (async () => {
       try {
-        const [meRes, cfgRes] = await Promise.all([
-          fetch('/api/admin/me', { credentials: 'include' }),
-          fetch('/api/admin/auth-config', { cache: 'no-store' }).catch(() => null),
-        ]);
-        if (cfgRes && cfgRes.ok) {
-          const cfgData = await cfgRes.json().catch(() => null);
-          if (cfgData?.shopName) {
-            setPublicShopName(cfgData.shopName);
-          }
+        const cfgRes = await fetch('/api/admin/auth-config', { cache: 'no-store' });
+        if (!cfgRes.ok || cancelled) return;
+        const cfgData = await cfgRes.json().catch(() => null);
+        if (!cancelled && cfgData?.shopName) {
+          setPublicShopName(cfgData.shopName);
         }
+      } catch {
+        // Non-blocking login screen config
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Verify existing cookie session on mount with 8s timeout; launch bootstrap in background
+  useEffect(() => {
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 8000);
+    let active = true;
+
+    (async () => {
+      try {
+        const meRes = await fetch('/api/admin/me', {
+          credentials: 'include',
+          signal: controller.signal,
+        });
+        if (!active) return;
+
         if (meRes.ok) {
           const data = await meRes.json();
+          if (!active) return;
           setAdminUser(data.user);
+          writeCachedAdminUser(data.user);
           if (data.firebaseCustomToken) {
             setFirebaseCustomToken(data.firebaseCustomToken);
           }
           if (data.firebaseClientConfig) {
             setFirebaseClientConfig(data.firebaseClientConfig);
           }
-          await fetchBootstrap();
+          setAuthChecking(false);
+          void fetchBootstrap();
+        } else {
+          setAdminUser(null);
+          writeCachedAdminUser(null);
+          setAuthChecking(false);
         }
       } catch {
-        // Not logged in
-      } finally {
+        if (!active) return;
+        setAdminUser(null);
+        writeCachedAdminUser(null);
         setAuthChecking(false);
+      } finally {
+        window.clearTimeout(timeoutId);
       }
     })();
+
+    return () => {
+      active = false;
+      window.clearTimeout(timeoutId);
+      controller.abort();
+    };
   }, []);
 
   // Subscribe to Firebase RTDB adminOrders/ using signInWithCustomToken + onChildAdded / onValue
@@ -919,6 +985,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         return;
       }
       setAdminUser(data.user);
+      writeCachedAdminUser(data.user);
       if (data.firebaseCustomToken) {
         setFirebaseCustomToken(data.firebaseCustomToken);
       }
@@ -929,7 +996,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       setLoginTotpCode('');
       setRequiresTwoFactor(false);
       setActiveSection('dashboard');
-      await fetchBootstrap();
+      void fetchBootstrap();
       showToast(`Signed in as ${data.user.name}`);
     } catch {
       setLoginError('Network error while signing in');
@@ -941,6 +1008,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const handleLogout = async () => {
     await adminFetch('/api/admin/logout', { method: 'POST' });
     setAdminUser(null);
+    writeCachedAdminUser(null);
     setLoginPassword('');
   };
 
@@ -1838,6 +1906,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       }
       if (data.user) {
         setAdminUser(data.user);
+        writeCachedAdminUser(data.user);
       }
       setNameFormOpen(false);
       showToast('Name updated');
@@ -1872,6 +1941,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       setLoginEmail('');
       setLoginPassword('');
       setAdminUser(null);
+      writeCachedAdminUser(null);
       setLoginSuccessNotice('Email changed. Please log in again');
       showToast('Email changed. Please log in again');
     } catch {
@@ -2722,7 +2792,36 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
           {/* ====================================================================
               0. LIVE DASHBOARD (Default Landing Screen)
           ==================================================================== */}
-          {activeSection === 'dashboard' && (
+          {activeSection === 'dashboard' && isLoading && !shopSettings ? (
+            <div className="space-y-4">
+              <div className="bg-surface rounded-2xl border border-border p-3.5 sm:p-4 flex items-center justify-between gap-3">
+                <div className="space-y-1.5 flex-1">
+                  <div className="h-4 w-32 rounded skeleton-shimmer" />
+                  <div className="h-3 w-48 rounded skeleton-shimmer" />
+                </div>
+                <div className="h-10 w-24 rounded-full skeleton-shimmer shrink-0" />
+              </div>
+              <div className="grid grid-cols-3 gap-2 sm:gap-3">
+                {[1, 2, 3].map((n) => (
+                  <div
+                    key={n}
+                    className="bg-surface rounded-2xl border border-border p-2.5 sm:p-4 space-y-2"
+                  >
+                    <div className="h-4 w-14 rounded skeleton-shimmer" />
+                    <div className="h-7 w-10 rounded skeleton-shimmer" />
+                    <div className="h-3 w-16 rounded skeleton-shimmer" />
+                  </div>
+                ))}
+              </div>
+              <div className="space-y-3">
+                <div className="h-6 w-36 rounded skeleton-shimmer" />
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                  <div className="h-40 rounded-2xl border border-border bg-surface skeleton-shimmer" />
+                  <div className="h-40 rounded-2xl border border-border bg-surface skeleton-shimmer" />
+                </div>
+              </div>
+            </div>
+          ) : activeSection === 'dashboard' && (
             <div className="space-y-4">
               {/* a) Shop Open / Closed Switch at Top */}
               {shopSettings && (
@@ -2953,8 +3052,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
               {/* Delivered & Cancelled Date-Wise Collapsible Folders */}
               {ordersFolder === 'delivered' || ordersFolder === 'cancelled' ? (
                 <div className="space-y-3">
-                  <div className="bg-surface rounded-2xl border border-border p-3 sm:p-3.5 flex flex-wrap items-center justify-between gap-2.5 min-w-0">
-                    <p className="text-xs text-muted min-w-0 flex-1 break-words">
+                  <div className="bg-surface rounded-2xl border border-border p-3 sm:p-3.5 flex flex-col items-stretch sm:flex-row sm:items-center justify-between gap-2.5 min-w-0">
+                    <p className="text-xs text-muted min-w-0 basis-full sm:basis-0 sm:flex-1 leading-relaxed break-normal">
                       Double-tap any order card or tap its bin icon to delete permanently.
                     </p>
                     <button
@@ -2975,7 +3074,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                               : cancelledOrdersAll.length,
                         });
                       }}
-                      className="min-h-[36px] px-3 rounded-xl border border-red-500/35 text-red-600 hover:bg-red-500/10 text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed max-w-full"
+                      className="min-h-[36px] px-3 w-full sm:w-auto justify-center shrink-0 rounded-xl border border-red-500/35 text-red-600 hover:bg-red-500/10 text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed max-w-full"
                     >
                       <Trash2 className="w-3.5 h-3.5 shrink-0" />
                       <span>
@@ -3023,26 +3122,26 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                                   }));
                                 }
                               }}
-                              className="p-3 sm:p-4 flex flex-wrap items-center justify-between gap-2.5 cursor-pointer hover:bg-bg/50 transition-colors min-w-0"
+                              className="p-3 sm:p-4 flex flex-wrap items-center justify-between gap-2 cursor-pointer hover:bg-bg/50 transition-colors min-w-0"
                             >
-                              <div className="flex items-center gap-2 min-w-0 flex-1">
+                              <div className="flex items-start sm:items-center gap-2 min-w-0 flex-1 basis-[160px]">
                                 {isExpanded ? (
-                                  <ChevronDown className="w-4 h-4 text-muted shrink-0" />
+                                  <ChevronDown className="w-4 h-4 text-muted shrink-0 mt-0.5 sm:mt-0" />
                                 ) : (
-                                  <ChevronRight className="w-4 h-4 text-muted shrink-0" />
+                                  <ChevronRight className="w-4 h-4 text-muted shrink-0 mt-0.5 sm:mt-0" />
                                 )}
-                                <div className="min-w-0">
-                                  <div className="flex items-center gap-2 flex-wrap">
-                                    <span className="font-bold text-sm text-text">
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex flex-col sm:flex-row sm:items-center sm:gap-2 min-w-0">
+                                    <span className="font-bold text-sm text-text leading-snug">
                                       {group.relativeLabel || group.formattedDate}
                                     </span>
                                     {group.relativeLabel && (
-                                      <span className="text-xs text-muted font-medium">
+                                      <span className="text-xs text-muted font-medium leading-snug">
                                         {group.formattedDate}
                                       </span>
                                     )}
                                   </div>
-                                  <p className="text-xs text-muted mt-0.5 break-words">
+                                  <p className="text-xs text-muted mt-0.5 break-normal">
                                     {group.orders.length}{' '}
                                     {group.orders.length === 1 ? 'order' : 'orders'} •{' '}
                                     <span className="font-bold text-text">
@@ -3065,7 +3164,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                                     folder: archiveFolder,
                                   });
                                 }}
-                                className="min-h-[34px] px-3 rounded-xl border border-red-500/30 text-red-600 hover:bg-red-500/10 text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer shrink-0 max-w-full"
+                                className="min-h-[34px] px-3 w-full sm:w-auto justify-center rounded-xl border border-red-500/30 text-red-600 hover:bg-red-500/10 text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer shrink-0 max-w-full"
                               >
                                 <Trash2 className="w-3.5 h-3.5 shrink-0" />
                                 <span>Delete this day</span>

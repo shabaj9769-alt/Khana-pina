@@ -10,7 +10,7 @@ import {
 import {
   checkFirebaseRateLimit,
   db,
-  ensureFirebaseSeeded,
+  ensureHomeDataLoaded,
   getHomeCache,
   setHomeCache,
 } from './_lib/store.ts';
@@ -25,18 +25,24 @@ export default async function handler(req: Request, res: Response) {
 
   try {
     const clientIp = getClientIp(req);
-    const allowed = await checkFirebaseRateLimit('home', clientIp, 300, 15 * 60 * 1000);
-    if (!allowed) {
-      res.status(429).json({ error: 'Too many requests from this IP, please try again shortly.' });
+    const cached = getHomeCache();
+    if (cached && Date.now() - cached.timestamp < 30_000) {
+      const allowed = await checkFirebaseRateLimit('home', clientIp, 300, 15 * 60 * 1000);
+      if (!allowed) {
+        res.status(429).json({ error: 'Too many requests from this IP, please try again shortly.' });
+        return;
+      }
+      res.setHeader('Cache-Control', 'no-store, max-age=0, s-maxage=0');
+      res.json(cached.payload);
       return;
     }
 
-    await ensureFirebaseSeeded();
-
-    const cached = getHomeCache();
-    if (cached && Date.now() - cached.timestamp < 30_000) {
-      res.setHeader('Cache-Control', 'no-store, max-age=0, s-maxage=0');
-      res.json(cached.payload);
+    const [allowed] = await Promise.all([
+      checkFirebaseRateLimit('home', clientIp, 300, 15 * 60 * 1000),
+      ensureHomeDataLoaded(),
+    ]);
+    if (!allowed) {
+      res.status(429).json({ error: 'Too many requests from this IP, please try again shortly.' });
       return;
     }
 
