@@ -15,9 +15,7 @@ import {
   Languages,
   MapPin,
   Menu as MenuIcon,
-  Moon,
   ShoppingBag,
-  Sun,
   User,
   UtensilsCrossed,
   X,
@@ -28,7 +26,6 @@ import {
   OrderRecord,
   OrderStatus,
   StorefrontThemeConfig,
-  ThemeMode,
 } from './types.ts';
 import { guestAuthLayer } from './auth/guestAuthLayer.ts';
 import { CustomerStore } from './components/CustomerStore.tsx';
@@ -69,9 +66,6 @@ export default function App() {
   const [trackingRetryBusy, setTrackingRetryBusy] = useState(false);
 
   const [storefrontTheme, setStorefrontTheme] = useState<StorefrontThemeConfig>(DEFAULT_STOREFRONT_THEME);
-  const [guestThemeMode, setGuestThemeMode] = useState<ThemeMode | null>(() =>
-    guestAuthLayer.getGuestThemeMode()
-  );
   const lang: 'en' | 'hi' = 'en';
 
   const [headerMeta, setHeaderMeta] = useState(() => ({
@@ -146,9 +140,9 @@ export default function App() {
   // Apply storefront theme whenever activeView is customer or tracking
   useEffect(() => {
     if (activeView === 'customer' || activeView === 'tracking') {
-      applyStorefrontThemeToDocument(storefrontTheme, guestThemeMode);
+      applyStorefrontThemeToDocument(storefrontTheme);
     }
-  }, [activeView, storefrontTheme, guestThemeMode]);
+  }, [activeView, storefrontTheme]);
 
   // Apply shopName to document title & meta tags for customer and tracking views
   useEffect(() => {
@@ -330,14 +324,6 @@ export default function App() {
     }
   };
 
-  const toggleGuestDarkLight = () => {
-    const isCurrentlyDark = document.documentElement.classList.contains('dark');
-    const nextMode: ThemeMode = isCurrentlyDark ? 'light' : 'dark';
-    setGuestThemeMode(nextMode);
-    guestAuthLayer.saveGuestThemeMode(nextMode);
-  };
-
-
   const openCartPage = () => {
     setActiveView('customer');
     setCartDrawerOpen(true);
@@ -442,9 +428,6 @@ export default function App() {
       !logoLoadError &&
       isValidPhotoUrl(headerMeta.logoUrl)
   );
-  const isEffectiveDark =
-    guestThemeMode === 'dark' ||
-    (guestThemeMode === null && storefrontTheme.mode === 'dark');
 
   // ===========================================================================
   // CUSTOMER STOREFRONT & ORDER TRACKING LAYOUT (Light, Airy, Zero Overflow)
@@ -826,24 +809,6 @@ export default function App() {
                     >
                       <Info className="w-5 h-5 shrink-0" />
                       <span>About Us</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={toggleGuestDarkLight}
-                      className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-left font-bold text-sm transition-colors cursor-pointer hover:bg-border/40 text-text"
-                    >
-                      {isEffectiveDark ? (
-                        <>
-                          <Sun className="w-5 h-5 shrink-0 text-accent" />
-                          <span>Light mode</span>
-                        </>
-                      ) : (
-                        <>
-                          <Moon className="w-5 h-5 shrink-0" />
-                          <span>Dark mode</span>
-                        </>
-                      )}
                     </button>
                   </div>
 
