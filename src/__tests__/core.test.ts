@@ -30,6 +30,7 @@ import {
   formatTime24To12,
   getInitialDatabaseState,
   getKolkataDateKey,
+  isOrderVisibleToKitchen,
   syncCancelledPendingRefundToHistory,
 } from '../../api/_lib/store';
 import adminHandler from '../../api/admin';
@@ -1474,6 +1475,129 @@ describe('Khana Pina Core & Bypass-Proof Razorpay Suite', () => {
       if (prevSecret === undefined) delete process.env.CRON_SECRET;
       else process.env.CRON_SECRET = prevSecret;
     }
+  });
+
+  it('29. Unpaid Razorpay order is hidden from kitchen; /api/payments/retry returns server-side amount & order credentials', async () => {
+    const testOrderId = `ord_retry_${Date.now()}`;
+    const { order } = await seedTestOrderAndPayment({
+      orderId: testOrderId,
+      orderNumber: 'AAN-8899',
+      razorpayOrderId: `order_rzp_${Date.now()}`,
+      grandTotal: 540,
+      paymentStatus: 'PENDING',
+      status: 'PLACED',
+    });
+
+    // An unpaid Razorpay order is NOT visible to kitchen
+    expect(isOrderVisibleToKitchen(order)).toBe(false);
+
+    let statusCode = 200;
+    let jsonBody: any = null;
+    const req = {
+      method: 'POST',
+      originalUrl: '/api/payments/retry',
+      url: '/api/payments/retry',
+      headers: { 'content-type': 'application/json' },
+      body: {
+        trackingToken: order.trackingToken,
+      },
+      socket: { remoteAddress: '127.0.0.1' },
+    } as any;
+    const res = {
+      setHeader: () => res,
+      status: (code: number) => {
+        statusCode = code;
+        return res;
+      },
+      json: (payload: any) => {
+        jsonBody = payload;
+        return res;
+      },
+      end: () => res,
+    } as any;
+
+    await paymentsHandler(req, res);
+    expect(statusCode).toBe(200);
+    expect(jsonBody.ok).toBe(true);
+    expect(jsonBody.razorpayOrderId).toBe(order.razorpayOrderId);
+    // Amount is taken strictly from the server-side order
+    expect(jsonBody.amountPaise).toBe(54000);
+  });
+
+  it('30. Switching unpaid Razorpay order to COD marks it visible to kitchen; paid orders reject retry', async () => {
+    const testOrderId = `ord_switch_cod_${Date.now()}`;
+    const { order } = await seedTestOrderAndPayment({
+      orderId: testOrderId,
+      orderNumber: 'AAN-8900',
+      razorpayOrderId: `order_rzp_switch_${Date.now()}`,
+      grandTotal: 620,
+      paymentStatus: 'PENDING',
+      status: 'PLACED',
+    });
+
+    expect(isOrderVisibleToKitchen(order)).toBe(false);
+
+    // Switch to COD
+    let statusCode = 200;
+    let jsonBody: any = null;
+    const req = {
+      method: 'POST',
+      originalUrl: '/api/orders/switch-to-cod',
+      url: '/api/orders/switch-to-cod',
+      headers: { 'content-type': 'application/json' },
+      body: { trackingToken: order.trackingToken },
+      socket: { remoteAddress: '127.0.0.1' },
+    } as any;
+    const res = {
+      setHeader: () => res,
+      status: (code: number) => {
+        statusCode = code;
+        return res;
+      },
+      json: (payload: any) => {
+        jsonBody = payload;
+        return res;
+      },
+      end: () => res,
+    } as any;
+
+    await ordersHandler(req, res);
+    expect(statusCode).toBe(200);
+    expect(jsonBody.ok).toBe(true);
+    expect(jsonBody.order.paymentMethod).toBe('COD');
+    // Once switched to COD, order becomes visible to kitchen
+    expect(isOrderVisibleToKitchen(jsonBody.order)).toBe(true);
+
+    // Now test retry on an already PAID order
+    jsonBody.order.paymentStatus = 'PAID';
+    jsonBody.order.paymentMethod = 'RAZORPAY';
+
+    let retryStatus = 200;
+    let retryBody: any = null;
+    const retryReq = {
+      method: 'POST',
+      originalUrl: '/api/payments/retry',
+      url: '/api/payments/retry',
+      headers: { 'content-type': 'application/json' },
+      body: { trackingToken: order.trackingToken },
+      socket: { remoteAddress: '127.0.0.1' },
+    } as any;
+    const retryRes = {
+      setHeader: () => retryRes,
+      status: (code: number) => {
+        retryStatus = code;
+        return retryRes;
+      },
+      json: (payload: any) => {
+        retryBody = payload;
+        return retryRes;
+      },
+      end: () => retryRes,
+    } as any;
+
+    await paymentsHandler(retryReq, retryRes);
+    expect(retryStatus).toBe(400);
+    expect(retryBody.error).toBe('Order has already been paid online.');
   });
 });
 

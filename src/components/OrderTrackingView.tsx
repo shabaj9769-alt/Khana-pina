@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   ArrowLeft,
@@ -6,6 +6,7 @@ import {
   ChefHat,
   ClipboardCheck,
   Clock,
+  CreditCard,
   Flame,
   KeyRound,
   PackageCheck,
@@ -414,9 +415,28 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
     );
   }
 
-  const currentStepIndex = STATUS_STEPS.findIndex((s) => s.key === order.status);
   const isDelivered = order.status === 'DELIVERED';
   const isCancelledOrRejected = order.status === 'CANCELLED' || order.status === 'REJECTED';
+  const isPendingPayment =
+    order.paymentMethod === 'RAZORPAY' &&
+    (order.paymentStatus === 'PENDING' || order.paymentStatus === 'FAILED');
+
+  const stepsToRender = useMemo(() => {
+    if (isPendingPayment) {
+      return [
+        {
+          key: 'PLACED' as OrderStatus,
+          label: 'Payment pending',
+          desc: 'Complete your payment to confirm your order.',
+          icon: CreditCard,
+        },
+        ...STATUS_STEPS.slice(1),
+      ];
+    }
+    return STATUS_STEPS;
+  }, [isPendingPayment]);
+
+  const currentStepIndex = stepsToRender.findIndex((s) => s.key === order.status);
 
   const etaAtIso = liveProjection?.etaAt || order.etaAt;
   const etaMs = etaAtIso ? new Date(etaAtIso).getTime() : NaN;
@@ -513,7 +533,9 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
             <h1 className="font-display text-xl sm:text-2xl font-bold text-text">
               {isCancelledOrRejected
                 ? `Order ${order.status === 'CANCELLED' ? 'Cancelled' : 'Rejected'}`
-                : STATUS_STEPS[Math.max(0, currentStepIndex)]?.label || order.status}
+                : isPendingPayment
+                ? 'Payment pending'
+                : stepsToRender[Math.max(0, currentStepIndex)]?.label || order.status}
             </h1>
             {isDelivered && order.deliveredAt && formatOrderPlacedAt(order.deliveredAt) && (
               <p className="text-[13px] text-muted tabular-nums break-normal">
@@ -525,7 +547,11 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
                 Delivered by: <span className="font-semibold">{order.deliveryBoyName}</span>
               </p>
             )}
-            {order.status === 'PLACED' ? (
+            {isPendingPayment ? (
+              <p className="text-base sm:text-lg font-bold text-primary">
+                Payment pending
+              </p>
+            ) : order.status === 'PLACED' ? (
               <p className="text-base sm:text-lg font-bold text-muted">
                 Waiting for the kitchen to confirm
               </p>
@@ -603,11 +629,11 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
           </div>
         ) : !isDelivered ? (
           <div className="space-y-2.5">
-            {STATUS_STEPS.map((step, idx) => {
+            {stepsToRender.map((step, idx) => {
               const Icon = step.icon;
-              const isCompleted = idx <= currentStepIndex;
-              const isCurrent = idx === currentStepIndex;
-              const stepTime = getStepTimeText(step.key);
+              const isCompleted = isPendingPayment ? idx === 0 : idx <= currentStepIndex;
+              const isCurrent = isPendingPayment ? idx === 0 : idx === currentStepIndex;
+              const stepTime = isPendingPayment && idx === 0 ? null : getStepTimeText(step.key);
 
               return (
                 <div
@@ -661,7 +687,7 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
           </div>
         ) : null}
 
-        {(order.status === 'PLACED' || order.status === 'ACCEPTED') && (
+        {(order.status === 'PLACED' || order.status === 'ACCEPTED' || isPendingPayment) && !isCancelledOrRejected && (
           <div className="pt-2 border-t border-border flex items-center justify-end">
             <button
               type="button"

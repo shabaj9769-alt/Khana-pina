@@ -67,6 +67,7 @@ export default function App() {
   const [loadedTrackingOrder, setLoadedTrackingOrder] = useState<OrderRecord | null>(null);
   const [knownTrackingStatus, setKnownTrackingStatus] = useState<OrderStatus | null>(null);
   const [copiedTrackingField, setCopiedTrackingField] = useState<'orderId' | 'link' | null>(null);
+  const [trackingRetryBusy, setTrackingRetryBusy] = useState(false);
 
   const [storefrontTheme, setStorefrontTheme] = useState<StorefrontThemeConfig>(DEFAULT_STOREFRONT_THEME);
   const [guestThemeMode, setGuestThemeMode] = useState<ThemeMode | null>(() =>
@@ -210,6 +211,104 @@ export default function App() {
       setTimeout(() => {
         setCopiedTrackingField((curr) => (curr === field ? null : curr));
       }, 2000);
+    }
+  };
+
+  const handleTrackingRetryPayment = async (order: OrderRecord) => {
+    if (trackingRetryBusy) return;
+    setTrackingRetryBusy(true);
+
+    const RazorpayCtor = (
+      window as unknown as {
+        Razorpay?: new (opts: Record<string, unknown>) => {
+          open: () => void;
+          on?: (event: string, cb: (resp: unknown) => void) => void;
+        };
+      }
+    ).Razorpay;
+
+    const openSdk = (
+      targetOrder: OrderRecord,
+      rzpOrderId: string,
+      amountPaise: number,
+      keyId: string
+    ) => {
+      if (!RazorpayCtor) {
+        setTrackingRetryBusy(false);
+        return;
+      }
+      const rzp = new RazorpayCtor({
+        key: keyId,
+        amount: amountPaise,
+        currency: 'INR',
+        name: headerMeta.shopName,
+        description: `Order ${targetOrder.orderNumber}`,
+        order_id: rzpOrderId,
+        prefill: {
+          name: targetOrder.customerName,
+          contact: targetOrder.customerPhone,
+        },
+        handler: async (response: {
+          razorpay_order_id: string;
+          razorpay_payment_id: string;
+          razorpay_signature: string;
+        }) => {
+          try {
+            const verifyRes = await fetch('/api/payments/verify', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                orderId: targetOrder.id,
+                razorpayOrderId: response.razorpay_order_id,
+                razorpayPaymentId: response.razorpay_payment_id,
+                razorpaySignature: response.razorpay_signature,
+              }),
+            });
+            const verifyData = await verifyRes.json().catch(() => ({}));
+            if (verifyRes.ok && verifyData.order?.paymentStatus === 'PAID') {
+              setInitialTrackingOrder(verifyData.order);
+              setLoadedTrackingOrder(verifyData.order);
+              setKnownTrackingStatus(verifyData.order.status);
+            }
+          } finally {
+            setTrackingRetryBusy(false);
+          }
+        },
+        modal: {
+          ondismiss: () => {
+            setTrackingRetryBusy(false);
+          },
+        },
+      });
+      if (rzp.on) {
+        rzp.on('payment.failed', () => {
+          setTrackingRetryBusy(false);
+        });
+      }
+      try {
+        rzp.open();
+      } catch {
+        setTrackingRetryBusy(false);
+      }
+    };
+
+    try {
+      const res = await fetch('/api/payments/retry', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          trackingToken: order.trackingToken,
+          orderId: order.id,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.razorpayOrderId) {
+        openSdk(data.order || order, data.razorpayOrderId, data.amountPaise, data.keyId);
+      } else {
+        setTrackingRetryBusy(false);
+      }
+    } catch {
+      setTrackingRetryBusy(false);
     }
   };
 
@@ -762,11 +861,21 @@ export default function App() {
               ? loadedTrackingOrder
               : null;
           const effectiveStatus = knownTrackingStatus ?? matchingOrder?.status ?? null;
+          const isPendingRazorpay =
+            matchingOrder?.paymentMethod === 'RAZORPAY' &&
+            (matchingOrder?.paymentStatus === 'PENDING' || matchingOrder?.paymentStatus === 'FAILED');
           const showOrderPlacedBanner =
             Boolean(effectiveStatus) &&
             effectiveStatus !== 'DELIVERED' &&
             effectiveStatus !== 'CANCELLED' &&
-            effectiveStatus !== 'REJECTED';
+            effectiveStatus !== 'REJECTED' &&
+            (matchingOrder?.paymentMethod === 'COD' || matchingOrder?.paymentStatus === 'PAID');
+          const showPaymentPendingBanner =
+            Boolean(effectiveStatus) &&
+            effectiveStatus !== 'DELIVERED' &&
+            effectiveStatus !== 'CANCELLED' &&
+            effectiveStatus !== 'REJECTED' &&
+            isPendingRazorpay;
           const trackingShareUrl =
             typeof window !== 'undefined'
               ? `${window.location.origin}/#/order/${trackingToken}`
@@ -851,6 +960,86 @@ export default function App() {
                     <p className="text-[12px] text-muted break-words print:hidden">
                       Save your Order ID or this link so you can view your delivery OTP again.
                     </p>
+                  </div>
+                </div>
+              )}
+
+              {showPaymentPendingBanner && (
+                <div className="w-full max-w-[480px] md:max-w-[1000px] mx-auto px-3.5 sm:px-4 pt-4 print:hidden">
+                  <div
+                    role="status"
+                    className="rounded-2xl border border-primary/40 bg-soft-tint p-4 space-y-3"
+                  >
+                    <div className="flex items-center gap-3">
+                      <span className="w-9 h-9 rounded-full bg-primary text-primary-contrast flex items-center justify-center shrink-0 font-bold">
+                        !
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <p className="font-display text-lg font-extrabold text-primary">
+                          Payment pending
+                        </p>
+                        <p className="text-sm text-text mt-0.5">
+                          Complete your payment to confirm your order.
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2 print:hidden">
+                      <button
+                        type="button"
+                        disabled={trackingRetryBusy}
+                        onClick={() => matchingOrder && handleTrackingRetryPayment(matchingOrder)}
+                        className="min-h-[44px] px-4 rounded-xl bg-primary hover:opacity-90 text-primary-contrast text-[13px] font-bold whitespace-nowrap inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                      >
+                        <CreditCard className="w-4 h-4 shrink-0" />
+                        <span>{trackingRetryBusy ? 'Retrying...' : 'Retry Payment'}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => goToStoreSubTab('home')}
+                        className="min-h-[44px] px-3.5 rounded-xl border border-border bg-surface text-[13px] font-semibold text-text whitespace-nowrap inline-flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <Home className="w-4 h-4 shrink-0" />
+                        <span>Home</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => goToStoreSubTab('menu')}
+                        className="min-h-[44px] px-3.5 rounded-xl border border-border bg-surface text-[13px] font-semibold text-text whitespace-nowrap inline-flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <UtensilsCrossed className="w-4 h-4 shrink-0" />
+                        <span>Menu</span>
+                      </button>
+                      {matchingOrder?.orderNumber && (
+                        <button
+                          type="button"
+                          onClick={() => copyTrackingText(matchingOrder.orderNumber, 'orderId')}
+                          className="min-h-[44px] px-3.5 rounded-xl border border-border bg-surface text-[13px] font-semibold text-text whitespace-nowrap inline-flex items-center gap-1.5 cursor-pointer"
+                        >
+                          {copiedTrackingField === 'orderId' ? (
+                            <Check className="w-4 h-4 text-accent shrink-0" />
+                          ) : (
+                            <Copy className="w-4 h-4 shrink-0" />
+                          )}
+                          <span>
+                            {copiedTrackingField === 'orderId' ? 'Copied ✓' : 'Copy Order ID'}
+                          </span>
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => copyTrackingText(trackingShareUrl, 'link')}
+                        className="min-h-[44px] px-3.5 rounded-xl border border-border bg-surface text-[13px] font-semibold text-text whitespace-nowrap inline-flex items-center gap-1.5 cursor-pointer"
+                      >
+                        {copiedTrackingField === 'link' ? (
+                          <Check className="w-4 h-4 text-accent shrink-0" />
+                        ) : (
+                          <Copy className="w-4 h-4 shrink-0" />
+                        )}
+                        <span>
+                          {copiedTrackingField === 'link' ? 'Copied ✓' : 'Copy tracking link'}
+                        </span>
+                      </button>
+                    </div>
                   </div>
                 </div>
               )}

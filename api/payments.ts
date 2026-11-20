@@ -1,7 +1,8 @@
 import crypto from 'crypto';
 import type { Request, Response } from 'express';
-import { isStrictProductionOrLiveMode } from './_lib/firebaseAdmin.ts';
+import { getRtdb, isStrictProductionOrLiveMode } from './_lib/firebaseAdmin.ts';
 import {
+  createRazorpayGatewayOrder,
   processRazorpayWebhookAuthoritative,
   readRawRequestBody,
   verifyRazorpayPaymentAuthoritative,
@@ -14,7 +15,8 @@ import {
   isRazorpayConfigured,
 } from './_lib/security.ts';
 
-import { db, ensureFirebaseSeeded } from './_lib/store.ts';
+import type { PaymentRecord } from '../src/types.ts';
+import { db, ensureFirebaseSeeded, refreshHydrationCache, syncOrderRealtimePaths } from './_lib/store.ts';
 
 // Disable automatic body parsing on Vercel so /api/payments/webhook can verify HMAC over the exact raw stream
 export const config = {
@@ -107,7 +109,7 @@ export default async function handler(req: Request, res: Response) {
     }
   }
 
-  if (!isRazorpayConfigured()) {
+  if (!isRazorpayConfigured() && !isDemoModeEnabled()) {
     if (rawPath.endsWith('/webhook')) {
       res.status(200).json({ status: 'ignored_unconfigured', message: 'Razorpay is not configured.' });
       return;
@@ -189,6 +191,118 @@ export default async function handler(req: Request, res: Response) {
         razorpayOrderId,
         razorpayPaymentId,
         razorpaySignature: signature,
+      });
+      return;
+    }
+
+    // 4. POST /api/payments/retry (Reopen or refresh Razorpay checkout for PENDING or FAILED order)
+    if (rawPath.endsWith('/retry')) {
+      const body = await getParsedBodyIfNeeded(req);
+      const trackingToken = typeof body?.trackingToken === 'string' ? body.trackingToken.trim() : '';
+      const orderId = typeof body?.orderId === 'string' ? body.orderId.trim() : '';
+      const razorpayOrderIdReq = typeof body?.razorpayOrderId === 'string' ? body.razorpayOrderId.trim() : '';
+      const forceNew = Boolean(body?.forceNew);
+
+      if (!trackingToken && !orderId && !razorpayOrderIdReq) {
+        res.status(400).json({ error: 'Missing order identifier (trackingToken, orderId, or razorpayOrderId)' });
+        return;
+      }
+
+      const order = db.orders.find(
+        (o) =>
+          (trackingToken && o.trackingToken === trackingToken) ||
+          (orderId && o.id === orderId) ||
+          (razorpayOrderIdReq && o.razorpayOrderId === razorpayOrderIdReq)
+      );
+
+      if (!order) {
+        res.status(404).json({ error: 'Order not found' });
+        return;
+      }
+
+      if (order.status === 'CANCELLED' || order.status === 'REJECTED') {
+        res.status(400).json({ error: 'Order has already been cancelled.' });
+        return;
+      }
+
+      if (order.paymentStatus === 'PAID') {
+        res.status(400).json({ error: 'Order has already been paid online.' });
+        return;
+      }
+
+      if (order.paymentMethod !== 'RAZORPAY') {
+        res.status(400).json({ error: 'Order is not configured for Razorpay payment.' });
+        return;
+      }
+
+      if (!isRazorpayConfigured() && !isDemoModeEnabled()) {
+        res.status(400).json({
+          error: 'Online payment is not available right now. Please choose Cash on Delivery.',
+        });
+        return;
+      }
+
+      const rzpCfg = getRazorpayConfig();
+      // SECURITY: Amount is strictly computed from the server-side order. Never from the client.
+      const amountPaise = Math.round(order.grandTotal * 100);
+
+      let rzpOrderId = order.razorpayOrderId;
+      if (!rzpOrderId || forceNew) {
+        if (isRazorpayConfigured()) {
+          const gatewayOrder = await createRazorpayGatewayOrder({
+            amountPaise,
+            orderNumber: order.orderNumber,
+          });
+          rzpOrderId = gatewayOrder.id;
+        } else {
+          rzpOrderId = `order_demo_${Date.now()}`;
+        }
+        order.razorpayOrderId = rzpOrderId;
+        order.updatedAt = new Date().toISOString();
+
+        let payment = db.payments.find((p) => p.orderId === order.id);
+        if (payment) {
+          payment.razorpayOrderId = rzpOrderId;
+          payment.status = 'PENDING';
+          payment.updatedAt = order.updatedAt;
+        } else {
+          payment = {
+            id: `pay_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
+            orderId: order.id,
+            orderNumber: order.orderNumber,
+            customerPhone: order.customerPhone,
+            gateway: 'RAZORPAY',
+            razorpayOrderId: rzpOrderId,
+            amount: order.grandTotal,
+            currency: 'INR',
+            status: 'PENDING',
+            serverHmacVerified: false,
+            webhookVerified: false,
+            apiAmountMatched: false,
+            createdAt: order.placedAt,
+            updatedAt: order.updatedAt,
+          };
+          db.payments.unshift(payment);
+        }
+
+        const rtdb = getRtdb();
+        await Promise.all([
+          rtdb.ref(`orders/${order.id}`).set(order),
+          rtdb.ref(`payments/${payment.id}`).set(payment),
+          syncOrderRealtimePaths(order),
+        ]);
+        refreshHydrationCache();
+      }
+
+      res.json({
+        ok: true,
+        order,
+        razorpayOrderId: rzpOrderId,
+        amountPaise,
+        keyId: rzpCfg.keyId || 'rzp_test_demo',
+        currency: 'INR',
+        shopName: db.settings.shopName,
+        mode: rzpCfg.mode,
       });
       return;
     }

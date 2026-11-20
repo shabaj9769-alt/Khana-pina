@@ -8,6 +8,7 @@ import {
   ChevronRight,
   Clock,
   Compass,
+  CreditCard,
   ExternalLink,
   Facebook,
   Flame,
@@ -285,6 +286,14 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
     mode?: 'demo' | 'live';
   } | null>(null);
   const [verifyingPayment, setVerifyingPayment] = useState(false);
+  const [retryingPayment, setRetryingPayment] = useState(false);
+  const [switchingToCod, setSwitchingToCod] = useState(false);
+  const [pendingPaymentFailure, setPendingPaymentFailure] = useState<{
+    order: OrderRecord;
+    razorpayOrderId: string;
+    amountPaise: number;
+    keyId: string;
+  } | null>(null);
   const [paymentFailureMessage, setPaymentFailureMessage] = useState<string | null>(null);
   const [confirmedSuccessOrder, setConfirmedSuccessOrder] = useState<OrderRecord | null>(null);
 
@@ -1118,6 +1127,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
 
   const triggerOrderSuccessScreen = (order: OrderRecord) => {
     setCart([]);
+    setPendingPaymentFailure(null);
     setPendingRazorpayModal(null);
     setConfirmedSuccessOrder(null);
     setCheckoutStep('store');
@@ -1174,8 +1184,17 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
           });
           const verifyData = await verifyRes.json().catch(() => ({}));
           if (verifyRes.ok && verifyData.order?.paymentStatus === 'PAID') {
+            setPendingPaymentFailure(null);
             triggerOrderSuccessScreen(verifyData.order);
           } else {
+            setPendingPaymentFailure({
+              order: checkoutData.order,
+              razorpayOrderId: response.razorpay_order_id,
+              amountPaise: checkoutData.amountPaise,
+              keyId: checkoutData.keyId,
+            });
+            setCheckoutStep('checkout');
+            setCartDrawerOpen(true);
             setPaymentFailureMessage(
               verifyData.error ||
                 'Payment verification is pending or signature mismatch occurred. Please do not pay twice — check your order status first.'
@@ -1187,21 +1206,213 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
       },
       modal: {
         ondismiss: () => {
-          setPaymentFailureMessage(
-            'Payment pending — listening to live order status. Do not pay twice.'
-          );
-          onOpenTracking(checkoutData.order.trackingToken, checkoutData.order);
+          setRetryingPayment(false);
+          setPendingPaymentFailure({
+            order: checkoutData.order,
+            razorpayOrderId: checkoutData.razorpayOrderId,
+            amountPaise: checkoutData.amountPaise,
+            keyId: checkoutData.keyId,
+          });
+          setCheckoutStep('checkout');
+          setCartDrawerOpen(true);
         },
       },
     });
     if (rzp.on) {
       rzp.on('payment.failed', () => {
-        setPaymentFailureMessage(
-          'Your online payment did not go through. You can safely retry payment below or switch to Cash on Delivery.'
-        );
+        setRetryingPayment(false);
+        setPendingPaymentFailure({
+          order: checkoutData.order,
+          razorpayOrderId: checkoutData.razorpayOrderId,
+          amountPaise: checkoutData.amountPaise,
+          keyId: checkoutData.keyId,
+        });
+        setCheckoutStep('checkout');
+        setCartDrawerOpen(true);
       });
     }
     rzp.open();
+  };
+
+  const handleRetryRazorpayPayment = async (data: {
+    order: OrderRecord;
+    razorpayOrderId: string;
+    amountPaise: number;
+    keyId: string;
+  }) => {
+    if (retryingPayment || verifyingPayment) return;
+    setRetryingPayment(true);
+    setCheckoutError(null);
+
+    const RazorpayCtor = (
+      window as unknown as {
+        Razorpay?: new (opts: Record<string, unknown>) => {
+          open: () => void;
+          on?: (event: string, cb: (resp: unknown) => void) => void;
+        };
+      }
+    ).Razorpay;
+
+    const openSdkCheckout = (
+      targetOrder: OrderRecord,
+      targetRzpOrderId: string,
+      targetAmountPaise: number,
+      targetKeyId: string
+    ) => {
+      if (!RazorpayCtor) {
+        setPendingRazorpayModal({
+          order: targetOrder,
+          razorpayOrderId: targetRzpOrderId,
+          amountPaise: targetAmountPaise,
+          keyId: targetKeyId,
+          mode: 'demo',
+        });
+        setRetryingPayment(false);
+        return;
+      }
+
+      const rzp = new RazorpayCtor({
+        key: targetKeyId,
+        amount: targetAmountPaise,
+        currency: 'INR',
+        name: homeData?.settings.shopName || getCachedShopName() || 'Food Ordering',
+        description: `Order ${targetOrder.orderNumber}`,
+        order_id: targetRzpOrderId,
+        prefill: {
+          name: targetOrder.customerName || guestName,
+          contact: targetOrder.customerPhone || guestPhone,
+        },
+        handler: async (response: {
+          razorpay_order_id: string;
+          razorpay_payment_id: string;
+          razorpay_signature: string;
+        }) => {
+          setVerifyingPayment(true);
+          try {
+            const verifyRes = await fetch('/api/payments/verify', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                orderId: targetOrder.id,
+                razorpayOrderId: response.razorpay_order_id,
+                razorpayPaymentId: response.razorpay_payment_id,
+                razorpaySignature: response.razorpay_signature,
+              }),
+            });
+            const verifyData = await verifyRes.json().catch(() => ({}));
+            if (verifyRes.ok && verifyData.order?.paymentStatus === 'PAID') {
+              setPendingPaymentFailure(null);
+              triggerOrderSuccessScreen(verifyData.order);
+            } else {
+              setPendingPaymentFailure({
+                order: targetOrder,
+                razorpayOrderId: response.razorpay_order_id,
+                amountPaise: targetAmountPaise,
+                keyId: targetKeyId,
+              });
+              setCheckoutError(
+                verifyData.error || 'Payment verification failed. Please do not pay twice.'
+              );
+            }
+          } finally {
+            setVerifyingPayment(false);
+            setRetryingPayment(false);
+          }
+        },
+        modal: {
+          ondismiss: () => {
+            setRetryingPayment(false);
+            setPendingPaymentFailure({
+              order: targetOrder,
+              razorpayOrderId: targetRzpOrderId,
+              amountPaise: targetAmountPaise,
+              keyId: targetKeyId,
+            });
+            setCheckoutStep('checkout');
+            setCartDrawerOpen(true);
+          },
+        },
+      });
+
+      if (rzp.on) {
+        rzp.on('payment.failed', () => {
+          setRetryingPayment(false);
+          setPendingPaymentFailure({
+            order: targetOrder,
+            razorpayOrderId: targetRzpOrderId,
+            amountPaise: targetAmountPaise,
+            keyId: targetKeyId,
+          });
+          setCheckoutStep('checkout');
+          setCartDrawerOpen(true);
+        });
+      }
+
+      try {
+        rzp.open();
+      } catch {
+        void fetchNewOrderAndOpen(targetOrder);
+      }
+    };
+
+    const fetchNewOrderAndOpen = async (targetOrder: OrderRecord) => {
+      try {
+        const retryRes = await fetch('/api/payments/retry', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            trackingToken: targetOrder.trackingToken,
+            orderId: targetOrder.id,
+            forceNew: true,
+          }),
+        });
+        const retryData = await retryRes.json();
+        if (retryRes.ok && retryData.razorpayOrderId) {
+          openSdkCheckout(
+            retryData.order || targetOrder,
+            retryData.razorpayOrderId,
+            retryData.amountPaise,
+            retryData.keyId
+          );
+        } else {
+          setCheckoutError(retryData.error || 'Failed to refresh payment session.');
+          setRetryingPayment(false);
+        }
+      } catch {
+        setCheckoutError('Network error while refreshing payment. Please try again.');
+        setRetryingPayment(false);
+      }
+    };
+
+    if (data.razorpayOrderId && data.keyId && data.amountPaise) {
+      openSdkCheckout(data.order, data.razorpayOrderId, data.amountPaise, data.keyId);
+    } else {
+      await fetchNewOrderAndOpen(data.order);
+    }
+  };
+
+  const handleSwitchToCod = async (order: OrderRecord) => {
+    if (switchingToCod || retryingPayment || verifyingPayment) return;
+    setSwitchingToCod(true);
+    setCheckoutError(null);
+    try {
+      const res = await fetch('/api/orders/switch-to-cod', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ trackingToken: order.trackingToken }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setCheckoutError(data.error || 'Failed to switch to Cash on Delivery.');
+        return;
+      }
+      setPendingPaymentFailure(null);
+      triggerOrderSuccessScreen(data.order);
+    } catch {
+      setCheckoutError('Network error while switching to Cash on Delivery.');
+    } finally {
+      setSwitchingToCod(false);
+    }
   };
 
   const handlePlaceOrder = async (e: React.FormEvent) => {
@@ -1383,9 +1594,15 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
             },
           }),
         });
-        setPaymentFailureMessage(
-          'Payment failed at gateway. You can retry payment right here without creating a duplicate order.'
-        );
+        setPendingPaymentFailure({
+          order: pendingRazorpayModal.order,
+          razorpayOrderId: pendingRazorpayModal.razorpayOrderId,
+          amountPaise: pendingRazorpayModal.amountPaise,
+          keyId: pendingRazorpayModal.keyId,
+        });
+        setPendingRazorpayModal(null);
+        setCheckoutStep('checkout');
+        setCartDrawerOpen(true);
         return;
       }
 
@@ -1946,6 +2163,47 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
               </div>
             ) : (
               <>
+                {/* PAYMENT NOT COMPLETED CARD */}
+                {pendingPaymentFailure && (
+                  <div
+                    role="alert"
+                    className="rounded-2xl border border-primary/40 bg-soft-tint p-4 sm:p-5 space-y-3.5 shadow-xs text-text"
+                  >
+                    <div className="flex items-start gap-3">
+                      <div className="w-9 h-9 rounded-xl bg-primary/15 text-primary flex items-center justify-center shrink-0 mt-0.5 font-bold">
+                        <CreditCard className="w-5 h-5" />
+                      </div>
+                      <div className="min-w-0 flex-1 space-y-1">
+                        <h3 className="font-display text-[16px] sm:text-[17px] font-extrabold text-primary">
+                          Payment not completed
+                        </h3>
+                        <p className="text-[13px] sm:text-[14px] text-text font-medium leading-relaxed">
+                          Your payment was not completed, so your order is not placed yet. You can retry the payment or choose Cash on Delivery.
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex flex-col sm:flex-row gap-2.5 pt-1">
+                      <button
+                        type="button"
+                        disabled={retryingPayment || verifyingPayment || switchingToCod}
+                        onClick={() => handleRetryRazorpayPayment(pendingPaymentFailure)}
+                        className="min-h-[44px] px-4 rounded-xl bg-primary hover:opacity-95 text-primary-contrast text-[14px] font-bold inline-flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 transition-opacity"
+                      >
+                        <CreditCard className="w-4 h-4 shrink-0" />
+                        <span>{retryingPayment ? 'Retrying...' : 'Retry Payment'}</span>
+                      </button>
+                      <button
+                        type="button"
+                        disabled={retryingPayment || verifyingPayment || switchingToCod}
+                        onClick={() => handleSwitchToCod(pendingPaymentFailure.order)}
+                        className="min-h-[44px] px-4 rounded-xl border border-border bg-surface hover:bg-border/30 text-text text-[14px] font-semibold inline-flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 transition-opacity"
+                      >
+                        <span>{switchingToCod ? 'Switching...' : 'Order with Cash on Delivery'}</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 {/* 1. Stacked Cart Item List (dot + full name, variant/addons, stepper + line total, dish note) */}
                 <section aria-label="Cart Items" className="space-y-3 min-w-0 max-w-full">
                   {cart.map((item) => (
@@ -2111,6 +2369,47 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
               noValidate
               className="w-full max-w-[720px] mx-auto px-4 pt-4 space-y-5 min-w-0"
             >
+              {/* PAYMENT NOT COMPLETED CARD */}
+              {pendingPaymentFailure && (
+                <div
+                  role="alert"
+                  className="rounded-2xl border border-primary/40 bg-soft-tint p-4 sm:p-5 space-y-3.5 shadow-xs text-text"
+                >
+                  <div className="flex items-start gap-3">
+                    <div className="w-9 h-9 rounded-xl bg-primary/15 text-primary flex items-center justify-center shrink-0 mt-0.5 font-bold">
+                      <CreditCard className="w-5 h-5" />
+                    </div>
+                    <div className="min-w-0 flex-1 space-y-1">
+                      <h3 className="font-display text-[16px] sm:text-[17px] font-extrabold text-primary">
+                        Payment not completed
+                      </h3>
+                      <p className="text-[13px] sm:text-[14px] text-text font-medium leading-relaxed">
+                        Your payment was not completed, so your order is not placed yet. You can retry the payment or choose Cash on Delivery.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex flex-col sm:flex-row gap-2.5 pt-1">
+                    <button
+                      type="button"
+                      disabled={retryingPayment || verifyingPayment || switchingToCod}
+                      onClick={() => handleRetryRazorpayPayment(pendingPaymentFailure)}
+                      className="min-h-[44px] px-4 rounded-xl bg-primary hover:opacity-95 text-primary-contrast text-[14px] font-bold inline-flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 transition-opacity"
+                    >
+                      <CreditCard className="w-4 h-4 shrink-0" />
+                      <span>{retryingPayment ? 'Retrying...' : 'Retry Payment'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={retryingPayment || verifyingPayment || switchingToCod}
+                      onClick={() => handleSwitchToCod(pendingPaymentFailure.order)}
+                      className="min-h-[44px] px-4 rounded-xl border border-border bg-surface hover:bg-border/30 text-text text-[14px] font-semibold inline-flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 transition-opacity"
+                    >
+                      <span>{switchingToCod ? 'Switching...' : 'Order with Cash on Delivery'}</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {/* TOP INLINE WARNING CARD WHEN OUTSIDE DELIVERY ZONE */}
               {isOutsideDeliveryZone && (
                 <div
@@ -4742,14 +5041,19 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   disabled={verifyingPayment}
                   onClick={() => {
                     const pendingOrder = pendingRazorpayModal.order;
+                    setPendingPaymentFailure({
+                      order: pendingOrder,
+                      razorpayOrderId: pendingRazorpayModal.razorpayOrderId,
+                      amountPaise: pendingRazorpayModal.amountPaise,
+                      keyId: pendingRazorpayModal.keyId,
+                    });
                     setPendingRazorpayModal(null);
-                    setCartDrawerOpen(false);
-                    setPaymentFailureMessage('Payment pending — listening to live order status.');
-                    onOpenTracking(pendingOrder.trackingToken, pendingOrder);
+                    setCheckoutStep('checkout');
+                    setCartDrawerOpen(true);
                   }}
                   className="w-full min-h-[44px] px-4 rounded-2xl border border-border text-muted hover:text-text text-[13px] font-semibold whitespace-nowrap cursor-pointer disabled:opacity-50"
                 >
-                  Close & view live order status
+                  Close
                 </button>
               </div>
             </div>
