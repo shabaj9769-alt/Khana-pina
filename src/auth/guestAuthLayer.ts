@@ -18,6 +18,8 @@ export interface GuestProfile {
   lat: number;
   lng: number;
   locationPinned?: boolean;
+  locationToken?: string;
+  locationAt?: number;
 }
 
 export interface CustomerAuthAdapter {

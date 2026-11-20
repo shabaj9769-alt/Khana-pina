@@ -227,19 +227,22 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
   const [customItemNote, setCustomItemNote] = useState('');
   const [descExpanded, setDescExpanded] = useState(false);
 
-  useEffect(() => {
-    if (customizingItem || addressSheetOpen || cartDrawerOpen) {
-      document.body.style.overflow = 'hidden';
-    } else {
-      document.body.style.overflow = '';
-    }
-    return () => {
-      document.body.style.overflow = '';
-    };
-  }, [customizingItem, addressSheetOpen, cartDrawerOpen]);
-
   // Guest Checkout State
+  const LOCATION_TOKEN_TTL_MS = 30 * 60 * 1000;
+  const isLocationFresh = (locationAt?: number, nowMs = Date.now()) =>
+    typeof locationAt === 'number' &&
+    Number.isFinite(locationAt) &&
+    locationAt > 0 &&
+    locationAt <= nowMs &&
+    nowMs - locationAt < LOCATION_TOKEN_TTL_MS;
+
   const initialProfile = useMemo(() => guestAuthLayer.getGuestProfile(), []);
+  const initialHasCoords = initialProfile.lat !== 0 || initialProfile.lng !== 0;
+  const initialLocationFresh =
+    Boolean(initialProfile.locationPinned || initialHasCoords) &&
+    initialHasCoords &&
+    isLocationFresh(initialProfile.locationAt);
+
   const [guestName, setGuestName] = useState(initialProfile.name);
   const [guestPhone, setGuestPhone] = useState(initialProfile.phone);
   const [guestEmail, setGuestEmail] = useState(initialProfile.email || '');
@@ -249,12 +252,31 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
   const [pincodeTouched, setPincodeTouched] = useState(false);
   const [gpsLoading, setGpsLoading] = useState(false);
   const [gpsError, setGpsError] = useState<string | null>(null);
+  const [gpsHelpOpen, setGpsHelpOpen] = useState(false);
+  const [gpsHelpReason, setGpsHelpReason] = useState<'denied' | 'off' | 'timeout'>('off');
   const [profileSavedToast, setProfileSavedToast] = useState(false);
   const [guestLat, setGuestLat] = useState(initialProfile.lat);
   const [guestLng, setGuestLng] = useState(initialProfile.lng);
-  const [locationPinned, setLocationPinned] = useState<boolean>(
-    Boolean(initialProfile.locationPinned || (initialProfile.lat !== 0 && initialProfile.lng !== 0))
+  const [guestLocationToken, setGuestLocationToken] = useState<string>(
+    initialLocationFresh && typeof initialProfile.locationToken === 'string'
+      ? initialProfile.locationToken
+      : ''
   );
+  const [guestLocationAt, setGuestLocationAt] = useState<number | undefined>(
+    initialLocationFresh ? initialProfile.locationAt : undefined
+  );
+  const [locationPinned, setLocationPinned] = useState<boolean>(initialLocationFresh);
+
+  useEffect(() => {
+    if (customizingItem || addressSheetOpen || cartDrawerOpen || gpsHelpOpen) {
+      document.body.style.overflow = 'hidden';
+    } else {
+      document.body.style.overflow = '';
+    }
+    return () => {
+      document.body.style.overflow = '';
+    };
+  }, [customizingItem, addressSheetOpen, cartDrawerOpen, gpsHelpOpen]);
   const [orderNotes, setOrderNotes] = useState('');
   const [isScheduled, setIsScheduled] = useState(false);
   const [scheduledFor, setScheduledFor] = useState('');
@@ -644,11 +666,38 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
       lat: guestLat,
       lng: guestLng,
       locationPinned,
+      locationToken: guestLocationToken || undefined,
+      locationAt: guestLocationAt,
     });
     if (onAddressChanged) {
       onAddressChanged(locationPinned && guestAddress ? guestAddress : '');
     }
-  }, [guestName, guestPhone, guestAddress, guestLandmark, guestPincode, guestLat, guestLng, locationPinned]);
+  }, [
+    guestName,
+    guestPhone,
+    guestAddress,
+    guestLandmark,
+    guestPincode,
+    guestLat,
+    guestLng,
+    locationPinned,
+    guestLocationToken,
+    guestLocationAt,
+  ]);
+
+  // Expire pinned GPS location automatically after 30 minutes without polling
+  useEffect(() => {
+    if (!locationPinned || !guestLocationAt) return;
+    const remainingMs = guestLocationAt + LOCATION_TOKEN_TTL_MS - Date.now();
+    if (remainingMs <= 0) {
+      setLocationPinned(false);
+      return;
+    }
+    const tid = setTimeout(() => {
+      setLocationPinned(false);
+    }, remainingMs);
+    return () => clearTimeout(tid);
+  }, [locationPinned, guestLocationAt]);
 
   // Fetch server-side delivery distance & bill preview whenever cart, location, coupon, or phone changes
   useEffect(() => {
@@ -995,22 +1044,89 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
     );
   };
 
-  const handleUseCurrentGps = () => {
+  const hasValidFreshPin =
+    locationPinned &&
+    (guestLat !== 0 || guestLng !== 0) &&
+    isLocationFresh(guestLocationAt);
+  const hasValidFreshPinRef = useRef(hasValidFreshPin);
+  hasValidFreshPinRef.current = hasValidFreshPin;
+  const gpsLoadingRef = useRef(gpsLoading);
+  gpsLoadingRef.current = gpsLoading;
+  const gpsAutoRetriedRef = useRef(false);
+
+  const handleUseCurrentGps = async () => {
     setGpsError(null);
     if (!navigator.geolocation) {
-      setLocationPinned(false);
-      setGpsError('Could not get your location. Please enter your pincode manually.');
+      if (!hasValidFreshPinRef.current) {
+        setLocationPinned(false);
+      }
+      setGpsError('GPS off lag raha hai. Phone ka Location on karo.');
+      setGpsHelpReason('off');
+      setGpsHelpOpen(true);
       return;
     }
+
+    try {
+      if (navigator.permissions?.query) {
+        const perm = await navigator.permissions.query({ name: 'geolocation' });
+        if (perm.state === 'denied') {
+          if (!hasValidFreshPinRef.current) {
+            setLocationPinned(false);
+          }
+          setGpsError('Location permission band hai. Browser/phone settings me Location allow karo.');
+          setGpsHelpReason('denied');
+          setGpsHelpOpen(true);
+          return;
+        }
+      }
+    } catch {
+      // Permissions API unsupported or blocked; continue to getCurrentPosition
+    }
+
     setGpsLoading(true);
     navigator.geolocation.getCurrentPosition(
       async (pos) => {
         const lat = Number(pos.coords.latitude.toFixed(4));
         const lng = Number(pos.coords.longitude.toFixed(4));
-        setGuestLat(lat);
-        setGuestLng(lng);
-        setLocationPinned(true);
-        setGpsError(null);
+        try {
+          const tokCtrl = new AbortController();
+          const tokTid = setTimeout(() => tokCtrl.abort(), 5000);
+          const tokRes = await fetch('/api/guest/location-token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ lat, lng }),
+            signal: tokCtrl.signal,
+          });
+          clearTimeout(tokTid);
+          const tokData = await tokRes.json().catch(() => null);
+          if (!tokRes.ok || !tokData?.token) {
+            if (!hasValidFreshPinRef.current) {
+              setLocationPinned(false);
+              setGuestLocationToken('');
+              setGuestLocationAt(undefined);
+            }
+            setGpsError('Network problem. Dobara try karo.');
+            setGpsLoading(false);
+            return;
+          }
+          setGuestLat(lat);
+          setGuestLng(lng);
+          setGuestLocationToken(tokData.token);
+          setGuestLocationAt(typeof tokData.issuedAt === 'number' ? tokData.issuedAt : Date.now());
+          setLocationPinned(true);
+          setGpsError(null);
+          setGpsHelpOpen(false);
+        } catch {
+          if (!hasValidFreshPinRef.current) {
+            setLocationPinned(false);
+            setGuestLocationToken('');
+            setGuestLocationAt(undefined);
+          }
+          setGpsError('Network problem. Dobara try karo.');
+          setGpsLoading(false);
+          return;
+        }
+
         try {
           const ctrl = new AbortController();
           const tid = setTimeout(() => ctrl.abort(), 4000);
@@ -1033,13 +1149,57 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
           setGpsLoading(false);
         }
       },
-      () => {
+      (err) => {
         setGpsLoading(false);
-        setLocationPinned(false);
-        setGpsError('Could not get your location. Please enter your pincode manually.');
-      }
+        if (!hasValidFreshPinRef.current) {
+          setLocationPinned(false);
+        }
+        if (err.code === 1) {
+          setGpsError('Location permission band hai. Browser/phone settings me Location allow karo.');
+          setGpsHelpReason('denied');
+        } else if (err.code === 3) {
+          setGpsError('Location nahi mil paayi. Dobara try karo.');
+          setGpsHelpReason('timeout');
+        } else {
+          setGpsError('GPS off lag raha hai. Phone ka Location on karo.');
+          setGpsHelpReason('off');
+        }
+        setGpsHelpOpen(true);
+      },
+      { enableHighAccuracy: false, timeout: 10000, maximumAge: 60000 }
     );
   };
+
+  const handleUseCurrentGpsRef = useRef(handleUseCurrentGps);
+  handleUseCurrentGpsRef.current = handleUseCurrentGps;
+
+  useEffect(() => {
+    if (!gpsHelpOpen) {
+      gpsAutoRetriedRef.current = false;
+      return;
+    }
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setGpsHelpOpen(false);
+      }
+    };
+    const onVisibilityChange = () => {
+      if (
+        document.visibilityState === 'visible' &&
+        !gpsAutoRetriedRef.current &&
+        !gpsLoadingRef.current
+      ) {
+        gpsAutoRetriedRef.current = true;
+        handleUseCurrentGpsRef.current();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [gpsHelpOpen]);
 
   const handleCopyAndApplyCoupon = (code: string) => {
     setCouponInput(code);
@@ -1454,7 +1614,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
 
     if (!locationPinned || (guestLat === 0 && guestLng === 0)) {
       setCheckoutError(
-        'Please tap "Use my current GPS location" in Section 1 to check delivery availability.'
+        'Delivery check ke liye "Use my current GPS location" dabao. GPS off ho to phone ka Location on karo.'
       );
       return;
     }
@@ -1546,6 +1706,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
           couponCode: appliedCouponCode,
           captchaToken: turnstileToken || 'demo_bypass_turnstile',
           codOtpToken: codOtpVerifiedToken || undefined,
+          locationToken: guestLocationToken || undefined,
           items: cart.map((c) => ({
             menuItemId: c.menuItemId,
             variantId: c.variantId,
@@ -1559,6 +1720,12 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
 
       const data = await res.json();
       if (!res.ok) {
+        if (data.code === 'LOCATION_STALE' || data.code === 'LOCATION_TOKEN_INVALID') {
+          setLocationPinned(false);
+          setGuestLocationToken('');
+          setGuestLocationAt(undefined);
+          setGpsError(data.error || 'Location purani ho gayi. GPS dobara dabao.');
+        }
         setCheckoutError(data.error || 'Could not place order. Please review your details.');
         return;
       }
@@ -2068,9 +2235,12 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
   const phoneFieldError = !/^[6-9]\d{9}$/.test(cleanPhoneDigits)
     ? 'Please enter a valid 10-digit mobile number.'
     : null;
+  const isPinStale =
+    (guestLat !== 0 || guestLng !== 0) &&
+    (!locationPinned || !isLocationFresh(guestLocationAt));
   const addressFieldError =
     !locationPinned || (guestLat === 0 && guestLng === 0)
-      ? 'Please tap "Use my current GPS location" to verify delivery availability.'
+      ? 'Delivery check ke liye "Use my current GPS location" dabao. GPS off ho to phone ka Location on karo.'
       : guestAddress.trim().length < 8
       ? 'Please enter your flat, building, and street address (at least 8 characters).'
       : null;
@@ -2095,7 +2265,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
     (billPreview !== null && !billPreview.minOrderMet);
 
   const placeOrderDisabledReason = !locationPinned
-    ? 'Tap "Use my current GPS location" in Section 1 to check delivery availability.'
+    ? 'Delivery check ke liye "Use my current GPS location" dabao. GPS off ho to phone ka Location on karo.'
     : isOutsideDeliveryZone
     ? 'Delivery is not available at this location.'
     : billPreview && !billPreview.minOrderMet
@@ -2582,14 +2752,14 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                     : 'border-border bg-surface'
                 }`}
               >
-                <div className="flex items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-2 min-w-0">
                     <MapPin className="w-5 h-5 text-primary shrink-0" />
                     <h2 className="text-[16px] font-extrabold text-text break-words">
                       1. Delivery address
                     </h2>
                   </div>
-                  {liveAddressDistance.pinned && (
+                  {liveAddressDistance.pinned ? (
                     <span
                       className={`px-2.5 py-1 rounded-full text-[13px] font-bold shrink-0 ${
                         liveAddressDistance.within
@@ -2601,7 +2771,21 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                         ? '✓ Delivery available'
                         : '✕ Outside delivery area'}
                     </span>
-                  )}
+                  ) : isPinStale ? (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-[12px] font-semibold text-primary">
+                        Location purani hai, dobara confirm karo.
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => handleUseCurrentGps()}
+                        disabled={gpsLoading}
+                        className="min-h-[36px] px-3 rounded-xl border border-primary/40 bg-soft-tint text-primary text-[12px] font-bold cursor-pointer disabled:opacity-70 whitespace-nowrap"
+                      >
+                        {gpsLoading ? 'Refreshing...' : 'Refresh location'}
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
 
                 {/* GPS Location Button */}
@@ -2627,10 +2811,23 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                     onClick={() => {
                       setGuestAddress(initialProfile.address);
                       setGuestLandmark(initialProfile.landmark || '');
-                      if (initialProfile.lat && initialProfile.lng) {
+                      const savedFresh =
+                        (initialProfile.lat !== 0 || initialProfile.lng !== 0) &&
+                        isLocationFresh(initialProfile.locationAt);
+                      if (savedFresh) {
                         setGuestLat(initialProfile.lat);
                         setGuestLng(initialProfile.lng);
+                        setGuestLocationToken(initialProfile.locationToken || '');
+                        setGuestLocationAt(initialProfile.locationAt);
                         setLocationPinned(true);
+                        setGpsError(null);
+                      } else {
+                        setLocationPinned(false);
+                        setGuestLocationToken('');
+                        setGuestLocationAt(undefined);
+                        setGpsError(
+                          'Saved location purani ho gayi hai. Delivery check ke liye "Use my current GPS location" dabao.'
+                        );
                       }
                     }}
                     className="w-full min-h-[44px] px-3.5 py-2 rounded-xl border border-border bg-bg text-left text-[13px] text-muted hover:text-text cursor-pointer"
@@ -3249,6 +3446,8 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   lat: guestLat,
                   lng: guestLng,
                   locationPinned,
+                  locationToken: guestLocationToken || undefined,
+                  locationAt: guestLocationAt,
                 });
                 setProfileSavedToast(true);
                 setTimeout(() => setProfileSavedToast(false), 3000);
@@ -5449,6 +5648,109 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
           </form>
         </div>
       )}
+
+      {/* =====================================================================
+          GPS HELP POPUP (rendered once at root for Section 1 & Address sheet)
+         ===================================================================== */}
+      {gpsHelpOpen && (() => {
+        const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
+        const isAndroid = /Android/i.test(ua);
+        const isIos = /iPhone|iPad|iPod/i.test(ua);
+        const showBothPlatforms = !isAndroid && !isIos;
+        const reasonMessage =
+          gpsHelpReason === 'denied'
+            ? 'Location permission band hai. Browser/phone settings me Location allow karo.'
+            : gpsHelpReason === 'timeout'
+            ? 'Location nahi mil paayi. Dobara try karo.'
+            : 'GPS off lag raha hai. Phone ka Location on karo.';
+
+        return (
+          <div
+            onClick={() => setGpsHelpOpen(false)}
+            className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center bg-black/55 backdrop-blur-xs p-0 sm:p-4"
+          >
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="gps-help-dialog-title"
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-md rounded-t-3xl sm:rounded-3xl bg-surface text-text border border-border p-5 space-y-4 pb-safe overflow-x-hidden animate-sheet-up"
+            >
+              <div className="w-10 h-1 bg-border rounded-full mx-auto sm:hidden" />
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <span className="w-10 h-10 rounded-full bg-soft-tint border border-primary/30 flex items-center justify-center shrink-0">
+                    <Compass className="w-5 h-5 text-primary" />
+                  </span>
+                  <div className="min-w-0">
+                    <h3
+                      id="gps-help-dialog-title"
+                      className="font-display text-[18px] font-extrabold text-text"
+                    >
+                      GPS on karo
+                    </h3>
+                    <p className="text-[13px] font-semibold text-primary break-words mt-0.5">
+                      {reasonMessage}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setGpsHelpOpen(false)}
+                  aria-label="Close GPS help dialog"
+                  className="w-11 h-11 rounded-full flex items-center justify-center text-muted hover:text-text shrink-0 cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="rounded-2xl border border-border bg-bg p-3.5 space-y-2.5 text-[13px] text-text">
+                {(isAndroid || showBothPlatforms) && (
+                  <p className="leading-snug">
+                    <strong className="font-bold">Android Chrome:</strong> Notification bar se
+                    Location on karo, phir site settings me Location = Allow
+                  </p>
+                )}
+                {(isIos || showBothPlatforms) && (
+                  <p className="leading-snug">
+                    <strong className="font-bold">iPhone Safari:</strong> Settings &gt; Privacy
+                    &amp; Security &gt; Location Services on karo, phir Safari Websites &gt;
+                    Location = Allow
+                  </p>
+                )}
+              </div>
+
+              <div className="space-y-1 text-[12px] text-muted">
+                <p>Website khud GPS on nahi kar sakti, aapko phone me on karna hoga.</p>
+                <p className="font-semibold text-text">
+                  Delivery check ke liye aapki location zaroori hai.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2.5 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setGpsHelpOpen(false)}
+                  className="min-h-[44px] px-4 rounded-2xl border border-border bg-bg text-[14px] font-bold text-text cursor-pointer"
+                >
+                  Close
+                </button>
+                <button
+                  type="button"
+                  disabled={gpsLoading}
+                  onClick={() => {
+                    gpsAutoRetriedRef.current = false;
+                    handleUseCurrentGps();
+                  }}
+                  className="min-h-[44px] px-4 rounded-2xl bg-primary text-primary-contrast text-[14px] font-extrabold cursor-pointer disabled:opacity-60"
+                >
+                  {gpsLoading ? 'Getting GPS location...' : 'Try again'}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 };

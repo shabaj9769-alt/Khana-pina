@@ -35,6 +35,7 @@ import {
   getKolkataDateKey,
   isOrderVisibleToKitchen,
   queryPaginatedOrderHistory,
+  signGuestLocationToken,
   syncCancelledPendingRefundToHistory,
 } from '../../api/_lib/store';
 import adminHandler from '../../api/admin';
@@ -2714,7 +2715,214 @@ describe('Khana Pina Core & Bypass-Proof Razorpay Suite', () => {
       await getRtdb().ref(`payments/${payment.id}`).remove();
     }
   });
+
+  it('42. POST /api/guest/location-token rejects invalid coords (0,0 / NaN / out-of-range) and signs valid coords with 30m TTL', async () => {
+    await ensureFirebaseSeeded();
+    const callLocToken = async (body: unknown, ip = '127.0.30.10') => {
+      let statusCode = 200;
+      let jsonBody: any = null;
+      await ordersHandler(
+        {
+          method: 'POST',
+          originalUrl: '/api/guest/location-token',
+          url: '/api/guest/location-token',
+          headers: { 'content-type': 'application/json', 'x-forwarded-for': ip },
+          body,
+          socket: { remoteAddress: ip },
+        } as any,
+        {
+          setHeader: () => ({}),
+          status: (c: number) => {
+            statusCode = c;
+            return { json: (b: any) => (jsonBody = b) };
+          },
+          json: (b: any) => {
+            jsonBody = b;
+          },
+          end: () => {},
+        } as any
+      );
+      return { statusCode, jsonBody };
+    };
+
+    const zeroRes = await callLocToken({ lat: 0, lng: 0 });
+    expect(zeroRes.statusCode).toBe(400);
+    expect(zeroRes.jsonBody.code).toBe('LOCATION_TOKEN_INVALID');
+
+    const nanRes = await callLocToken({ lat: Number.NaN, lng: 72.8262 });
+    expect(nanRes.statusCode).toBe(400);
+    expect(nanRes.jsonBody.code).toBe('LOCATION_TOKEN_INVALID');
+
+    const outOfRangeLat = await callLocToken({ lat: 91, lng: 72.8262 });
+    expect(outOfRangeLat.statusCode).toBe(400);
+    expect(outOfRangeLat.jsonBody.code).toBe('LOCATION_TOKEN_INVALID');
+
+    const outOfRangeLng = await callLocToken({ lat: 19.0655, lng: -181 });
+    expect(outOfRangeLng.statusCode).toBe(400);
+    expect(outOfRangeLng.jsonBody.code).toBe('LOCATION_TOKEN_INVALID');
+
+    const validRes = await callLocToken({ lat: 19.065512, lng: 72.826234 });
+    expect(validRes.statusCode).toBe(200);
+    expect(typeof validRes.jsonBody.token).toBe('string');
+    expect(validRes.jsonBody.token.split('.').length).toBe(2);
+    expect(typeof validRes.jsonBody.issuedAt).toBe('number');
+    expect(validRes.jsonBody.expiresAt - validRes.jsonBody.issuedAt).toBe(30 * 60 * 1000);
+  });
+
+  it('43. POST /api/orders enforces guest locationToken validity, 30m TTL, coordinate match, and live vs non-live gating', async () => {
+    await ensureFirebaseSeeded();
+    const firstItem = db.menuItems.find((m) => m.inStock && !m.isDeleted)!;
+    const prevOpen = db.settings.isOpen;
+    const prevAuto = db.settings.autoScheduleEnabled;
+    const prevBusy = db.settings.busyMode;
+    const prevCodEnabled = db.settings.codEnabled;
+    const prevOtpReq = db.settings.requirePhoneOtpForCod;
+    const prevZone = db.deliveryZone.zoneEnabled;
+    const prevRzpMode = process.env.RAZORPAY_MODE;
+    const prevAdminSecret = process.env.ADMIN_JWT_SECRET;
+    const prevTurnstile = process.env.TURNSTILE_SECRET_KEY;
+
+    db.settings.isOpen = true;
+    db.settings.autoScheduleEnabled = false;
+    db.settings.busyMode = false;
+    db.settings.codEnabled = true;
+    db.settings.requirePhoneOtpForCod = false;
+    db.deliveryZone.zoneEnabled = false;
+    delete process.env.TURNSTILE_SECRET_KEY;
+    process.env.ADMIN_JWT_SECRET = 'test_live_admin_jwt_secret_for_location_token_123456';
+
+    const testPhone = '9833333333';
+    const testIp = '127.0.30.20';
+    const lat = Number((db.deliveryZone.shopLat + 0.005).toFixed(4));
+    const lng = Number((db.deliveryZone.shopLng + 0.005).toFixed(4));
+    const createdOrderIds: string[] = [];
+
+    const callOrdersApi = async (urlPath: string, body: Record<string, unknown>) => {
+      let statusCode = 200;
+      let jsonBody: any = null;
+      await ordersHandler(
+        {
+          method: 'POST',
+          originalUrl: urlPath,
+          url: urlPath,
+          headers: { 'content-type': 'application/json', 'x-forwarded-for': testIp },
+          body,
+          socket: { remoteAddress: testIp },
+        } as any,
+        {
+          setHeader: () => ({}),
+          status: (c: number) => {
+            statusCode = c;
+            return { json: (b: any) => (jsonBody = b) };
+          },
+          json: (b: any) => {
+            jsonBody = b;
+          },
+          end: () => {},
+        } as any
+      );
+      return { statusCode, jsonBody };
+    };
+
+    const basePayload = (overrides: Record<string, unknown> = {}) => ({
+      customerName: 'GPS Token Tester',
+      customerPhone: testPhone,
+      deliveryAddress: '123 GPS Test Building, Bandra West',
+      deliveryPincode: '400050',
+      deliveryLat: lat,
+      deliveryLng: lng,
+      paymentMethod: 'COD',
+      items: [{ menuItemId: firstItem.id, quantity: 1 }],
+      ...overrides,
+    });
+
+    try {
+      // Enable strict live mode via RAZORPAY_MODE=live
+      process.env.RAZORPAY_MODE = 'live';
+
+      // 1) Obtain valid signed locationToken and place order in live mode -> 201
+      const tokRes = await callOrdersApi('/api/guest/location-token', { lat, lng });
+      expect(tokRes.statusCode).toBe(200);
+      const validToken: string = tokRes.jsonBody.token;
+
+      const validOrderRes = await callOrdersApi(
+        '/api/orders',
+        basePayload({ locationToken: validToken })
+      );
+      expect(validOrderRes.statusCode).toBe(201);
+      createdOrderIds.push(validOrderRes.jsonBody.order.id);
+      expect((validOrderRes.jsonBody.order as any).locationToken).toBeUndefined();
+
+      // 2) Expired token (> 30 min old) -> 400 LOCATION_STALE
+      const expired = signGuestLocationToken(lat, lng, Date.now() - 31 * 60 * 1000);
+      const expiredRes = await callOrdersApi(
+        '/api/orders',
+        basePayload({ locationToken: expired.token })
+      );
+      expect(expiredRes.statusCode).toBe(400);
+      expect(expiredRes.jsonBody.code).toBe('LOCATION_STALE');
+
+      // 3) Valid token paired with different lat/lng -> 400 LOCATION_TOKEN_INVALID
+      const mismatchRes = await callOrdersApi(
+        '/api/orders',
+        basePayload({
+          deliveryLat: Number((lat + 0.02).toFixed(4)),
+          deliveryLng: Number((lng + 0.02).toFixed(4)),
+          locationToken: validToken,
+        })
+      );
+      expect(mismatchRes.statusCode).toBe(400);
+      expect(mismatchRes.jsonBody.code).toBe('LOCATION_TOKEN_INVALID');
+
+      // 4) Tampered signature -> 400 LOCATION_TOKEN_INVALID
+      const [payloadPart, sigPart] = validToken.split('.');
+      const flippedChar = sigPart[0] === 'a' ? 'b' : 'a';
+      const tamperedToken = `${payloadPart}.${flippedChar}${sigPart.slice(1)}`;
+      const tamperedRes = await callOrdersApi(
+        '/api/orders',
+        basePayload({ locationToken: tamperedToken })
+      );
+      expect(tamperedRes.statusCode).toBe(400);
+      expect(tamperedRes.jsonBody.code).toBe('LOCATION_TOKEN_INVALID');
+
+      // 5) Missing locationToken in live mode -> 400 LOCATION_TOKEN_INVALID
+      const missingLiveRes = await callOrdersApi('/api/orders', basePayload());
+      expect(missingLiveRes.statusCode).toBe(400);
+      expect(missingLiveRes.jsonBody.code).toBe('LOCATION_TOKEN_INVALID');
+
+      // 6) Missing locationToken in non-live mode -> succeeds with 201
+      process.env.RAZORPAY_MODE = 'demo';
+      const missingNonLiveRes = await callOrdersApi('/api/orders', basePayload());
+      expect(missingNonLiveRes.statusCode).toBe(201);
+      createdOrderIds.push(missingNonLiveRes.jsonBody.order.id);
+    } finally {
+      db.settings.isOpen = prevOpen;
+      db.settings.autoScheduleEnabled = prevAuto;
+      db.settings.busyMode = prevBusy;
+      db.settings.codEnabled = prevCodEnabled;
+      db.settings.requirePhoneOtpForCod = prevOtpReq;
+      db.deliveryZone.zoneEnabled = prevZone;
+      if (prevRzpMode === undefined) delete process.env.RAZORPAY_MODE;
+      else process.env.RAZORPAY_MODE = prevRzpMode;
+      if (prevAdminSecret === undefined) delete process.env.ADMIN_JWT_SECRET;
+      else process.env.ADMIN_JWT_SECRET = prevAdminSecret;
+      if (prevTurnstile === undefined) delete process.env.TURNSTILE_SECRET_KEY;
+      else process.env.TURNSTILE_SECRET_KEY = prevTurnstile;
+
+      const rtdb = getRtdb();
+      for (const id of createdOrderIds) {
+        const ord = db.orders.find((o) => o.id === id);
+        db.orders = db.orders.filter((o) => o.id !== id);
+        await rtdb.ref(`orders/${id}`).remove();
+        await rtdb.ref(`adminOrders/${id}`).remove();
+        if (ord?.trackingToken) await rtdb.ref(`tracking/${ord.trackingToken}`).remove();
+      }
+      delete db.customers[testPhone];
+      await rtdb.ref(`customers/${testPhone}`).remove();
+    }
+  });
 });
+
 
 
 

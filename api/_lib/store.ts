@@ -52,6 +52,7 @@ import type {
 import { DEFAULT_STOREFRONT_THEME, normalizeThemeConfig } from '../../src/utils/themeTokens.ts';
 import { getRtdb, isStrictProductionOrLiveMode } from './firebaseAdmin.ts';
 import {
+  getAdminJwtSecret,
   hashPasswordScrypt,
   isCodOtpProviderConfigured,
   isDemoModeEnabled,
@@ -2859,6 +2860,100 @@ export async function checkFirebaseRateLimit(
   });
 
   return allowed;
+}
+
+export const LOCATION_TOKEN_TTL_MS = 30 * 60 * 1000;
+
+export function isValidDeliveryCoordinate(lat: unknown, lng: unknown): boolean {
+  if (typeof lat !== 'number' || typeof lng !== 'number') return false;
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return false;
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return false;
+  if (lat === 0 && lng === 0) return false;
+  return true;
+}
+
+export function signGuestLocationToken(
+  lat: number,
+  lng: number,
+  issuedAt = Date.now()
+): { token: string; issuedAt: number; expiresAt: number } {
+  const roundedLat = Number(lat.toFixed(4));
+  const roundedLng = Number(lng.toFixed(4));
+  const payload = Buffer.from(
+    JSON.stringify({ lat: roundedLat, lng: roundedLng, iat: issuedAt })
+  ).toString('base64url');
+  const sig = crypto
+    .createHmac('sha256', getAdminJwtSecret())
+    .update(`loc.${payload}`)
+    .digest('base64url');
+  return {
+    token: `${payload}.${sig}`,
+    issuedAt,
+    expiresAt: issuedAt + LOCATION_TOKEN_TTL_MS,
+  };
+}
+
+export function verifyGuestLocationToken(
+  token: string,
+  expectedLat: number,
+  expectedLng: number,
+  nowMs = Date.now()
+):
+  | { valid: true; issuedAt: number }
+  | { valid: false; code: 'LOCATION_TOKEN_INVALID' | 'LOCATION_STALE' } {
+  try {
+    if (typeof token !== 'string' || !token.trim()) {
+      return { valid: false, code: 'LOCATION_TOKEN_INVALID' };
+    }
+    const parts = token.trim().split('.');
+    if (parts.length !== 2) {
+      return { valid: false, code: 'LOCATION_TOKEN_INVALID' };
+    }
+    const [payload, sig] = parts;
+    if (!payload || !sig) {
+      return { valid: false, code: 'LOCATION_TOKEN_INVALID' };
+    }
+    const expectedSig = crypto
+      .createHmac('sha256', getAdminJwtSecret())
+      .update(`loc.${payload}`)
+      .digest('base64url');
+    const sigBuf = Buffer.from(sig, 'utf8');
+    const expectedBuf = Buffer.from(expectedSig, 'utf8');
+    if (sigBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(sigBuf, expectedBuf)) {
+      return { valid: false, code: 'LOCATION_TOKEN_INVALID' };
+    }
+    const parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as {
+      lat?: unknown;
+      lng?: unknown;
+      iat?: unknown;
+    };
+    if (
+      typeof parsed.lat !== 'number' ||
+      typeof parsed.lng !== 'number' ||
+      typeof parsed.iat !== 'number' ||
+      !Number.isFinite(parsed.lat) ||
+      !Number.isFinite(parsed.lng) ||
+      !Number.isFinite(parsed.iat)
+    ) {
+      return { valid: false, code: 'LOCATION_TOKEN_INVALID' };
+    }
+    if (parsed.iat > nowMs) {
+      return { valid: false, code: 'LOCATION_TOKEN_INVALID' };
+    }
+    if (nowMs - parsed.iat > LOCATION_TOKEN_TTL_MS) {
+      return { valid: false, code: 'LOCATION_STALE' };
+    }
+    const tokenLat = Number(parsed.lat.toFixed(4));
+    const tokenLng = Number(parsed.lng.toFixed(4));
+    const orderLat = Number(expectedLat.toFixed(4));
+    const orderLng = Number(expectedLng.toFixed(4));
+    if (tokenLat !== orderLat || tokenLng !== orderLng) {
+      return { valid: false, code: 'LOCATION_TOKEN_INVALID' };
+    }
+    return { valid: true, issuedAt: parsed.iat };
+  } catch {
+    return { valid: false, code: 'LOCATION_TOKEN_INVALID' };
+  }
 }
 
 // Brute-force login tracking (backed by Firebase RTDB + synchronous mirror for unit tests)

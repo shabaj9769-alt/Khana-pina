@@ -35,16 +35,19 @@ import {
   invalidateHomeHydration,
   isRefundPendingCancelledOrder,
   isRefundSettledCancelledOrder,
+  isValidDeliveryCoordinate,
   refreshActiveOrdersFresh,
   refreshCouponsAndUsagesFresh,
   refreshHydrationCache,
   refreshMenuItemsFresh,
   runScheduledShopAndArchiveCheck,
   saveCodOtpSession,
+  signGuestLocationToken,
   syncCancelledPendingRefundToHistory,
   syncOrderRealtimePaths,
   upsertPaymentInMemory,
   verifyAndIncrementMenuStockSalesTx,
+  verifyGuestLocationToken,
 } from './_lib/store.ts';
 import { notifyTelegramCancelledOrder, notifyTelegramNewOrder } from './_lib/telegram.ts';
 
@@ -67,6 +70,7 @@ const OrderPlacementSchema = z.object({
   couponCode: z.string().nullable().optional(),
   captchaToken: z.string().optional(),
   codOtpToken: z.string().optional(),
+  locationToken: z.string().optional(),
   items: z
     .array(
       z.object({
@@ -286,6 +290,34 @@ export default async function handler(req: Request, res: Response) {
       record.verifiedToken = verifiedToken;
       await saveCodOtpSession(record);
       res.json({ verifiedToken });
+      return;
+    }
+
+    // 3b. POST /api/guest/location-token
+    if (req.method === 'POST' && path.endsWith('/guest/location-token')) {
+      const allowed = await checkFirebaseRateLimit('location_token', clientIp, 60, 15 * 60 * 1000);
+      if (!allowed) {
+        res.status(429).json({
+          error: 'Too many location verification requests from this IP, please wait 15 minutes.',
+        });
+        return;
+      }
+
+      const rawLat = req.body?.lat;
+      const rawLng = req.body?.lng;
+      const lat = typeof rawLat === 'number' ? rawLat : Number.NaN;
+      const lng = typeof rawLng === 'number' ? rawLng : Number.NaN;
+
+      if (!isValidDeliveryCoordinate(lat, lng)) {
+        res.status(400).json({
+          error: 'Valid GPS coordinates are required.',
+          code: 'LOCATION_TOKEN_INVALID',
+        });
+        return;
+      }
+
+      const signed = signGuestLocationToken(lat, lng);
+      res.json(signed);
       return;
     }
 
@@ -694,8 +726,40 @@ export default async function handler(req: Request, res: Response) {
         couponCode,
         captchaToken,
         codOtpToken,
+        locationToken,
         items,
       } = parsedBody.data;
+
+      const requireLocationToken = isStrictProductionOrLiveMode();
+      const trimmedLocationToken = typeof locationToken === 'string' ? locationToken.trim() : '';
+      if (requireLocationToken && !trimmedLocationToken) {
+        res.status(400).json({
+          error: 'Location confirm karo: "Use my current GPS location" dabao.',
+          code: 'LOCATION_TOKEN_INVALID',
+        });
+        return;
+      }
+      if (locationToken !== undefined) {
+        const locCheck = verifyGuestLocationToken(
+          trimmedLocationToken,
+          Number(deliveryLat),
+          Number(deliveryLng)
+        );
+        if (!locCheck.valid) {
+          if (locCheck.code === 'LOCATION_STALE') {
+            res.status(400).json({
+              error: 'Location purani ho gayi. GPS dobara dabao.',
+              code: 'LOCATION_STALE',
+            });
+            return;
+          }
+          res.status(400).json({
+            error: 'Location confirm karo: "Use my current GPS location" dabao.',
+            code: 'LOCATION_TOKEN_INVALID',
+          });
+          return;
+        }
+      }
 
       await runScheduledShopAndArchiveCheck({ minIntervalMs: 45_000 });
       const effectiveShopOpen = computeEffectiveShopOpen(db.settings);
