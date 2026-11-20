@@ -734,7 +734,7 @@ export default async function handler(req: Request, res: Response) {
       const trimmedLocationToken = typeof locationToken === 'string' ? locationToken.trim() : '';
       if (requireLocationToken && !trimmedLocationToken) {
         res.status(400).json({
-          error: 'Location confirm karo: "Use my current GPS location" dabao.',
+          error: 'Please confirm your delivery location by tapping "Use my current GPS location".',
           code: 'LOCATION_TOKEN_INVALID',
         });
         return;
@@ -748,13 +748,13 @@ export default async function handler(req: Request, res: Response) {
         if (!locCheck.valid) {
           if (locCheck.code === 'LOCATION_STALE') {
             res.status(400).json({
-              error: 'Location purani ho gayi. GPS dobara dabao.',
+              error: 'Your saved GPS location has expired. Please tap "Use my current GPS location" again.',
               code: 'LOCATION_STALE',
             });
             return;
           }
           res.status(400).json({
-            error: 'Location confirm karo: "Use my current GPS location" dabao.',
+            error: 'Please confirm your delivery location by tapping "Use my current GPS location".',
             code: 'LOCATION_TOKEN_INVALID',
           });
           return;

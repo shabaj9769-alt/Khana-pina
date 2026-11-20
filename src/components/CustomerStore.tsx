@@ -1060,7 +1060,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
       if (!hasValidFreshPinRef.current) {
         setLocationPinned(false);
       }
-      setGpsError('GPS off lag raha hai. Phone ka Location on karo.');
+      setGpsError('GPS appears to be turned off. Please turn on Location in your phone settings.');
       setGpsHelpReason('off');
       setGpsHelpOpen(true);
       return;
@@ -1073,7 +1073,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
           if (!hasValidFreshPinRef.current) {
             setLocationPinned(false);
           }
-          setGpsError('Location permission band hai. Browser/phone settings me Location allow karo.');
+          setGpsError('Location permission is blocked. Please allow Location access in your browser or phone settings.');
           setGpsHelpReason('denied');
           setGpsHelpOpen(true);
           return;
@@ -1105,7 +1105,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
               setGuestLocationToken('');
               setGuestLocationAt(undefined);
             }
-            setGpsError('Network problem. Dobara try karo.');
+            setGpsError('Network error. Please try again.');
             setGpsLoading(false);
             return;
           }
@@ -1122,7 +1122,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
             setGuestLocationToken('');
             setGuestLocationAt(undefined);
           }
-          setGpsError('Network problem. Dobara try karo.');
+          setGpsError('Network error. Please try again.');
           setGpsLoading(false);
           return;
         }
@@ -1155,13 +1155,13 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
           setLocationPinned(false);
         }
         if (err.code === 1) {
-          setGpsError('Location permission band hai. Browser/phone settings me Location allow karo.');
+          setGpsError('Location permission is blocked. Please allow Location access in your browser or phone settings.');
           setGpsHelpReason('denied');
         } else if (err.code === 3) {
-          setGpsError('Location nahi mil paayi. Dobara try karo.');
+          setGpsError('Could not get your location. Please try again.');
           setGpsHelpReason('timeout');
         } else {
-          setGpsError('GPS off lag raha hai. Phone ka Location on karo.');
+          setGpsError('GPS appears to be turned off. Please turn on Location in your phone settings.');
           setGpsHelpReason('off');
         }
         setGpsHelpOpen(true);
@@ -1614,7 +1614,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
 
     if (!locationPinned || (guestLat === 0 && guestLng === 0)) {
       setCheckoutError(
-        'Delivery check ke liye "Use my current GPS location" dabao. GPS off ho to phone ka Location on karo.'
+        'Tap "Use my current GPS location" to check delivery availability. If GPS is off, turn on Location on your phone.'
       );
       return;
     }
@@ -1724,7 +1724,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
           setLocationPinned(false);
           setGuestLocationToken('');
           setGuestLocationAt(undefined);
-          setGpsError(data.error || 'Location purani ho gayi. GPS dobara dabao.');
+          setGpsError(data.error || 'Your saved GPS location has expired. Please tap "Use my current GPS location" again.');
         }
         setCheckoutError(data.error || 'Could not place order. Please review your details.');
         return;
@@ -2240,7 +2240,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
     (!locationPinned || !isLocationFresh(guestLocationAt));
   const addressFieldError =
     !locationPinned || (guestLat === 0 && guestLng === 0)
-      ? 'Delivery check ke liye "Use my current GPS location" dabao. GPS off ho to phone ka Location on karo.'
+      ? 'Tap "Use my current GPS location" to check delivery availability. If GPS is off, turn on Location on your phone.'
       : guestAddress.trim().length < 8
       ? 'Please enter your flat, building, and street address (at least 8 characters).'
       : null;
@@ -2265,7 +2265,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
     (billPreview !== null && !billPreview.minOrderMet);
 
   const placeOrderDisabledReason = !locationPinned
-    ? 'Delivery check ke liye "Use my current GPS location" dabao. GPS off ho to phone ka Location on karo.'
+    ? 'Tap "Use my current GPS location" to check delivery availability. If GPS is off, turn on Location on your phone.'
     : isOutsideDeliveryZone
     ? 'Delivery is not available at this location.'
     : billPreview && !billPreview.minOrderMet
@@ -2774,7 +2774,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   ) : isPinStale ? (
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="text-[12px] font-semibold text-primary">
-                        Location purani hai, dobara confirm karo.
+                        Location expired, please confirm again.
                       </span>
                       <button
                         type="button"
@@ -2826,7 +2826,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                         setGuestLocationToken('');
                         setGuestLocationAt(undefined);
                         setGpsError(
-                          'Saved location purani ho gayi hai. Delivery check ke liye "Use my current GPS location" dabao.'
+                          'Your saved location has expired. Please tap "Use my current GPS location" to check delivery availability.'
                         );
                       }
                     }}
@@ -5659,10 +5659,10 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
         const showBothPlatforms = !isAndroid && !isIos;
         const reasonMessage =
           gpsHelpReason === 'denied'
-            ? 'Location permission band hai. Browser/phone settings me Location allow karo.'
+            ? 'Location permission is blocked. Please allow Location access in your browser or phone settings.'
             : gpsHelpReason === 'timeout'
-            ? 'Location nahi mil paayi. Dobara try karo.'
-            : 'GPS off lag raha hai. Phone ka Location on karo.';
+            ? 'Could not get your location. Please try again.'
+            : 'GPS appears to be turned off. Please turn on Location in your phone settings.';
 
         return (
           <div
@@ -5687,7 +5687,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                       id="gps-help-dialog-title"
                       className="font-display text-[18px] font-extrabold text-text"
                     >
-                      GPS on karo
+                      Turn on GPS
                     </h3>
                     <p className="text-[13px] font-semibold text-primary break-words mt-0.5">
                       {reasonMessage}
@@ -5707,23 +5707,23 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
               <div className="rounded-2xl border border-border bg-bg p-3.5 space-y-2.5 text-[13px] text-text">
                 {(isAndroid || showBothPlatforms) && (
                   <p className="leading-snug">
-                    <strong className="font-bold">Android Chrome:</strong> Notification bar se
-                    Location on karo, phir site settings me Location = Allow
+                    <strong className="font-bold">Android Chrome:</strong> Turn on Location from the
+                    notification bar, then set Location = Allow in site settings
                   </p>
                 )}
                 {(isIos || showBothPlatforms) && (
                   <p className="leading-snug">
-                    <strong className="font-bold">iPhone Safari:</strong> Settings &gt; Privacy
-                    &amp; Security &gt; Location Services on karo, phir Safari Websites &gt;
-                    Location = Allow
+                    <strong className="font-bold">iPhone Safari:</strong> Go to Settings &gt;
+                    Privacy &amp; Security &gt; turn on Location Services, then set Safari Websites
+                    &gt; Location = Allow
                   </p>
                 )}
               </div>
 
               <div className="space-y-1 text-[12px] text-muted">
-                <p>Website khud GPS on nahi kar sakti, aapko phone me on karna hoga.</p>
+                <p>This website cannot turn on GPS automatically — you need to enable it on your phone.</p>
                 <p className="font-semibold text-text">
-                  Delivery check ke liye aapki location zaroori hai.
+                  Your location is required to verify delivery availability.
                 </p>
               </div>
 

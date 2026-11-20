@@ -532,24 +532,11 @@ export default function App() {
                 <div className="flex items-center gap-1.5 text-xs text-primary-contrast/90 mt-0.5 min-w-0">
                   <span
                     className={`w-2 h-2 rounded-full shrink-0 ${
-                      headerMeta.isOpen && !headerMeta.busyMode
-                        ? 'bg-green-400'
-                        : headerMeta.isOpen && headerMeta.busyMode
-                        ? 'bg-amber-300'
-                        : 'bg-white/60'
+                      headerMeta.isOpen ? 'bg-green-400' : 'bg-white/60'
                     }`}
                   />
-                  <span className="font-medium truncate">
-                    {headerMeta.isOpen
-                      ? headerMeta.busyMode
-                        ? 'Busy'
-                        : 'Open'
-                      : `Closed · Opens at ${headerMeta.opensAtText || '11:00 AM'}`}
-                    {headerMeta.cityArea?.trim() ? (
-                      <span className="text-primary-contrast/80 font-normal hidden sm:inline">
-                        {' '}· {headerMeta.cityArea.trim()}
-                      </span>
-                    ) : null}
+                  <span className="font-medium whitespace-nowrap">
+                    {headerMeta.isOpen ? 'Open' : 'Closed'}
                   </span>
                 </div>
               </div>
