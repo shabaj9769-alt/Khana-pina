@@ -516,7 +516,7 @@ export default function App() {
                       setCustomerSubTab('home');
                       navigateView('customer', '/#/');
                     }}
-                    className="block font-display text-[17px] font-bold leading-[1.2] text-primary-contrast line-clamp-2 break-words"
+                    className="block font-display text-[15px] sm:text-[16px] font-bold leading-tight text-primary-contrast line-clamp-2 break-words"
                   >
                     {trimmedShopName}
                   </a>
@@ -527,7 +527,7 @@ export default function App() {
                   />
                 )}
 
-                <div className="flex items-center gap-1.5 text-[13px] leading-[1.3] text-primary-contrast/90 mt-0.5 min-w-0">
+                <div className="flex items-center gap-1.5 text-xs text-primary-contrast/90 mt-0.5 min-w-0">
                   <span
                     className={`w-2 h-2 rounded-full shrink-0 ${
                       headerMeta.isOpen && !headerMeta.busyMode
@@ -537,7 +537,7 @@ export default function App() {
                         : 'bg-white/60'
                     }`}
                   />
-                  <span className="font-semibold truncate">
+                  <span className="font-medium truncate">
                     {headerMeta.isOpen
                       ? headerMeta.busyMode
                         ? 'Busy'
