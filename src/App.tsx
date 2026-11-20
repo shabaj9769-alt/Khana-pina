@@ -184,9 +184,11 @@ export default function App() {
         ta.value = text;
         ta.setAttribute('readonly', '');
         ta.style.position = 'fixed';
+        ta.style.top = '0';
         ta.style.left = '-9999px';
         ta.style.opacity = '0';
         document.body.appendChild(ta);
+        ta.focus({ preventScroll: true });
         ta.select();
         copied = document.execCommand('copy');
         document.body.removeChild(ta);
@@ -915,65 +917,59 @@ export default function App() {
           return (
             <div className="w-full max-w-full min-w-0">
               {showOrderPlacedBanner && (
-                <div className="w-full max-w-[480px] md:max-w-[1000px] mx-auto px-3.5 sm:px-4 pt-4 print:hidden">
+                <div className="w-full max-w-[480px] md:max-w-[1000px] mx-auto px-3.5 sm:px-4 pt-2 print:hidden">
                   <div
                     role="status"
-                    className="rounded-2xl border border-accent/40 bg-accent/10 p-4 space-y-3"
+                    className="rounded-2xl border border-accent/40 bg-accent/10 p-2.5 space-y-2"
                   >
                     <div className="flex items-center gap-3">
-                      <span className="w-9 h-9 rounded-full bg-accent text-white flex items-center justify-center shrink-0 font-bold">
+                      <span className="w-7 h-7 rounded-full bg-accent text-white flex items-center justify-center shrink-0 font-bold text-sm">
                         ✓
                       </span>
                       <div className="min-w-0 flex-1">
-                        <p className="font-display text-lg font-extrabold text-accent">
+                        <p className="font-display text-base font-extrabold text-accent">
                           Order placed!
                         </p>
-                        <p className="text-sm text-text mt-0.5">
+                        <p className="text-xs text-text mt-0">
                           Your order is confirmed and live kitchen tracking is active below.
                         </p>
                       </div>
                     </div>
-                    <div className="flex flex-wrap items-center gap-2 print:hidden">
-                      <button
-                        type="button"
-                        onClick={() => goToStoreSubTab('home')}
-                        className="min-h-[44px] px-3.5 rounded-xl border border-border bg-surface text-[13px] font-semibold text-text whitespace-nowrap inline-flex items-center gap-1.5 cursor-pointer"
-                      >
-                        <Home className="w-4 h-4 shrink-0" />
-                        <span>Home</span>
-                      </button>
+                    <div className="grid grid-cols-2 gap-2 print:hidden">
                       {matchingOrder?.orderNumber && (
                         <button
                           type="button"
+                          onMouseDown={(e) => e.preventDefault()}
                           onClick={() => copyTrackingText(matchingOrder.orderNumber, 'orderId')}
-                          className="min-h-[44px] px-3.5 rounded-xl border border-border bg-surface text-[13px] font-semibold text-text whitespace-nowrap inline-flex items-center gap-1.5 cursor-pointer"
+                          className="w-full min-w-0 justify-center min-h-[36px] px-2 rounded-xl border border-border bg-surface text-[12px] font-semibold text-text whitespace-nowrap inline-flex items-center gap-1.5 cursor-pointer"
                         >
                           {copiedTrackingField === 'orderId' ? (
                             <Check className="w-4 h-4 text-accent shrink-0" />
                           ) : (
                             <Copy className="w-4 h-4 shrink-0" />
                           )}
-                          <span>
-                            {copiedTrackingField === 'orderId' ? 'Copied ✓' : 'Copy Order ID'}
+                          <span className="truncate">
+                            {copiedTrackingField === 'orderId' ? 'Copied' : 'Copy Order ID'}
                           </span>
                         </button>
                       )}
                       <button
                         type="button"
+                        onMouseDown={(e) => e.preventDefault()}
                         onClick={() => copyTrackingText(trackingShareUrl, 'link')}
-                        className="min-h-[44px] px-3.5 rounded-xl border border-border bg-surface text-[13px] font-semibold text-text whitespace-nowrap inline-flex items-center gap-1.5 cursor-pointer"
+                        className={`${!matchingOrder?.orderNumber ? 'col-span-2 ' : ''}w-full min-w-0 justify-center min-h-[36px] px-2 rounded-xl border border-border bg-surface text-[12px] font-semibold text-text whitespace-nowrap inline-flex items-center gap-1.5 cursor-pointer`}
                       >
                         {copiedTrackingField === 'link' ? (
                           <Check className="w-4 h-4 text-accent shrink-0" />
                         ) : (
                           <Copy className="w-4 h-4 shrink-0" />
                         )}
-                        <span>
-                          {copiedTrackingField === 'link' ? 'Copied ✓' : 'Copy tracking link'}
+                        <span className="truncate">
+                          {copiedTrackingField === 'link' ? 'Copied' : 'Copy tracking link'}
                         </span>
                       </button>
                     </div>
-                    <p className="text-[12px] text-muted break-words print:hidden">
+                    <p className="text-[11px] text-muted break-words print:hidden">
                       Save your Order ID or this link so you can view your delivery OTP again.
                     </p>
                   </div>
