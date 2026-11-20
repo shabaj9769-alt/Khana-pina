@@ -45,6 +45,14 @@ export default async function handler(req: Request, res: Response) {
       return;
     }
 
+    if (fast.expired) {
+      res.status(410).json({
+        expired: true,
+        error: 'This order is completed and the link has expired.',
+      });
+      return;
+    }
+
     const order = fast.order;
     if (!order) {
       res.status(404).json({ error: 'Order not found or cancelled' });

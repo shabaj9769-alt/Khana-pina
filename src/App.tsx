@@ -46,7 +46,6 @@ import {
   optimizeAssetUrl,
 } from './utils/themeTokens.ts';
 import { SafeImage } from './components/SafeImage.tsx';
-import { subscribeToPublicShopStatus } from './utils/firebaseClient.ts';
 import { installServerTimeFetchSync } from './utils/formatOrderTime.ts';
 
 type AppView = 'customer' | 'tracking' | 'rider' | 'admin';
@@ -157,24 +156,7 @@ export default function App() {
     }
   }, [activeView, headerMeta.shopName]);
 
-  // Subscribe to Firebase Realtime Database publicStatus node for live shop open/busy/theme status
-  useEffect(() => {
-    const unsub = subscribeToPublicShopStatus({
-      onStatus: (status) => {
-        setHeaderMeta((prev) => ({
-          ...prev,
-          shopName: status.shopName || prev.shopName,
-          isOpen: status.isOpen,
-          busyMode: status.busyMode,
-          cityArea: status.cityArea !== undefined ? status.cityArea : prev.cityArea,
-        }));
-        if (status.theme) {
-          setStorefrontTheme(status.theme);
-        }
-      },
-    });
-    return () => unsub();
-  }, []);
+  // Menu & Home pages use `/api/home` REST data with zero Firebase RTDB listeners.
 
   useEffect(() => {
     return installServerTimeFetchSync();
@@ -1052,7 +1034,12 @@ export default function App() {
                 }
                 onOrderLoaded={(ord) => setLoadedTrackingOrder(ord)}
                 onStatusKnown={(status) => setKnownTrackingStatus(status)}
-                onBackToStore={() => goToStoreSubTab('home')}
+                onOrderExpired={() => {
+                  setInitialTrackingOrder(null);
+                  setLoadedTrackingOrder(null);
+                  setKnownTrackingStatus(null);
+                }}
+                onBackToStore={() => goToStoreSubTab('menu')}
                 onReorder={(ord) => handleReorder(ord, menuItemsCache)}
               />
             </div>

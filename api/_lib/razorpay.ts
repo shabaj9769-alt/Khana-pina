@@ -7,12 +7,19 @@ import {
   db,
   ensureFirebaseSeeded,
   expireStaleOrdersLazy,
+  findPaymentFresh,
+  getFreshCustomer,
+  getFreshOrderById,
+  getFreshPaymentById,
+  getRefundsForPaymentFresh,
   invalidateHomeHydration,
   logAudit,
+  refreshActiveOrdersFresh,
   refreshHydrationCache,
   settleRefundOrderHistoryAndRemoveActive,
   syncCancelledPendingRefundToHistory,
   syncOrderRealtimePaths,
+  upsertPaymentInMemory,
   verifyAndIncrementMenuStockSalesTx,
 } from './store.ts';
 import { notifyTelegramCancelledOrder, notifyTelegramNewOrder } from './telegram.ts';
@@ -264,9 +271,19 @@ export async function verifyRazorpayPaymentAuthoritative(params: {
     return { status: 400, error: 'Missing payment verification parameters' };
   }
 
-  // Strictly lookup order by razorpayOrderId
-  const order = db.orders.find((o) => o.razorpayOrderId === razorpayOrderId);
-  const payment = db.payments.find((p) => p.razorpayOrderId === razorpayOrderId);
+  // Strictly lookup payment & order fresh from RTDB by razorpayOrderId
+  let payment = await findPaymentFresh({ razorpayOrderId });
+  let order = payment ? await getFreshOrderById(payment.orderId) : null;
+  if (!order) {
+    const activeOrders = await refreshActiveOrdersFresh();
+    const matched = activeOrders.find((o) => o.razorpayOrderId === razorpayOrderId) || null;
+    if (matched) {
+      order = await getFreshOrderById(matched.id);
+      if (!payment && order) {
+        payment = await findPaymentFresh({ orderId: order.id });
+      }
+    }
+  }
 
   if (!order || !payment) {
     return { status: 404, error: 'Order or payment record not found for razorpayOrderId' };
@@ -400,10 +417,11 @@ export async function verifyRazorpayPaymentAuthoritative(params: {
   payment.status = payment.webhookVerified ? 'VERIFIED' : 'CAPTURED';
   order.paymentStatus = 'PAID';
 
-  const cust = db.customers[order.customerPhone];
+  const cust = (await getFreshCustomer(order.customerPhone)) || db.customers[order.customerPhone];
   if (cust) {
     cust.orderCount += 1;
     cust.totalSpent += order.grandTotal;
+    db.customers[order.customerPhone] = cust;
     await getRtdb().ref(`customers/${order.customerPhone}`).set(cust);
   }
 
@@ -414,6 +432,7 @@ export async function verifyRazorpayPaymentAuthoritative(params: {
   clearHomeCache();
   invalidateHomeHydration();
 
+  upsertPaymentInMemory(payment);
   await Promise.all([
     getRtdb().ref(`payments/${payment.id}`).set(payment),
     syncOrderRealtimePaths(order),
@@ -557,17 +576,23 @@ export async function processRazorpayWebhookAuthoritative(params: {
     paymentEntity?.currency || orderEntity?.currency || refundEntity?.currency || 'INR'
   ).toUpperCase();
 
-  const order = db.orders.find(
-    (o) =>
-      (rzpOrderId && o.razorpayOrderId === rzpOrderId) ||
-      (rzpPaymentId &&
-        db.payments.some((p) => p.razorpayPaymentId === rzpPaymentId && p.orderId === o.id))
-  );
-  const payment = db.payments.find(
-    (p) =>
-      (rzpOrderId && p.razorpayOrderId === rzpOrderId) ||
-      (order && p.orderId === order.id)
-  );
+  let payment = rzpOrderId ? await findPaymentFresh({ razorpayOrderId: rzpOrderId }) : null;
+  let order = payment ? await getFreshOrderById(payment.orderId) : null;
+  if (!order && (rzpOrderId || rzpPaymentId)) {
+    const activeOrders = await refreshActiveOrdersFresh();
+    const matched = activeOrders.find(
+      (o) =>
+        (rzpOrderId && o.razorpayOrderId === rzpOrderId) ||
+        (rzpPaymentId &&
+          db.payments.some((p) => p.razorpayPaymentId === rzpPaymentId && p.orderId === o.id))
+    );
+    if (matched) {
+      order = await getFreshOrderById(matched.id);
+      if (!payment && order) {
+        payment = await findPaymentFresh({ orderId: order.id });
+      }
+    }
+  }
 
   if (!order || !payment) {
     console.warn(
@@ -662,10 +687,11 @@ export async function processRazorpayWebhookAuthoritative(params: {
     if (order.paymentStatus !== 'PAID') {
       order.paymentStatus = 'PAID';
       markedPaidNow = true;
-      const cust = db.customers[order.customerPhone];
+      const cust = (await getFreshCustomer(order.customerPhone)) || db.customers[order.customerPhone];
       if (cust) {
         cust.orderCount += 1;
         cust.totalSpent += order.grandTotal;
+        db.customers[order.customerPhone] = cust;
         await rtdb.ref(`customers/${order.customerPhone}`).set(cust);
       }
       await verifyAndIncrementMenuStockSalesTx(
@@ -695,7 +721,11 @@ export async function processRazorpayWebhookAuthoritative(params: {
     order.updatedAt = nowIso;
     const refundId = refundEntity?.id || `rfnd_wh_${Date.now()}`;
     const refundRupees = amountPaise > 0 ? Math.round(amountPaise / 100) : order.grandTotal;
-    if (!db.refunds.some((r) => r.razorpayRefundId === refundId)) {
+    const existingRefunds = await getRefundsForPaymentFresh(payment.id);
+    if (
+      !existingRefunds.some((r) => r.razorpayRefundId === refundId) &&
+      !db.refunds.some((r) => r.razorpayRefundId === refundId)
+    ) {
       const refRecord: RefundRecord = {
         id: `ref_${Date.now()}`,
         paymentId: payment.id,
@@ -711,6 +741,7 @@ export async function processRazorpayWebhookAuthoritative(params: {
       db.refunds.unshift(refRecord);
       await rtdb.ref(`refunds/${refRecord.id}`).set(refRecord);
     }
+    upsertPaymentInMemory(payment);
     await rtdb.ref(`payments/${payment.id}`).set(payment);
     await settleRefundOrderHistoryAndRemoveActive(order, nowIso, refundRupees);
     refreshHydrationCache();
@@ -720,6 +751,7 @@ export async function processRazorpayWebhookAuthoritative(params: {
     };
   }
 
+  upsertPaymentInMemory(payment);
   await Promise.all([
     rtdb.ref(`payments/${payment.id}`).set(payment),
     syncOrderRealtimePaths(order),
@@ -749,11 +781,10 @@ export async function processRazorpayRefundAuthoritative(params: {
   adminEmail: string;
   customFetch?: typeof fetch;
 }): Promise<{ refund: RefundRecord; order?: OrderRecord; payment: PaymentRecord }> {
-  const { payment, requestedAmountRupees, reason, adminEmail, customFetch = fetch } = params;
+  const { payment: inputPayment, requestedAmountRupees, reason, adminEmail, customFetch = fetch } = params;
+  const payment = (await getFreshPaymentById(inputPayment.id)) || inputPayment;
 
-  const order = db.orders.find(
-    (o) => o.id === payment.orderId || o.orderNumber === payment.orderNumber
-  );
+  const order = await getFreshOrderById(payment.orderId);
   if (!order || (order.status !== 'CANCELLED' && order.status !== 'REJECTED')) {
     throw new Error(
       'Refund not allowed: only cancelled or rejected orders can be refunded. Delivered orders are not refundable here.'
@@ -774,8 +805,13 @@ export async function processRazorpayRefundAuthoritative(params: {
     throw new Error('Only verified/captured online payments can be refunded.');
   }
 
-  const alreadyRefundedRupees = db.refunds
-    .filter((r) => r.paymentId === payment.id && r.status === 'PROCESSED')
+  const freshRefunds = await getRefundsForPaymentFresh(payment.id);
+  const refundMap = new Map<string, RefundRecord>();
+  for (const r of [...freshRefunds, ...db.refunds.filter((r) => r.paymentId === payment.id)]) {
+    refundMap.set(r.id, r);
+  }
+  const alreadyRefundedRupees = Array.from(refundMap.values())
+    .filter((r) => r.status === 'PROCESSED')
     .reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
   const remainingRefundableRupees = Math.max(0, payment.amount - alreadyRefundedRupees);
 
@@ -876,6 +912,7 @@ export async function processRazorpayRefundAuthoritative(params: {
   payment.updatedAt = nowIso;
 
   db.refunds.unshift(refund);
+  upsertPaymentInMemory(payment);
   const rtdb = getRtdb();
   await Promise.all([
     rtdb.ref(`payments/${payment.id}`).set(payment),
@@ -886,7 +923,8 @@ export async function processRazorpayRefundAuthoritative(params: {
     await settleRefundOrderHistoryAndRemoveActive(order, nowIso, newTotalRefunded);
   } else {
     await syncOrderRealtimePaths(order);
-    if (db.orderHistory.some((h) => h.id === order.id)) {
+    const histSnap = await rtdb.ref(`orderHistory/${order.id}`).get();
+    if (histSnap.exists()) {
       await syncCancelledPendingRefundToHistory(order);
     }
   }

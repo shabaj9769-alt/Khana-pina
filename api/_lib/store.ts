@@ -1,3 +1,20 @@
+/**
+ * FIREBASE REALTIME DATABASE READ STRATEGY (Spark Plan Optimized):
+ * - Always skipped during server hydration (never read in full):
+ *   - Write-only / single-key lookup nodes: `rateLimits`, `loginAttempts`,
+ *     `paymentLocks`, `webhookEvents`, `mediaUploads`, `codOtpSessions`.
+ *   - Client-projection / derived nodes: `tracking`, `adminOrders`, `riderOrders`, `publicStatus`.
+ *   - Unbounded historical ledgers: `orderHistory`, `payments`, `refunds`, `reviews`, `auditLogs`.
+ *     These are queried on demand using indexed queries (`limitToLast(200)` + cursor pagination
+ *     for admin panels, or `.equalTo(orderId)` for single-order checks).
+ * - Selectively hydrated during `ensureFirebaseSeeded()` (short in-memory cache):
+ *   - Storefront/config: `settings`, `deliveryZone`, `categories`, `menuItems`, `banners`,
+ *     `homeSections`, `coupons`, `counters/nextOrderSequence`, `deliveryBoys`, `blockedList`.
+ *   - Operational auth/checkout/orders: `adminUsers`, `adminSessions`, `customers`, `couponUsages`,
+ *     `broadcasts`, `orders` (only active unarchived orders live here).
+ * - Order mutations & payment verification NEVER rely on cached `db.orders`/`db.payments`:
+ *   they read the single record fresh (`orders/{id}`, `payments/{id}`, `customers/{phone}`).
+ */
 import crypto from 'crypto';
 import type {
   AboutPageConfig,
@@ -844,7 +861,10 @@ let lastAdminAuthHydratedAt = 0;
 let adminAuthHydratePromise: Promise<void> | null = null;
 let lastExpireStaleAt = 0;
 let lastScheduledCheckAt = 0;
+let lastHourlyCleanupAt = 0;
 const HYDRATION_TTL_MS = 8000;
+const HOURLY_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
+const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 
 export function invalidateHydration(): void {
   lastHydratedAt = 0;
@@ -1159,11 +1179,24 @@ export async function deleteClosedOrdersAtomic(ordersToDelete: OrderRecord[]): P
     }
   }
 
-  const relatedPayments = db.payments.filter(
-    (p) =>
+  const paymentMap = new Map<string, PaymentRecord>();
+  for (const p of db.payments) {
+    if (
       deleteOrderIdSet.has(p.orderId) ||
       (p.razorpayOrderId ? deleteRzpOrderIdSet.has(p.razorpayOrderId) : false)
+    ) {
+      paymentMap.set(p.id, p);
+    }
+  }
+  const queriedPayments = await Promise.all(
+    ordersToDelete.map((ord) => findPaymentsForOrderFresh(ord.id))
   );
+  for (const list of queriedPayments) {
+    for (const p of list) {
+      paymentMap.set(p.id, p);
+    }
+  }
+  const relatedPayments = Array.from(paymentMap.values());
   const deletePaymentIdSet = new Set(relatedPayments.map((p) => p.id));
 
   for (const pay of relatedPayments) {
@@ -1359,10 +1392,12 @@ export async function archiveAndClearClosedOrders(options?: {
   let deletedCancelledCount = 0;
   let refundCleanedCount = 0;
 
-  // B3: Always remove refunded cancelled orders from active db.orders & finalize orderHistory
-  const refundedOrders = db.orders.filter(isRefundSettledCancelledOrder);
+  // B3: Always remove refunded cancelled orders from active orders & finalize orderHistory
+  const freshOrders = await refreshActiveOrdersFresh();
+  const refundedOrders = freshOrders.filter(isRefundSettledCancelledOrder);
   for (const ord of refundedOrders) {
-    const existingRefund = db.refunds.find((r) => r.orderId === ord.id);
+    const orderRefunds = await getRefundsForOrderFresh(ord.id);
+    const existingRefund = orderRefunds[0] || db.refunds.find((r) => r.orderId === ord.id);
     await settleRefundOrderHistoryAndRemoveActive(
       ord,
       existingRefund?.createdAt || ord.updatedAt || nowIso,
@@ -1372,9 +1407,11 @@ export async function archiveAndClearClosedOrders(options?: {
   }
 
   // B2: Ensure online-paid refund-pending cancelled orders exist in orderHistory while waiting in active db.orders
-  const pendingRefundOrders = db.orders.filter(isRefundPendingCancelledOrder);
+  const pendingRefundOrders = freshOrders.filter(isRefundPendingCancelledOrder);
   for (const ord of pendingRefundOrders) {
-    if (!db.orderHistory.some((h) => h.id === ord.id && h.status === 'CANCELLED_REFUND_PENDING')) {
+    const histSnap = await rtdb.ref(`orderHistory/${ord.id}`).get();
+    const histVal = histSnap.val() as OrderHistoryRecord | null;
+    if (!histVal || histVal.status !== 'CANCELLED_REFUND_PENDING') {
       await syncCancelledPendingRefundToHistory(ord);
     }
   }
@@ -1386,7 +1423,7 @@ export async function archiveAndClearClosedOrders(options?: {
       : 'Manual Close';
 
     // A: Archive DELIVERED orders first (write to orderHistory, confirm write, then remove active paths; keep payments/reviews/refunds)
-    const deliveredOrders = db.orders.filter((o) => o.status === 'DELIVERED');
+    const deliveredOrders = freshOrders.filter((o) => o.status === 'DELIVERED');
     for (const ord of deliveredOrders) {
       const snapshot = buildOrderHistorySnapshot(ord, 'DELIVERED', {
         archivedAt: nowIso,
@@ -1748,10 +1785,382 @@ export async function ensureAdminAuthLoaded(): Promise<void> {
   return adminAuthHydratePromise;
 }
 
+export interface PaginatedResult<T> {
+  items: T[];
+  hasMore: boolean;
+  nextCursor: string | null;
+}
+
+export type PaginatedLedgerNode =
+  | 'orderHistory'
+  | 'payments'
+  | 'refunds'
+  | 'reviews'
+  | 'auditLogs';
+
+function encodePaginationCursor(v: string | number | boolean | null, k: string): string {
+  return Buffer.from(JSON.stringify({ v, k }), 'utf8').toString('base64url');
+}
+
+function decodePaginationCursor(
+  cursor?: string | null
+): { v: string | number | boolean | null; k: string } | null {
+  if (!cursor || typeof cursor !== 'string') return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
+    if (parsed && typeof parsed.k === 'string') {
+      return {
+        v: parsed.v === undefined ? null : parsed.v,
+        k: parsed.k,
+      };
+    }
+  } catch {
+    // ignore invalid cursor
+  }
+  return null;
+}
+
+function snapshotToEntries<T>(snap: any): Array<{ key: string; value: T }> {
+  const out: Array<{ key: string; value: T }> = [];
+  if (!snap || !snap.exists()) return out;
+  if (typeof snap.forEach === 'function') {
+    snap.forEach((child: any) => {
+      const k = child.key;
+      const v = child.val();
+      if (k && v !== null && v !== undefined) {
+        out.push({ key: String(k), value: v as T });
+      }
+      return false;
+    });
+    if (out.length > 0) return out;
+  }
+  const raw = snap.val();
+  if (raw && typeof raw === 'object') {
+    for (const [k, v] of Object.entries(raw)) {
+      if (v !== null && v !== undefined) {
+        out.push({ key: k, value: v as T });
+      }
+    }
+  }
+  return out;
+}
+
+export async function queryPaginatedRecords<T extends Record<string, any>>(params: {
+  node: PaginatedLedgerNode;
+  orderByField: string;
+  limit?: number;
+  cursor?: string | null;
+  fallbackSortTimestamp?: (item: T) => number;
+}): Promise<PaginatedResult<T>> {
+  const limit = Math.max(1, Math.min(500, Math.floor(params.limit ?? 200)));
+  const rtdb = getRtdb();
+  let q = rtdb.ref(params.node).orderByChild(params.orderByField);
+  const decoded = decodePaginationCursor(params.cursor);
+  if (decoded) {
+    q = q.endBefore(decoded.v, decoded.k);
+  }
+  q = q.limitToLast(limit + 1);
+
+  const snap = await q.get();
+  const entries = snapshotToEntries<T>(snap);
+
+  // Sort ascending by (orderByField, key) to match Firebase index order cleanly
+  entries.sort((a, b) => {
+    const av = a.value?.[params.orderByField] ?? null;
+    const bv = b.value?.[params.orderByField] ?? null;
+    if (av !== bv) {
+      if (av === null || av === undefined) return -1;
+      if (bv === null || bv === undefined) return 1;
+      if (typeof av === 'number' && typeof bv === 'number') return av - bv;
+      return String(av) < String(bv) ? -1 : 1;
+    }
+    return a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
+  });
+
+  let hasMore = false;
+  let sliced = entries;
+  if (entries.length > limit) {
+    hasMore = true;
+    sliced = entries.slice(entries.length - limit);
+  }
+
+  let nextCursor: string | null = null;
+  if (hasMore && sliced.length > 0) {
+    const oldest = sliced[0];
+    const cursorVal = oldest.value?.[params.orderByField] ?? null;
+    nextCursor = encodePaginationCursor(cursorVal, oldest.key);
+  }
+
+  const newestFirst = sliced.map((e) => e.value).reverse();
+  if (params.fallbackSortTimestamp) {
+    newestFirst.sort((a, b) => params.fallbackSortTimestamp!(b) - params.fallbackSortTimestamp!(a));
+  }
+
+  return {
+    items: newestFirst,
+    hasMore,
+    nextCursor,
+  };
+}
+
+export async function queryPaginatedOrderHistory(
+  limit = 200,
+  cursor?: string | null
+): Promise<PaginatedResult<OrderHistoryRecord>> {
+  return queryPaginatedRecords<OrderHistoryRecord>({
+    node: 'orderHistory',
+    orderByField: 'archivedAt',
+    limit,
+    cursor,
+    fallbackSortTimestamp: (h) => new Date(h.archivedAt || h.placedAt).getTime(),
+  });
+}
+
+export async function queryPaginatedPayments(
+  limit = 200,
+  cursor?: string | null
+): Promise<PaginatedResult<PaymentRecord>> {
+  return queryPaginatedRecords<PaymentRecord>({
+    node: 'payments',
+    orderByField: 'createdAt',
+    limit,
+    cursor,
+    fallbackSortTimestamp: (p) => new Date(p.createdAt).getTime(),
+  });
+}
+
+export async function queryPaginatedRefunds(
+  limit = 200,
+  cursor?: string | null
+): Promise<PaginatedResult<RefundRecord>> {
+  return queryPaginatedRecords<RefundRecord>({
+    node: 'refunds',
+    orderByField: 'createdAt',
+    limit,
+    cursor,
+    fallbackSortTimestamp: (r) => new Date(r.createdAt).getTime(),
+  });
+}
+
+export async function queryPaginatedReviews(
+  limit = 200,
+  cursor?: string | null
+): Promise<PaginatedResult<ReviewRecord>> {
+  return queryPaginatedRecords<ReviewRecord>({
+    node: 'reviews',
+    orderByField: 'createdAt',
+    limit,
+    cursor,
+    fallbackSortTimestamp: (r) => new Date(r.createdAt).getTime(),
+  });
+}
+
+export async function queryPaginatedAuditLogs(
+  limit = 200,
+  cursor?: string | null
+): Promise<PaginatedResult<AuditLogRecord>> {
+  return queryPaginatedRecords<AuditLogRecord>({
+    node: 'auditLogs',
+    orderByField: 'createdAt',
+    limit,
+    cursor,
+    fallbackSortTimestamp: (a) => new Date(a.createdAt).getTime(),
+  });
+}
+
+function upsertOrderInMemory(order: OrderRecord): OrderRecord {
+  const normalized = normalizeOrderRecordFromRtdb(order);
+  const idx = db.orders.findIndex((o) => o.id === normalized.id);
+  if (idx >= 0) {
+    db.orders[idx] = normalized;
+  } else {
+    db.orders.unshift(normalized);
+  }
+  return normalized;
+}
+
+export function upsertPaymentInMemory(payment: PaymentRecord): PaymentRecord {
+  const idx = db.payments.findIndex((p) => p.id === payment.id);
+  if (idx >= 0) {
+    db.payments[idx] = payment;
+  } else {
+    db.payments.unshift(payment);
+  }
+  return payment;
+}
+
+export async function getFreshOrderById(orderId: string): Promise<OrderRecord | null> {
+  if (!orderId) return null;
+  const snap = await getRtdb().ref(`orders/${orderId}`).get();
+  const raw = snap.val() as OrderRecord | null;
+  if (!raw) {
+    db.orders = db.orders.filter((o) => o.id !== orderId);
+    return null;
+  }
+  return upsertOrderInMemory(raw);
+}
+
+export async function findOrderFresh(params: {
+  orderId?: string;
+  trackingToken?: string;
+}): Promise<OrderRecord | null> {
+  if (params.orderId) {
+    return getFreshOrderById(params.orderId);
+  }
+  if (params.trackingToken) {
+    const rtdb = getRtdb();
+    const safeToken = params.trackingToken.replace(/[.#$/[\]]/g, '_');
+    const trkSnap = await rtdb.ref(`tracking/${safeToken}`).get();
+    const proj = trkSnap.val() as PublicTrackingProjection | null;
+    if (proj?.orderId) {
+      const ord = await getFreshOrderById(proj.orderId);
+      if (ord) return ord;
+    }
+    const qSnap = await rtdb
+      .ref('orders')
+      .orderByChild('trackingToken')
+      .equalTo(params.trackingToken)
+      .get();
+    const list = recordToArray<OrderRecord>(qSnap.val());
+    if (list.length > 0) {
+      return upsertOrderInMemory(list[0]);
+    }
+  }
+  return null;
+}
+
+export async function getFreshPaymentById(paymentId: string): Promise<PaymentRecord | null> {
+  if (!paymentId) return null;
+  const snap = await getRtdb().ref(`payments/${paymentId}`).get();
+  const raw = snap.val() as PaymentRecord | null;
+  if (!raw) return null;
+  return upsertPaymentInMemory(raw);
+}
+
+export async function findPaymentsForOrderFresh(orderId: string): Promise<PaymentRecord[]> {
+  if (!orderId) return [];
+  const snap = await getRtdb().ref('payments').orderByChild('orderId').equalTo(orderId).get();
+  const list = recordToArray<PaymentRecord>(snap.val());
+  for (const p of list) {
+    upsertPaymentInMemory(p);
+  }
+  return list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+}
+
+export async function findPaymentFresh(params: {
+  paymentId?: string;
+  orderId?: string;
+  razorpayOrderId?: string;
+}): Promise<PaymentRecord | null> {
+  if (params.paymentId) {
+    const byId = await getFreshPaymentById(params.paymentId);
+    if (byId) return byId;
+  }
+  if (params.orderId) {
+    const list = await findPaymentsForOrderFresh(params.orderId);
+    if (list.length > 0) return list[0];
+  }
+  if (params.razorpayOrderId) {
+    const snap = await getRtdb()
+      .ref('payments')
+      .orderByChild('razorpayOrderId')
+      .equalTo(params.razorpayOrderId)
+      .get();
+    const list = recordToArray<PaymentRecord>(snap.val());
+    if (list.length > 0) {
+      return upsertPaymentInMemory(list[0]);
+    }
+  }
+  return null;
+}
+
+export async function getRefundsForPaymentFresh(paymentId: string): Promise<RefundRecord[]> {
+  if (!paymentId) return [];
+  const snap = await getRtdb().ref('refunds').orderByChild('paymentId').equalTo(paymentId).get();
+  return recordToArray<RefundRecord>(snap.val());
+}
+
+export async function getRefundsForOrderFresh(orderId: string): Promise<RefundRecord[]> {
+  if (!orderId) return [];
+  const snap = await getRtdb().ref('refunds').orderByChild('orderId').equalTo(orderId).get();
+  return recordToArray<RefundRecord>(snap.val());
+}
+
+export async function getReviewForOrderFresh(orderId: string): Promise<ReviewRecord | null> {
+  if (!orderId) return null;
+  const snap = await getRtdb().ref('reviews').orderByChild('orderId').equalTo(orderId).get();
+  const list = recordToArray<ReviewRecord>(snap.val());
+  return list[0] || null;
+}
+
+export async function getFreshCustomer(phone: string): Promise<CustomerRecord | null> {
+  if (!phone) return null;
+  const snap = await getRtdb().ref(`customers/${phone}`).get();
+  const val = snap.val() as CustomerRecord | null;
+  if (val) {
+    db.customers[phone] = val;
+  }
+  return val;
+}
+
+export async function refreshMenuItemsFresh(): Promise<MenuItem[]> {
+  const snap = await getRtdb().ref('menuItems').get();
+  if (snap.exists()) {
+    db.menuItems = recordToArray<MenuItem>(snap.val()).map((m) => ({
+      ...m,
+      imageUrl: normalizeImageUrl(m.imageUrl),
+      variants: recordToArray<ItemVariant>(m.variants),
+      addons: recordToArray<ItemAddon>(m.addons),
+    }));
+  }
+  return db.menuItems;
+}
+
+export async function refreshActiveOrdersFresh(): Promise<OrderRecord[]> {
+  const snap = await getRtdb().ref('orders').get();
+  db.orders = recordToArray<OrderRecord>(snap.val())
+    .map(normalizeOrderRecordFromRtdb)
+    .sort((a, b) => new Date(b.placedAt).getTime() - new Date(a.placedAt).getTime());
+  return db.orders;
+}
+
+export async function refreshCouponsAndUsagesFresh(): Promise<void> {
+  const rtdb = getRtdb();
+  const [couponSnap, usageSnap] = await Promise.all([
+    rtdb.ref('coupons').get(),
+    rtdb.ref('couponUsages').get(),
+  ]);
+  db.coupons = recordToArray<Coupon>(couponSnap.val());
+  db.couponUsages = recordToArray<CouponUsageRecord>(usageSnap.val());
+}
+
+async function isTrackingTokenArchivedExpired(trackingToken: string): Promise<boolean> {
+  const rtdb = getRtdb();
+  const snap = await rtdb
+    .ref('orderHistory')
+    .orderByChild('trackingToken')
+    .equalTo(trackingToken)
+    .get();
+  const matches = recordToArray<OrderHistoryRecord>(snap.val());
+  if (
+    matches.some(
+      (h) => h.status === 'DELIVERED' || h.status === 'CANCELLED_REFUNDED'
+    )
+  ) {
+    return true;
+  }
+  return db.orderHistory.some(
+    (h) =>
+      h.trackingToken === trackingToken &&
+      (h.status === 'DELIVERED' || h.status === 'CANCELLED_REFUNDED')
+  );
+}
+
 export async function getTrackingRecordFast(trackingToken: string): Promise<{
   order: OrderRecord | null;
   payment?: PaymentRecord;
   review?: ReviewRecord;
+  expired?: boolean;
   shopSettings: {
     shopName: string;
     fssaiNumber: string;
@@ -1761,30 +2170,37 @@ export async function getTrackingRecordFast(trackingToken: string): Promise<{
 }> {
   const rtdb = getRtdb();
   const now = Date.now();
+  const buildShopSettings = () => ({
+    shopName: db.settings.shopName,
+    fssaiNumber: db.settings.fssaiNumber,
+    supportPhone: db.settings.supportPhone,
+    shopAddress: db.deliveryZone.shopAddress,
+  });
 
   if (!rtdb.isLiveFirebase || (firebaseSeeded && now - lastHydratedAt < HYDRATION_TTL_MS)) {
     await ensureFirebaseSeeded();
-    let order = db.orders.find((o) => o.trackingToken === trackingToken) || null;
-    if (!order) {
-      const archivedDelivered = db.orderHistory.find(
-        (h) => h.trackingToken === trackingToken && h.status === 'DELIVERED'
-      );
-      if (archivedDelivered) {
-        order = archivedHistoryToReadOnlyOrder(archivedDelivered);
+    const order = await findOrderFresh({ trackingToken });
+    if (order) {
+      if (isRefundSettledCancelledOrder(order)) {
+        return { order: null, expired: true, shopSettings: buildShopSettings() };
       }
+      const [payment, review] = await Promise.all([
+        findPaymentFresh({ orderId: order.id }),
+        getReviewForOrderFresh(order.id),
+      ]);
+      return {
+        order,
+        payment: payment || db.payments.find((p) => p.orderId === order.id),
+        review: review || db.reviews.find((r) => r.orderId === order.id),
+        shopSettings: buildShopSettings(),
+      };
     }
-    const payment = order ? db.payments.find((p) => p.orderId === order.id) : undefined;
-    const review = order ? db.reviews.find((r) => r.orderId === order.id) : undefined;
+
+    const expired = await isTrackingTokenArchivedExpired(trackingToken);
     return {
-      order,
-      payment,
-      review,
-      shopSettings: {
-        shopName: db.settings.shopName,
-        fssaiNumber: db.settings.fssaiNumber,
-        supportPhone: db.settings.supportPhone,
-        shopAddress: db.deliveryZone.shopAddress,
-      },
+      order: null,
+      ...(expired ? { expired: true } : {}),
+      shopSettings: buildShopSettings(),
     };
   }
 
@@ -1797,99 +2213,60 @@ export async function getTrackingRecordFast(trackingToken: string): Promise<{
 
   if (!settingsSnap.exists()) {
     await ensureFirebaseSeeded();
-    let order = db.orders.find((o) => o.trackingToken === trackingToken) || null;
-    if (!order) {
-      const archivedDelivered = db.orderHistory.find(
-        (h) => h.trackingToken === trackingToken && h.status === 'DELIVERED'
-      );
-      if (archivedDelivered) {
-        order = archivedHistoryToReadOnlyOrder(archivedDelivered);
-      }
+  } else {
+    applySettingsAndZoneToDb(settingsSnap.val(), zoneSnap.val());
+  }
+
+  let order: OrderRecord | null = null;
+  if (trackingSnap.exists()) {
+    const projection = trackingSnap.val() as PublicTrackingProjection;
+    if (projection?.orderId) {
+      order = await getFreshOrderById(projection.orderId);
     }
-    const payment = order ? db.payments.find((p) => p.orderId === order.id) : undefined;
-    const review = order ? db.reviews.find((r) => r.orderId === order.id) : undefined;
+  }
+  if (!order) {
+    const qSnap = await rtdb
+      .ref('orders')
+      .orderByChild('trackingToken')
+      .equalTo(trackingToken)
+      .get();
+    const matches = recordToArray<OrderRecord>(qSnap.val());
+    if (matches.length > 0) {
+      order = upsertOrderInMemory(matches[0]);
+    }
+  }
+
+  if (!order) {
+    const expired = await isTrackingTokenArchivedExpired(trackingToken);
     return {
-      order,
-      payment,
-      review,
-      shopSettings: {
-        shopName: db.settings.shopName,
-        fssaiNumber: db.settings.fssaiNumber,
-        supportPhone: db.settings.supportPhone,
-        shopAddress: db.deliveryZone.shopAddress,
-      },
+      order: null,
+      ...(expired ? { expired: true } : {}),
+      shopSettings: buildShopSettings(),
     };
   }
 
-  applySettingsAndZoneToDb(settingsSnap.val(), zoneSnap.val());
-
-  if (!trackingSnap.exists()) {
-    await ensureFirebaseSeeded();
-    let order = db.orders.find((o) => o.trackingToken === trackingToken) || null;
-    if (!order) {
-      const archivedDelivered = db.orderHistory.find(
-        (h) => h.trackingToken === trackingToken && h.status === 'DELIVERED'
-      );
-      if (archivedDelivered) {
-        order = archivedHistoryToReadOnlyOrder(archivedDelivered);
-      }
-    }
-    const payment = order ? db.payments.find((p) => p.orderId === order.id) : undefined;
-    const review = order ? db.reviews.find((r) => r.orderId === order.id) : undefined;
+  if (isRefundSettledCancelledOrder(order)) {
     return {
-      order,
-      payment,
-      review,
-      shopSettings: {
-        shopName: db.settings.shopName,
-        fssaiNumber: db.settings.fssaiNumber,
-        supportPhone: db.settings.supportPhone,
-        shopAddress: db.deliveryZone.shopAddress,
-      },
+      order: null,
+      expired: true,
+      shopSettings: buildShopSettings(),
     };
   }
 
-  const projection = trackingSnap.val() as PublicTrackingProjection;
-  const [orderSnap, reviewsSnap, paymentsSnap] = await Promise.all([
-    rtdb.ref(`orders/${projection.orderId}`).get(),
-    rtdb.ref('reviews').get(),
-    rtdb.ref('payments').get(),
+  const [review, payment] = await Promise.all([
+    getReviewForOrderFresh(order.id),
+    findPaymentFresh({ orderId: order.id }),
   ]);
 
-  const rawOrder = orderSnap.val() as OrderRecord | null;
-  let order = rawOrder ? normalizeOrderRecordFromRtdb(rawOrder) : null;
-  if (order) {
-    const idx = db.orders.findIndex((o) => o.id === order!.id);
-    if (idx >= 0) db.orders[idx] = order;
-    else db.orders.unshift(order);
-  } else {
-    const histSnap = await rtdb.ref(`orderHistory/${projection.orderId}`).get();
-    const histVal = histSnap.val() as OrderHistoryRecord | null;
-    if (histVal && histVal.status === 'DELIVERED' && histVal.trackingToken === trackingToken) {
-      order = archivedHistoryToReadOnlyOrder(histVal);
-    }
-  }
-  const allReviews = recordToArray<ReviewRecord>(reviewsSnap.val());
-  const allPayments = recordToArray<PaymentRecord>(paymentsSnap.val());
-  const review = order ? allReviews.find((r) => r.orderId === order!.id) : undefined;
-  const payment = order ? allPayments.find((p) => p.orderId === order!.id) : undefined;
   if (review && !db.reviews.some((r) => r.id === review.id)) {
     db.reviews.unshift(review);
-  }
-  if (payment && !db.payments.some((p) => p.id === payment.id)) {
-    db.payments.unshift(payment);
   }
 
   return {
     order,
-    payment,
-    review,
-    shopSettings: {
-      shopName: db.settings.shopName,
-      fssaiNumber: db.settings.fssaiNumber,
-      supportPhone: db.settings.supportPhone,
-      shopAddress: db.deliveryZone.shopAddress,
-    },
+    payment: payment || undefined,
+    review: review || undefined,
+    shopSettings: buildShopSettings(),
   };
 }
 
@@ -1921,11 +2298,15 @@ export async function expireSingleOrderIfStale(
     order.cancelledBy = 'auto_expired';
     order.updatedAt = nowIso;
 
-    const pay = payment || db.payments.find((p) => p.orderId === order.id);
+    const pay =
+      payment ||
+      (await findPaymentFresh({ orderId: order.id })) ||
+      db.payments.find((p) => p.orderId === order.id);
     if (pay) {
       pay.status = 'FAILED';
       pay.updatedAt = nowIso;
       await getRtdb().ref(`payments/${pay.id}`).set(pay);
+      upsertPaymentInMemory(pay);
     }
     await syncOrderRealtimePaths(order);
     await notifyTelegramCancelledOrder(order, 'Auto-expired');
@@ -1946,10 +2327,43 @@ export async function ensureFirebaseSeeded(force = false): Promise<DatabaseState
 
   hydratePromise = (async () => {
     const rtdb = getRtdb();
-    const snap = await rtdb.ref().get();
-    const rootVal = snap.val();
+    const [
+      seqSnap,
+      settingsSnap,
+      zoneSnap,
+      catSnap,
+      menuSnap,
+      bannerSnap,
+      secSnap,
+      couponSnap,
+      couponUsageSnap,
+      customersSnap,
+      ordersSnap,
+      deliveryBoysSnap,
+      adminUsersSnap,
+      adminSessionsSnap,
+      blockedSnap,
+      broadcastsSnap,
+    ] = await Promise.all([
+      rtdb.ref('counters/nextOrderSequence').get(),
+      rtdb.ref('settings').get(),
+      rtdb.ref('deliveryZone').get(),
+      rtdb.ref('categories').get(),
+      rtdb.ref('menuItems').get(),
+      rtdb.ref('banners').get(),
+      rtdb.ref('homeSections').get(),
+      rtdb.ref('coupons').get(),
+      rtdb.ref('couponUsages').get(),
+      rtdb.ref('customers').get(),
+      rtdb.ref('orders').get(),
+      rtdb.ref('deliveryBoys').get(),
+      rtdb.ref('adminUsers').get(),
+      rtdb.ref('adminSessions').get(),
+      rtdb.ref('blockedList').get(),
+      rtdb.ref('broadcasts').get(),
+    ]);
 
-    if (!rootVal || !rootVal.settings || !rootVal.menuItems) {
+    if (!settingsSnap.exists() || !menuSnap.exists()) {
       const initial = getInitialDatabaseState({ forSeeding: true });
       const trackingMap: Record<string, PublicTrackingProjection> = {};
       const adminOrdersMap: Record<string, OrderRecord> = {};
@@ -2019,28 +2433,30 @@ export async function ensureFirebaseSeeded(force = false): Promise<DatabaseState
       return db;
     }
 
-    // Hydrate in-memory mirror from Firebase RTDB snapshot
-    db.nextOrderSequence = Number(rootVal.counters?.nextOrderSequence || 1046);
-    applySettingsAndZoneToDb(rootVal.settings, rootVal.deliveryZone);
-    db.categories = recordToArray<Category>(rootVal.categories)
+    // Hydrate ONLY selective operational nodes (never orderHistory, payments, refunds, reviews, auditLogs,
+    // or write-only/derived nodes such as rateLimits, loginAttempts, tracking, adminOrders, riderOrders,
+    // paymentLocks, webhookEvents, mediaUploads, codOtpSessions).
+    db.nextOrderSequence = Number(seqSnap.val() || 1046);
+    applySettingsAndZoneToDb(settingsSnap.val(), zoneSnap.val());
+    db.categories = recordToArray<Category>(catSnap.val())
       .map((c) => ({
         ...c,
         imageUrl: c.imageUrl && c.imageUrl.trim() ? normalizeImageUrl(c.imageUrl) : '',
       }))
       .sort((a, b) => a.sortOrder - b.sortOrder);
-    db.menuItems = recordToArray<MenuItem>(rootVal.menuItems).map((m) => ({
+    db.menuItems = recordToArray<MenuItem>(menuSnap.val()).map((m) => ({
       ...m,
       imageUrl: normalizeImageUrl(m.imageUrl),
       variants: recordToArray<ItemVariant>(m.variants),
       addons: recordToArray<ItemAddon>(m.addons),
     }));
-    db.banners = recordToArray<Banner>(rootVal.banners)
+    db.banners = recordToArray<Banner>(bannerSnap.val())
       .map((b) => ({
         ...b,
         imageUrl: normalizeImageUrl(b.imageUrl),
       }))
       .sort((a, b) => a.sortOrder - b.sortOrder);
-    db.homeSections = recordToArray<HomeSection>(rootVal.homeSections)
+    db.homeSections = recordToArray<HomeSection>(secSnap.val())
       .map((s) => ({
         ...s,
         scheduleStartHour: s.scheduleStartHour ?? null,
@@ -2048,34 +2464,17 @@ export async function ensureFirebaseSeeded(force = false): Promise<DatabaseState
         itemIds: recordToArray<string>(s.itemIds),
       }))
       .sort((a, b) => a.sortOrder - b.sortOrder);
-    db.coupons = recordToArray<Coupon>(rootVal.coupons);
-    db.couponUsages = recordToArray<CouponUsageRecord>(rootVal.couponUsages);
-    db.customers = (rootVal.customers || {}) as Record<string, CustomerRecord>;
-    db.orders = recordToArray<OrderRecord>(rootVal.orders)
+    db.coupons = recordToArray<Coupon>(couponSnap.val());
+    db.couponUsages = recordToArray<CouponUsageRecord>(couponUsageSnap.val());
+    db.customers = (customersSnap.val() || {}) as Record<string, CustomerRecord>;
+    db.orders = recordToArray<OrderRecord>(ordersSnap.val())
       .map(normalizeOrderRecordFromRtdb)
       .sort((a, b) => new Date(b.placedAt).getTime() - new Date(a.placedAt).getTime());
-    db.orderHistory = recordToArray<OrderHistoryRecord>(rootVal.orderHistory).sort(
-      (a, b) =>
-        new Date(b.archivedAt || b.placedAt).getTime() -
-        new Date(a.archivedAt || a.placedAt).getTime()
-    );
-    db.payments = recordToArray<PaymentRecord>(rootVal.payments).sort(
-      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-    );
-    db.refunds = recordToArray<RefundRecord>(rootVal.refunds).sort(
-      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-    );
-    db.deliveryBoys = recordToArray<DeliveryBoy>(rootVal.deliveryBoys);
-    db.reviews = recordToArray<ReviewRecord>(rootVal.reviews).sort(
-      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-    );
-    db.adminUsers = recordToArray<AdminUserRecord>(rootVal.adminUsers);
-    db.adminSessions = recordToArray<AdminSessionRecord>(rootVal.adminSessions);
-    db.auditLogs = recordToArray<AuditLogRecord>(rootVal.auditLogs).sort(
-      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-    );
-    db.blockedList = recordToArray<BlockedEntry>(rootVal.blockedList);
-    db.broadcasts = recordToArray<BroadcastRecord>(rootVal.broadcasts);
+    db.deliveryBoys = recordToArray<DeliveryBoy>(deliveryBoysSnap.val());
+    db.adminUsers = recordToArray<AdminUserRecord>(adminUsersSnap.val());
+    db.adminSessions = recordToArray<AdminSessionRecord>(adminSessionsSnap.val());
+    db.blockedList = recordToArray<BlockedEntry>(blockedSnap.val());
+    db.broadcasts = recordToArray<BroadcastRecord>(broadcastsSnap.val());
 
     firebaseSeeded = true;
     lastHydratedAt = Date.now();
@@ -2106,6 +2505,7 @@ export async function persistFullStateToFirebase(): Promise<void> {
     }
   }
 
+  // Never overwrite paginated ledgers (orderHistory, payments, refunds, reviews, auditLogs) here.
   await rtdb.ref().update({
     'counters/nextOrderSequence': db.nextOrderSequence,
     settings: db.settings,
@@ -2119,14 +2519,9 @@ export async function persistFullStateToFirebase(): Promise<void> {
     couponUsages: arrayToRecordById(db.couponUsages, 'id'),
     customers: db.customers,
     orders: arrayToRecordById(db.orders, 'id'),
-    orderHistory: arrayToRecordById(db.orderHistory, 'id'),
-    payments: arrayToRecordById(db.payments, 'id'),
-    refunds: arrayToRecordById(db.refunds, 'id'),
     deliveryBoys: arrayToRecordById(db.deliveryBoys, 'id'),
-    reviews: arrayToRecordById(db.reviews, 'id'),
     adminUsers: arrayToRecordById(db.adminUsers, 'id'),
     adminSessions: arrayToRecordById(db.adminSessions, 'id'),
-    auditLogs: arrayToRecordById(db.auditLogs, 'id'),
     blockedList: arrayToRecordById(db.blockedList, 'id'),
     broadcasts: arrayToRecordById(db.broadcasts, 'id'),
     tracking: trackingMap,
@@ -2223,6 +2618,127 @@ export async function verifyAndIncrementMenuStockSalesTx(
 // Cancels unpaid Razorpay orders > 10m old when orders are read/verified
 // =============================================================================
 
+export async function cleanupGrowingDataHourly(options?: {
+  force?: boolean;
+  now?: number;
+}): Promise<{
+  skipped?: boolean;
+  removedRateLimits: number;
+  removedLoginAttempts: number;
+  removedCodOtpSessions: number;
+  removedPaymentLocks: number;
+  removedWebhookEvents: number;
+}> {
+  const now = options?.now ?? Date.now();
+  if (!options?.force && now - lastHourlyCleanupAt < HOURLY_CLEANUP_INTERVAL_MS) {
+    return {
+      skipped: true,
+      removedRateLimits: 0,
+      removedLoginAttempts: 0,
+      removedCodOtpSessions: 0,
+      removedPaymentLocks: 0,
+      removedWebhookEvents: 0,
+    };
+  }
+  lastHourlyCleanupAt = now;
+
+  const rtdb = getRtdb();
+  const updates: Record<string, null> = {};
+  const cutoffIso = new Date(now - THIRTY_DAYS_MS).toISOString();
+
+  let removedRateLimits = 0;
+  let removedLoginAttempts = 0;
+  let removedCodOtpSessions = 0;
+  let removedPaymentLocks = 0;
+  let removedWebhookEvents = 0;
+
+  const [rateSnap, loginSnap, codSnap, lockSnap, webhookSnap] = await Promise.all([
+    rtdb.ref('rateLimits').get(),
+    rtdb.ref('loginAttempts').get(),
+    rtdb.ref('codOtpSessions').orderByChild('expiresAt').endAt(now).get(),
+    rtdb.ref('paymentLocks').orderByChild('lockedAt').endAt(cutoffIso).get(),
+    rtdb.ref('webhookEvents').orderByChild('processedAt').endAt(cutoffIso).get(),
+  ]);
+
+  const rateVal = rateSnap.val() as Record<string, Record<string, { expiresAt?: number }>> | null;
+  if (rateVal && typeof rateVal === 'object') {
+    for (const [bucket, entries] of Object.entries(rateVal)) {
+      if (!entries || typeof entries !== 'object') continue;
+      for (const [id, item] of Object.entries(entries)) {
+        if (!item || typeof item.expiresAt !== 'number' || item.expiresAt <= now) {
+          updates[`rateLimits/${bucket}/${id}`] = null;
+          removedRateLimits += 1;
+        }
+      }
+    }
+  }
+
+  const loginVal = loginSnap.val() as Record<string, LoginAttemptBucket> | null;
+  if (loginVal && typeof loginVal === 'object') {
+    for (const [id, bucket] of Object.entries(loginVal)) {
+      if (!bucket || typeof bucket !== 'object') {
+        updates[`loginAttempts/${id}`] = null;
+        removedLoginAttempts += 1;
+        continue;
+      }
+      const lockExpired = !bucket.lockedUntil || bucket.lockedUntil <= now;
+      const latestFailure = Array.isArray(bucket.failures) && bucket.failures.length > 0
+        ? Math.max(...bucket.failures)
+        : 0;
+      const windowExpired =
+        typeof bucket.expiresAt === 'number'
+          ? bucket.expiresAt <= now
+          : now - latestFailure >= LOGIN_WINDOW_MS;
+      if (lockExpired && windowExpired) {
+        updates[`loginAttempts/${id}`] = null;
+        removedLoginAttempts += 1;
+      }
+    }
+  }
+
+  const codVal = codSnap.val() as Record<string, CodOtpSession> | null;
+  if (codVal && typeof codVal === 'object') {
+    for (const [id, session] of Object.entries(codVal)) {
+      if (!session || typeof session.expiresAt !== 'number' || session.expiresAt <= now) {
+        updates[`codOtpSessions/${id}`] = null;
+        removedCodOtpSessions += 1;
+      }
+    }
+  }
+
+  const lockVal = lockSnap.val() as Record<string, { lockedAt?: string }> | null;
+  if (lockVal && typeof lockVal === 'object') {
+    for (const [id, item] of Object.entries(lockVal)) {
+      if (item && item.lockedAt && item.lockedAt <= cutoffIso) {
+        updates[`paymentLocks/${id}`] = null;
+        removedPaymentLocks += 1;
+      }
+    }
+  }
+
+  const webhookVal = webhookSnap.val() as Record<string, { processedAt?: string }> | null;
+  if (webhookVal && typeof webhookVal === 'object') {
+    for (const [id, item] of Object.entries(webhookVal)) {
+      if (item && item.processedAt && item.processedAt <= cutoffIso) {
+        updates[`webhookEvents/${id}`] = null;
+        removedWebhookEvents += 1;
+      }
+    }
+  }
+
+  if (Object.keys(updates).length > 0) {
+    await rtdb.ref().update(updates);
+  }
+
+  return {
+    removedRateLimits,
+    removedLoginAttempts,
+    removedCodOtpSessions,
+    removedPaymentLocks,
+    removedWebhookEvents,
+  };
+}
+
 export async function expireStaleOrdersLazy(options?: {
   minIntervalMs?: number;
 }): Promise<OrderRecord[]> {
@@ -2231,13 +2747,14 @@ export async function expireStaleOrdersLazy(options?: {
     return [];
   }
   await ensureFirebaseSeeded();
+  const activeOrders = await refreshActiveOrdersFresh();
   lastExpireStaleAt = Date.now();
   const now = Date.now();
   const tenMinsMs = 10 * 60 * 1000;
   const expiredOrders: OrderRecord[] = [];
   const rtdb = getRtdb();
 
-  for (const order of db.orders) {
+  for (const order of activeOrders) {
     const placedTimeMs = new Date(order.placedAt).getTime();
     const scheduledTimeMs = order.scheduledFor ? new Date(order.scheduledFor).getTime() : 0;
     const effectiveReferenceTime =
@@ -2264,11 +2781,14 @@ export async function expireStaleOrdersLazy(options?: {
       order.cancelledBy = 'auto_expired';
       order.updatedAt = nowIso;
 
-      const pay = db.payments.find((p) => p.orderId === order.id);
+      const pay =
+        (await findPaymentFresh({ orderId: order.id })) ||
+        db.payments.find((p) => p.orderId === order.id);
       if (pay) {
         pay.status = 'FAILED';
         pay.updatedAt = nowIso;
         await rtdb.ref(`payments/${pay.id}`).set(pay);
+        upsertPaymentInMemory(pay);
       }
 
       await syncOrderRealtimePaths(order);
@@ -2276,6 +2796,10 @@ export async function expireStaleOrdersLazy(options?: {
       expiredOrders.push(order);
     }
   }
+
+  // Hourly cleanup of growing ephemeral nodes (rateLimits, loginAttempts, codOtpSessions, >30d paymentLocks/webhookEvents).
+  // Never touches orderHistory, payments, refunds, or customers.
+  await cleanupGrowingDataHourly({ now });
 
   return expiredOrders;
 }
@@ -2423,11 +2947,15 @@ export async function findVerifiedCodOtpSession(
   codOtpToken?: string
 ): Promise<CodOtpSession | null> {
   if (!codOtpToken) return null;
-  const snap = await getRtdb().ref('codOtpSessions').get();
-  const all = recordToArray<CodOtpSession>(snap.val());
+  const snap = await getRtdb()
+    .ref('codOtpSessions')
+    .orderByChild('verifiedToken')
+    .equalTo(codOtpToken)
+    .get();
+  const matches = recordToArray<CodOtpSession>(snap.val());
   const now = Date.now();
   return (
-    all.find(
+    matches.find(
       (s) =>
         s.phone === phone &&
         s.verifiedToken === codOtpToken &&

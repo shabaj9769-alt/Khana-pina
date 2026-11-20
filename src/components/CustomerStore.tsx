@@ -721,6 +721,10 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
       const data = await res.json();
       if (res.ok) {
         const returnedOrders: OrderRecord[] = data.orders || [];
+        const expiredTokens: string[] = Array.isArray(data.expiredTokens) ? data.expiredTokens : [];
+        if (expiredTokens.length > 0) {
+          guestAuthLayer.removeRecentOrderTokens(expiredTokens);
+        }
         setRecentOrders(returnedOrders);
         if (tokens.length > 0) {
           const returnedTokenSet = new Set(returnedOrders.map((o) => o.trackingToken));
@@ -744,7 +748,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
   const activeRecentTokensKey = useMemo(
     () =>
       recentOrders
-        .filter((o) => !['DELIVERED', 'CANCELLED', 'REJECTED'].includes(o.status) || o.refundPending)
+        .filter((o) => !['DELIVERED', 'CANCELLED', 'REJECTED'].includes(o.status))
         .map((o) => o.trackingToken)
         .join(','),
     [recentOrders]

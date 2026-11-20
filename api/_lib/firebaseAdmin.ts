@@ -2,8 +2,10 @@ import admin from 'firebase-admin';
 import crypto from 'crypto';
 
 export interface RtdbSnapshot {
+  key?: string | null;
   exists(): boolean;
   val(): any;
+  forEach?: (action: (child: RtdbSnapshot) => boolean | void) => boolean;
 }
 
 export interface RtdbTransactionResult {
@@ -11,8 +13,21 @@ export interface RtdbTransactionResult {
   snapshot: RtdbSnapshot;
 }
 
-export interface RtdbRef {
+export type RtdbQueryPrimitive = string | number | boolean | null;
+
+export interface RtdbQuery {
   get(): Promise<RtdbSnapshot>;
+  orderByChild(path: string): RtdbQuery;
+  orderByKey(): RtdbQuery;
+  limitToLast(limit: number): RtdbQuery;
+  limitToFirst(limit: number): RtdbQuery;
+  endBefore(value: RtdbQueryPrimitive, key?: string): RtdbQuery;
+  endAt(value: RtdbQueryPrimitive, key?: string): RtdbQuery;
+  startAt(value: RtdbQueryPrimitive, key?: string): RtdbQuery;
+  equalTo(value: RtdbQueryPrimitive, key?: string): RtdbQuery;
+}
+
+export interface RtdbRef extends RtdbQuery {
   set(value: any): Promise<void>;
   update(values: Record<string, any>): Promise<void>;
   remove(): Promise<void>;
@@ -85,16 +100,234 @@ function setAtPath(root: Record<string, any>, segments: string[], value: any): v
   }
 }
 
-function createMemoryRef(basePath = ''): RtdbRef {
-  const baseSegments = normalizePath(basePath);
+interface MemoryQuerySpec {
+  orderBy: 'none' | 'key' | 'child';
+  orderChildPath?: string;
+  limitFirst?: number;
+  limitLast?: number;
+  startAtVal?: RtdbQueryPrimitive;
+  startAtKey?: string;
+  hasStartAt?: boolean;
+  endAtVal?: RtdbQueryPrimitive;
+  endAtKey?: string;
+  hasEndAt?: boolean;
+  endBeforeVal?: RtdbQueryPrimitive;
+  endBeforeKey?: string;
+  hasEndBefore?: boolean;
+  equalToVal?: RtdbQueryPrimitive;
+  equalToKey?: string;
+  hasEqualTo?: boolean;
+}
+
+function rtdbValueRank(v: any): number {
+  if (v === null || v === undefined) return 0;
+  if (v === false) return 1;
+  if (v === true) return 2;
+  if (typeof v === 'number') return 3;
+  if (typeof v === 'string') return 4;
+  return 5;
+}
+
+function compareRtdbPrimitives(a: any, b: any): number {
+  const rankA = rtdbValueRank(a);
+  const rankB = rtdbValueRank(b);
+  if (rankA !== rankB) return rankA - rankB;
+  if (rankA === 0 || rankA === 1 || rankA === 2) return 0;
+  if (rankA === 3) return a - b;
+  if (rankA === 4) return a < b ? -1 : a > b ? 1 : 0;
+  return 0;
+}
+
+function compareRtdbStrings(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+function readNestedChild(item: any, childPath: string): any {
+  const parts = normalizePath(childPath);
+  let curr = item;
+  for (const p of parts) {
+    if (curr === null || curr === undefined || typeof curr !== 'object') return null;
+    curr = curr[p];
+  }
+  return curr === undefined ? null : curr;
+}
+
+function createMemorySnapshot(entries: Array<[string, any]> | null, rawVal: any, key: string | null): RtdbSnapshot {
+  if (entries === null) {
+    return {
+      key,
+      exists: () => rawVal !== null && rawVal !== undefined,
+      val: () => rawVal,
+      forEach: () => false,
+    };
+  }
+  const obj: Record<string, any> = {};
+  for (const [k, v] of entries) {
+    obj[k] = v;
+  }
+  const hasEntries = entries.length > 0;
+  return {
+    key,
+    exists: () => hasEntries,
+    val: () => (hasEntries ? cloneDeep(obj) : null),
+    forEach: (action) => {
+      for (const [k, v] of entries) {
+        const stop = action({
+          key: k,
+          exists: () => v !== null && v !== undefined,
+          val: () => cloneDeep(v),
+        });
+        if (stop === true) return true;
+      }
+      return false;
+    },
+  };
+}
+
+function createMemoryQuery(baseSegments: string[], spec: MemoryQuerySpec): RtdbQuery {
+  const withSpec = (patch: Partial<MemoryQuerySpec>) =>
+    createMemoryQuery(baseSegments, { ...spec, ...patch });
+
   return {
     async get(): Promise<RtdbSnapshot> {
-      const val = getAtPath(memoryRoot, baseSegments);
-      return {
-        exists: () => val !== null && val !== undefined,
-        val: () => val,
+      const rawVal = getAtPath(memoryRoot, baseSegments);
+      const leafKey = baseSegments.length > 0 ? baseSegments[baseSegments.length - 1] : null;
+      if (rawVal === null || rawVal === undefined || typeof rawVal !== 'object') {
+        return createMemorySnapshot(null, rawVal, leafKey);
+      }
+      if (
+        spec.orderBy === 'none' &&
+        !spec.hasStartAt &&
+        !spec.hasEndAt &&
+        !spec.hasEndBefore &&
+        !spec.hasEqualTo &&
+        spec.limitFirst === undefined &&
+        spec.limitLast === undefined
+      ) {
+        const entries = Object.entries(rawVal);
+        return createMemorySnapshot(entries, rawVal, leafKey);
+      }
+
+      const sortVal = (k: string, v: any): any => {
+        if (spec.orderBy === 'key') return k;
+        if (spec.orderBy === 'child' && spec.orderChildPath) {
+          return readNestedChild(v, spec.orderChildPath);
+        }
+        return null;
       };
+
+      let entries = Object.entries(rawVal).map(([k, v]) => ({
+        key: k,
+        value: v,
+        indexVal: sortVal(k, v),
+      }));
+
+      entries.sort((a, b) => {
+        if (spec.orderBy !== 'none') {
+          const cmp = compareRtdbPrimitives(a.indexVal, b.indexVal);
+          if (cmp !== 0) return cmp;
+        }
+        return compareRtdbStrings(a.key, b.key);
+      });
+
+      if (spec.hasEqualTo) {
+        entries = entries.filter((e) => {
+          const cmp = compareRtdbPrimitives(e.indexVal, spec.equalToVal);
+          if (cmp !== 0) return false;
+          if (spec.equalToKey !== undefined) return e.key === spec.equalToKey;
+          return true;
+        });
+      }
+
+      if (spec.hasStartAt) {
+        entries = entries.filter((e) => {
+          const cmp = compareRtdbPrimitives(e.indexVal, spec.startAtVal);
+          if (cmp > 0) return true;
+          if (cmp < 0) return false;
+          if (spec.startAtKey !== undefined) {
+            return compareRtdbStrings(e.key, spec.startAtKey) >= 0;
+          }
+          return true;
+        });
+      }
+
+      if (spec.hasEndAt) {
+        entries = entries.filter((e) => {
+          const cmp = compareRtdbPrimitives(e.indexVal, spec.endAtVal);
+          if (cmp < 0) return true;
+          if (cmp > 0) return false;
+          if (spec.endAtKey !== undefined) {
+            return compareRtdbStrings(e.key, spec.endAtKey) <= 0;
+          }
+          return true;
+        });
+      }
+
+      if (spec.hasEndBefore) {
+        entries = entries.filter((e) => {
+          const cmp = compareRtdbPrimitives(e.indexVal, spec.endBeforeVal);
+          if (cmp < 0) return true;
+          if (cmp > 0) return false;
+          if (spec.endBeforeKey !== undefined) {
+            return compareRtdbStrings(e.key, spec.endBeforeKey) < 0;
+          }
+          return false;
+        });
+      }
+
+      if (spec.limitFirst !== undefined) {
+        entries = entries.slice(0, Math.max(0, spec.limitFirst));
+      } else if (spec.limitLast !== undefined) {
+        const n = Math.max(0, spec.limitLast);
+        entries = n === 0 ? [] : entries.slice(-n);
+      }
+
+      return createMemorySnapshot(
+        entries.map((e) => [e.key, e.value]),
+        null,
+        leafKey
+      );
     },
+    orderByChild(path: string): RtdbQuery {
+      return withSpec({ orderBy: 'child', orderChildPath: path });
+    },
+    orderByKey(): RtdbQuery {
+      return withSpec({ orderBy: 'key', orderChildPath: undefined });
+    },
+    limitToLast(limit: number): RtdbQuery {
+      return withSpec({ limitLast: limit, limitFirst: undefined });
+    },
+    limitToFirst(limit: number): RtdbQuery {
+      return withSpec({ limitFirst: limit, limitLast: undefined });
+    },
+    endBefore(value: RtdbQueryPrimitive, key?: string): RtdbQuery {
+      return withSpec({ hasEndBefore: true, endBeforeVal: value, endBeforeKey: key });
+    },
+    endAt(value: RtdbQueryPrimitive, key?: string): RtdbQuery {
+      return withSpec({ hasEndAt: true, endAtVal: value, endAtKey: key });
+    },
+    startAt(value: RtdbQueryPrimitive, key?: string): RtdbQuery {
+      return withSpec({ hasStartAt: true, startAtVal: value, startAtKey: key });
+    },
+    equalTo(value: RtdbQueryPrimitive, key?: string): RtdbQuery {
+      return withSpec({ hasEqualTo: true, equalToVal: value, equalToKey: key });
+    },
+  };
+}
+
+function createMemoryRef(basePath = ''): RtdbRef {
+  const baseSegments = normalizePath(basePath);
+  const query = createMemoryQuery(baseSegments, { orderBy: 'none' });
+  return {
+    get: () => query.get(),
+    orderByChild: (path: string) => query.orderByChild(path),
+    orderByKey: () => query.orderByKey(),
+    limitToLast: (limit: number) => query.limitToLast(limit),
+    limitToFirst: (limit: number) => query.limitToFirst(limit),
+    endBefore: (value: RtdbQueryPrimitive, key?: string) => query.endBefore(value, key),
+    endAt: (value: RtdbQueryPrimitive, key?: string) => query.endAt(value, key),
+    startAt: (value: RtdbQueryPrimitive, key?: string) => query.startAt(value, key),
+    equalTo: (value: RtdbQueryPrimitive, key?: string) => query.equalTo(value, key),
     async set(value: any): Promise<void> {
       setAtPath(memoryRoot, baseSegments, value);
     },
@@ -191,7 +424,6 @@ export function getFirebaseAdminApp(): admin.app.App | null {
   initializedApp = admin.initializeApp({
     credential,
     databaseURL: dbUrl,
-    storageBucket: process.env.FIREBASE_STORAGE_BUCKET || undefined,
   });
   return initializedApp;
 }
@@ -206,9 +438,28 @@ export function stripUndefined<T = any>(value: T): T {
   }
 }
 
-function wrapLiveRef(rawRef: admin.database.Reference): RtdbRef {
+function wrapLiveQuery(rawQuery: admin.database.Query): RtdbQuery {
   return {
-    get: () => rawRef.get() as Promise<RtdbSnapshot>,
+    get: () => rawQuery.get() as unknown as Promise<RtdbSnapshot>,
+    orderByChild: (path: string) => wrapLiveQuery(rawQuery.orderByChild(path)),
+    orderByKey: () => wrapLiveQuery(rawQuery.orderByKey()),
+    limitToLast: (limit: number) => wrapLiveQuery(rawQuery.limitToLast(limit)),
+    limitToFirst: (limit: number) => wrapLiveQuery(rawQuery.limitToFirst(limit)),
+    endBefore: (value: RtdbQueryPrimitive, key?: string) =>
+      wrapLiveQuery(key !== undefined ? rawQuery.endBefore(value, key) : rawQuery.endBefore(value)),
+    endAt: (value: RtdbQueryPrimitive, key?: string) =>
+      wrapLiveQuery(key !== undefined ? rawQuery.endAt(value, key) : rawQuery.endAt(value)),
+    startAt: (value: RtdbQueryPrimitive, key?: string) =>
+      wrapLiveQuery(key !== undefined ? rawQuery.startAt(value, key) : rawQuery.startAt(value)),
+    equalTo: (value: RtdbQueryPrimitive, key?: string) =>
+      wrapLiveQuery(key !== undefined ? rawQuery.equalTo(value, key) : rawQuery.equalTo(value)),
+  };
+}
+
+function wrapLiveRef(rawRef: admin.database.Reference): RtdbRef {
+  const query = wrapLiveQuery(rawRef);
+  return {
+    ...query,
     set: (value: any) => rawRef.set(stripUndefined(value)),
     update: (values: Record<string, any>) => rawRef.update(stripUndefined(values)),
     remove: () => rawRef.remove(),
@@ -222,7 +473,7 @@ function wrapLiveRef(rawRef: admin.database.Reference): RtdbRef {
       });
       return {
         committed: res.committed,
-        snapshot: res.snapshot as RtdbSnapshot,
+        snapshot: res.snapshot as unknown as RtdbSnapshot,
       };
     },
     child: (subPath: string): RtdbRef => wrapLiveRef(rawRef.child(subPath)),
@@ -267,68 +518,26 @@ export async function uploadImageToCloudOrStorage(params: {
   ext: string;
   dataUrl: string;
 }): Promise<string> {
-  const { buffer, filename, mimeType, ext, dataUrl } = params;
+  const { dataUrl } = params;
 
-  // 1. Optional Cloudinary support if configured
-  const cloudinaryUrl = process.env.CLOUDINARY_UPLOAD_URL;
-  const cloudinaryPreset = process.env.CLOUDINARY_UPLOAD_PRESET;
-  if (cloudinaryUrl && cloudinaryPreset) {
-    const form = new URLSearchParams();
-    form.append('file', dataUrl);
-    form.append('upload_preset', cloudinaryPreset);
-    const resp = await fetch(cloudinaryUrl, { method: 'POST', body: form });
-    if (!resp.ok) {
-      throw new Error('Cloudinary image upload failed');
-    }
-    const json = (await resp.json()) as { secure_url?: string };
-    if (json.secure_url) return json.secure_url;
+  // Cloudinary is the primary image host (Firebase Storage is unavailable on Spark plan,
+  // and base64 blobs are never stored in Realtime Database).
+  const cloudinaryUrl = (process.env.CLOUDINARY_UPLOAD_URL || '').trim();
+  const cloudinaryPreset = (process.env.CLOUDINARY_UPLOAD_PRESET || '').trim();
+  if (!cloudinaryUrl || !cloudinaryPreset) {
+    throw new Error('Image upload is not configured. Paste an image URL instead.');
   }
 
-  // 2. Firebase Storage via Firebase Admin SDK
-  const app = getFirebaseAdminApp();
-  if (app) {
-    try {
-      const bucketName =
-        process.env.FIREBASE_STORAGE_BUCKET ||
-        `${(app.options.credential as any)?.projectId || 'khana-pina'}.appspot.com`;
-      const bucket = admin.storage(app).bucket(bucketName);
-      const safeBase =
-        String(filename || 'asset')
-          .replace(/[^a-zA-Z0-9_-]/g, '')
-          .slice(0, 32) || 'img';
-      const storagePath = `uploads/${safeBase}_${Date.now()}.${ext}`;
-      const downloadToken = crypto.randomUUID();
-      const file = bucket.file(storagePath);
-      await file.save(buffer, {
-        metadata: {
-          contentType: mimeType,
-          metadata: {
-            firebaseStorageDownloadTokens: downloadToken,
-          },
-        },
-      });
-      const encodedPath = encodeURIComponent(storagePath);
-      return `https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o/${encodedPath}?alt=media&token=${downloadToken}`;
-    } catch (err) {
-      if (isStrictProductionOrLiveMode()) {
-        throw new Error(
-          `Firebase Storage upload failed: ${err instanceof Error ? err.message : 'Unknown error'}`
-        );
-      }
-    }
+  const form = new URLSearchParams();
+  form.append('file', dataUrl);
+  form.append('upload_preset', cloudinaryPreset);
+  const resp = await fetch(cloudinaryUrl, { method: 'POST', body: form });
+  if (!resp.ok) {
+    throw new Error('Cloudinary image upload failed');
   }
-
-  // 3. Store in Firebase RTDB media node and return dataUrl so Vercel serverless never touches disk
-  const mediaId = `med_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
-  await getRtdb()
-    .ref(`mediaUploads/${mediaId}`)
-    .set({
-      id: mediaId,
-      filename,
-      mimeType,
-      sizeBytes: buffer.byteLength,
-      dataUrl,
-      createdAt: new Date().toISOString(),
-    });
-  return dataUrl;
+  const json = (await resp.json()) as { secure_url?: string };
+  if (!json.secure_url) {
+    throw new Error('Cloudinary image upload failed');
+  }
+  return json.secure_url;
 }

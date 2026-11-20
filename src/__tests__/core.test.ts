@@ -26,11 +26,13 @@ import { getRtdb } from '../../api/_lib/firebaseAdmin';
 import {
   archiveAndClearClosedOrders,
   buildPublicTrackingProjection,
+  cleanupGrowingDataHourly,
   computeEffectiveShopOpen,
   formatTime24To12,
   getInitialDatabaseState,
   getKolkataDateKey,
   isOrderVisibleToKitchen,
+  queryPaginatedOrderHistory,
   syncCancelledPendingRefundToHistory,
 } from '../../api/_lib/store';
 import adminHandler from '../../api/admin';
@@ -1373,8 +1375,9 @@ describe('Khana Pina Core & Bypass-Proof Razorpay Suite', () => {
     }
   });
 
-  it('27. GET /api/track/:token returns archived DELIVERED orders read-only and 404 for cancelled/missing orders', async () => {
+  it('27. GET /api/track/:token keeps same-day DELIVERED active, expires after archive (410, zero PII), and keeps CANCELLED_REFUND_PENDING open', async () => {
     const orderId = `ord_track_arch_${Date.now()}`;
+    const pendingOrderId = `ord_track_pend_${Date.now()}`;
     const { order } = await seedTestOrderAndPayment({
       orderId,
       orderNumber: 'AAN-9604',
@@ -1386,9 +1389,19 @@ describe('Khana Pina Core & Bypass-Proof Razorpay Suite', () => {
     order.deliveredAt = new Date().toISOString();
     await syncOrderRealtimePaths(order);
 
-    const prevLastArchived = db.settings.lastArchivedDate;
-    db.settings.lastArchivedDate = '';
-    await archiveAndClearClosedOrders();
+    const { order: pendingOrder } = await seedTestOrderAndPayment({
+      orderId: pendingOrderId,
+      orderNumber: 'AAN-9605',
+      razorpayOrderId: `rzp_${pendingOrderId}`,
+      grandTotal: 450,
+      status: 'CANCELLED',
+      paymentStatus: 'PAID',
+    });
+    pendingOrder.refundPending = true;
+    pendingOrder.cancelReason = 'Kitchen item out of stock';
+    pendingOrder.cancelledAt = new Date().toISOString();
+    await syncOrderRealtimePaths(pendingOrder);
+    await syncCancelledPendingRefundToHistory(pendingOrder);
 
     const callTrack = async (token: string) => {
       let statusCode = 200;
@@ -1418,18 +1431,51 @@ describe('Khana Pina Core & Bypass-Proof Razorpay Suite', () => {
       return { statusCode, jsonBody };
     };
 
+    const prevLastArchived = db.settings.lastArchivedDate;
     try {
+      // Before daily archive: same-day DELIVERED order link still works and shows bill
+      const beforeArchiveTrack = await callTrack(order.trackingToken);
+      expect(beforeArchiveTrack.statusCode).toBe(200);
+      expect(beforeArchiveTrack.jsonBody.order.orderNumber).toBe('AAN-9604');
+
+      // Run daily archive
+      db.settings.lastArchivedDate = '';
+      await archiveAndClearClosedOrders();
+
+      // After daily archive: DELIVERED order link expires with 410 and ZERO customer/order PII
       const archivedTrack = await callTrack(order.trackingToken);
-      expect(archivedTrack.statusCode).toBe(200);
-      expect(archivedTrack.jsonBody.order.orderNumber).toBe('AAN-9604');
-      expect(archivedTrack.jsonBody.order.isArchived).toBe(true);
+      expect(archivedTrack.statusCode).toBe(410);
+      expect(archivedTrack.jsonBody.expired).toBe(true);
+      expect(archivedTrack.jsonBody.error).toBe(
+        'This order is completed and the link has expired.'
+      );
+      expect(archivedTrack.jsonBody.order).toBeUndefined();
+      expect(JSON.stringify(archivedTrack.jsonBody)).not.toContain('Test Guest');
+      expect(JSON.stringify(archivedTrack.jsonBody)).not.toContain('9876543210');
+
+      // Archived record in orderHistory stays completely intact for Admin
+      expect(db.orderHistory.some((h) => h.id === order.id && h.customerName === 'Test Guest')).toBe(
+        true
+      );
+
+      // CANCELLED_REFUND_PENDING link still works after daily archive until refund is settled
+      const pendingTrack = await callTrack(pendingOrder.trackingToken);
+      expect(pendingTrack.statusCode).toBe(200);
+      expect(pendingTrack.jsonBody.order.orderNumber).toBe('AAN-9605');
+      expect(pendingTrack.jsonBody.order.refundPending).toBe(true);
 
       const missingTrack = await callTrack('trk_missing_or_cancelled_999');
       expect(missingTrack.statusCode).toBe(404);
       expect(missingTrack.jsonBody.error).toBe('Order not found or cancelled');
     } finally {
       db.settings.lastArchivedDate = prevLastArchived;
-      db.orderHistory = db.orderHistory.filter((h) => h.id !== order.id);
+      db.orderHistory = db.orderHistory.filter(
+        (h) => h.id !== order.id && h.id !== pendingOrder.id
+      );
+      db.orders = db.orders.filter((o) => o.id !== pendingOrder.id);
+      await getRtdb().ref(`orderHistory/${order.id}`).remove();
+      await getRtdb().ref(`orderHistory/${pendingOrder.id}`).remove();
+      await getRtdb().ref(`orders/${pendingOrder.id}`).remove();
     }
   });
 
@@ -1568,9 +1614,10 @@ describe('Khana Pina Core & Bypass-Proof Razorpay Suite', () => {
     // Once switched to COD, order becomes visible to kitchen
     expect(isOrderVisibleToKitchen(jsonBody.order)).toBe(true);
 
-    // Now test retry on an already PAID order
+    // Now test retry on an already PAID order (persisted to RTDB since retry reads fresh from RTDB)
     jsonBody.order.paymentStatus = 'PAID';
     jsonBody.order.paymentMethod = 'RAZORPAY';
+    await syncOrderRealtimePaths(jsonBody.order);
 
     let retryStatus = 200;
     let retryBody: any = null;
@@ -1599,6 +1646,586 @@ describe('Khana Pina Core & Bypass-Proof Razorpay Suite', () => {
     expect(retryStatus).toBe(400);
     expect(retryBody.error).toBe('Order has already been paid online.');
   });
+
+  it('31. Paginated ledger queries & /api/admin/bootstrap + /api/admin/history return newest records first with cursor pagination', async () => {
+    await ensureFirebaseSeeded();
+    const owner = db.adminUsers.find((u) => u.role === 'owner')!;
+    const accessToken = signJwt(
+      {
+        sub: owner.id,
+        email: owner.email,
+        role: owner.role,
+        name: owner.name,
+        tv: owner.tokenVersion,
+        sid: db.adminSessions[0]?.id || 'sess_seed',
+        type: 'access',
+      },
+      ACCESS_TTL_SEC
+    );
+
+    const rtdb = getRtdb();
+    const baseMs = Date.now() + 60_000;
+    const histIds = ['hist_p_1', 'hist_p_2', 'hist_p_3', 'hist_p_4', 'hist_p_5'];
+    for (let i = 0; i < histIds.length; i++) {
+      await rtdb.ref(`orderHistory/${histIds[i]}`).set({
+        id: histIds[i],
+        orderId: histIds[i],
+        orderNumber: `AAN-P${i + 1}`,
+        trackingToken: `trk_${histIds[i]}`,
+        status: 'DELIVERED',
+        items: [],
+        paymentMethod: 'COD',
+        paymentStatus: 'PAID',
+        deliveryBoyId: null,
+        placedAt: new Date(baseMs + i * 1000).toISOString(),
+        archivedAt: new Date(baseMs + i * 1000).toISOString(),
+        customerName: `Guest ${i + 1}`,
+        customerPhone: '9876543210',
+        deliveryAddress: 'Test Address',
+        itemTotal: 200,
+        deliveryFee: 40,
+        gstAmount: 0,
+        discountAmount: 0,
+        grandTotal: 240,
+        dateKeyIST: getKolkataDateKey(),
+      });
+    }
+
+    try {
+      const page1 = await queryPaginatedOrderHistory(2, null);
+      expect(page1.items.length).toBe(2);
+      expect(page1.items[0].id).toBe('hist_p_5');
+      expect(page1.items[1].id).toBe('hist_p_4');
+      expect(page1.hasMore).toBe(true);
+      expect(page1.nextCursor).toBeTruthy();
+
+      const page2 = await queryPaginatedOrderHistory(2, page1.nextCursor);
+      expect(page2.items.length).toBe(2);
+      expect(page2.items[0].id).toBe('hist_p_3');
+      expect(page2.items[1].id).toBe('hist_p_2');
+
+      const callAdminGet = async (urlPath: string) => {
+        let statusCode = 200;
+        let jsonBody: any = null;
+        const req = {
+          method: 'GET',
+          originalUrl: urlPath,
+          url: urlPath,
+          query: Object.fromEntries(new URL(`http://localhost${urlPath}`).searchParams.entries()),
+          headers: { authorization: `Bearer ${accessToken}` },
+          socket: { remoteAddress: '127.0.0.1' },
+        } as any;
+        const res = {
+          setHeader: () => res,
+          status: (code: number) => {
+            statusCode = code;
+            return res;
+          },
+          json: (payload: any) => {
+            jsonBody = payload;
+            return res;
+          },
+          end: () => res,
+        } as any;
+        await adminHandler(req, res);
+        return { statusCode, jsonBody };
+      };
+
+      const bootRes = await callAdminGet('/api/admin/bootstrap');
+      expect(bootRes.statusCode).toBe(200);
+      expect(Array.isArray(bootRes.jsonBody.orders)).toBe(true);
+      expect(Array.isArray(bootRes.jsonBody.orderHistory)).toBe(true);
+      expect(Array.isArray(bootRes.jsonBody.payments)).toBe(true);
+      expect(Array.isArray(bootRes.jsonBody.auditLogs)).toBe(true);
+      expect(bootRes.jsonBody.pagination?.orderHistory).toBeDefined();
+
+      const histApiPage = await callAdminGet('/api/admin/history?limit=2');
+      expect(histApiPage.statusCode).toBe(200);
+      expect(histApiPage.jsonBody.orderHistory.length).toBe(2);
+      expect(histApiPage.jsonBody.hasMore).toBe(true);
+
+      const auditApiPage = await callAdminGet('/api/admin/audit-logs?limit=5');
+      expect(auditApiPage.statusCode).toBe(200);
+      expect(Array.isArray(auditApiPage.jsonBody.auditLogs)).toBe(true);
+    } finally {
+      for (const hid of histIds) {
+        await rtdb.ref(`orderHistory/${hid}`).remove();
+      }
+    }
+  });
+
+  it('32. cleanupGrowingDataHourly deletes expired rateLimits/loginAttempts & >30d paymentLocks/webhookEvents without deleting ledgers', async () => {
+    await ensureFirebaseSeeded();
+    const rtdb = getRtdb();
+    const now = Date.now();
+    const oldIso = new Date(now - 31 * 24 * 60 * 60 * 1000).toISOString();
+    const freshIso = new Date(now - 2 * 24 * 60 * 60 * 1000).toISOString();
+
+    await Promise.all([
+      rtdb.ref('rateLimits/orders/expired_key').set({ count: 3, expiresAt: now - 5000 }),
+      rtdb.ref('rateLimits/orders/active_key').set({ count: 1, expiresAt: now + 60000 }),
+      rtdb.ref('loginAttempts/expired_att').set({ failures: [now - 100000], expiresAt: now - 1000 }),
+      rtdb.ref('loginAttempts/locked_att').set({ failures: [now - 1000], lockedUntil: now + 60000, expiresAt: now + 60000 }),
+      rtdb.ref('paymentLocks/old_lock').set({ paymentId: 'old', lockedAt: oldIso }),
+      rtdb.ref('paymentLocks/fresh_lock').set({ paymentId: 'fresh', lockedAt: freshIso }),
+      rtdb.ref('webhookEvents/old_evt').set({ id: 'old_evt', processedAt: oldIso }),
+      rtdb.ref('webhookEvents/fresh_evt').set({ id: 'fresh_evt', processedAt: freshIso }),
+      rtdb.ref('orderHistory/preserve_hist_1').set({ id: 'preserve_hist_1', status: 'DELIVERED', archivedAt: oldIso }),
+    ]);
+
+    try {
+      await cleanupGrowingDataHourly({ force: true, now });
+
+      const [
+        expRl,
+        actRl,
+        expLa,
+        lockLa,
+        oldLock,
+        freshLock,
+        oldEvt,
+        freshEvt,
+        preservedHist,
+      ] = await Promise.all([
+        rtdb.ref('rateLimits/orders/expired_key').get(),
+        rtdb.ref('rateLimits/orders/active_key').get(),
+        rtdb.ref('loginAttempts/expired_att').get(),
+        rtdb.ref('loginAttempts/locked_att').get(),
+        rtdb.ref('paymentLocks/old_lock').get(),
+        rtdb.ref('paymentLocks/fresh_lock').get(),
+        rtdb.ref('webhookEvents/old_evt').get(),
+        rtdb.ref('webhookEvents/fresh_evt').get(),
+        rtdb.ref('orderHistory/preserve_hist_1').get(),
+      ]);
+
+      expect(expRl.exists()).toBe(false);
+      expect(actRl.exists()).toBe(true);
+      expect(expLa.exists()).toBe(false);
+      expect(lockLa.exists()).toBe(true);
+      expect(oldLock.exists()).toBe(false);
+      expect(freshLock.exists()).toBe(true);
+      expect(oldEvt.exists()).toBe(false);
+      expect(freshEvt.exists()).toBe(true);
+      expect(preservedHist.exists()).toBe(true);
+    } finally {
+      await Promise.all([
+        rtdb.ref('rateLimits/orders/active_key').remove(),
+        rtdb.ref('loginAttempts/locked_att').remove(),
+        rtdb.ref('paymentLocks/fresh_lock').remove(),
+        rtdb.ref('webhookEvents/fresh_evt').remove(),
+        rtdb.ref('orderHistory/preserve_hist_1').remove(),
+      ]);
+    }
+  });
+
+  it('33. Rider panel removes archived order details after shop close while keeping today KPI stats via orderHistory', async () => {
+    await ensureFirebaseSeeded();
+    const rider = db.deliveryBoys.find((r) => r.isActive && !r.isDeleted)!;
+    rider.passwordHash = hashPasswordScrypt('riderpass123');
+    const orderId = `ord_rider_arch_${Date.now()}`;
+    const { order } = await seedTestOrderAndPayment({
+      orderId,
+      orderNumber: 'AAN-9701',
+      razorpayOrderId: '',
+      grandTotal: 425,
+      status: 'DELIVERED',
+      paymentStatus: 'PAID',
+    });
+    order.paymentMethod = 'COD';
+    order.deliveryBoyId = rider.id;
+    order.deliveryBoyName = rider.name;
+    order.deliveryBoyPhone = rider.phone;
+    order.deliveredAt = new Date().toISOString();
+    await syncOrderRealtimePaths(order);
+
+    const prevLastArchived = db.settings.lastArchivedDate;
+    db.settings.lastArchivedDate = '';
+    await archiveAndClearClosedOrders();
+
+    // Login as rider
+    let loginCode = 200;
+    let loginBody: any = null;
+    await riderHandler(
+      {
+        method: 'POST',
+        originalUrl: '/api/rider/login',
+        url: '/api/rider/login',
+        headers: {},
+        body: { phone: rider.phone, password: 'riderpass123' },
+        socket: { remoteAddress: '127.0.0.1' },
+      } as any,
+      {
+        setHeader: () => ({}),
+        status: (c: number) => {
+          loginCode = c;
+          return { json: (b: any) => (loginBody = b) };
+        },
+        json: (b: any) => {
+          loginBody = b;
+        },
+        end: () => {},
+      } as any
+    );
+
+    try {
+      expect(loginCode).toBe(200);
+      // Archived order must NOT appear in rider's orders list (no old PII/OTP)
+      expect(loginBody.orders.some((o: any) => o.id === order.id)).toBe(false);
+      // Today's stats remain accurate from orderHistory
+      expect(loginBody.archivedTodayStats.deliveriesCount).toBeGreaterThanOrEqual(1);
+      expect(loginBody.archivedTodayStats.cashCollected).toBeGreaterThanOrEqual(425);
+    } finally {
+      db.settings.lastArchivedDate = prevLastArchived;
+      db.orderHistory = db.orderHistory.filter((h) => h.id !== order.id);
+    }
+  });
+
+  it('34. Admin upload-image uses Cloudinary only (returns clear URL fallback error if unconfigured) and never writes mediaUploads', async () => {
+    await ensureFirebaseSeeded();
+    const owner = db.adminUsers.find((u) => u.role === 'owner')!;
+    const accessToken = signJwt(
+      {
+        sub: owner.id,
+        email: owner.email,
+        role: owner.role,
+        name: owner.name,
+        tv: owner.tokenVersion,
+        sid: db.adminSessions[0]?.id || 'sess_seed',
+        type: 'access',
+      },
+      ACCESS_TTL_SEC
+    );
+
+    const prevUrl = process.env.CLOUDINARY_UPLOAD_URL;
+    const prevPreset = process.env.CLOUDINARY_UPLOAD_PRESET;
+    delete process.env.CLOUDINARY_UPLOAD_URL;
+    delete process.env.CLOUDINARY_UPLOAD_PRESET;
+
+    const callUpload = async () => {
+      let statusCode = 200;
+      let jsonBody: any = null;
+      await adminHandler(
+        {
+          method: 'POST',
+          originalUrl: '/api/admin/upload-image',
+          url: '/api/admin/upload-image',
+          headers: { authorization: `Bearer ${accessToken}` },
+          body: { dataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', filename: 'dish' },
+          socket: { remoteAddress: '127.0.0.1' },
+        } as any,
+        {
+          setHeader: () => ({}),
+          status: (c: number) => {
+            statusCode = c;
+            return { json: (b: any) => (jsonBody = b) };
+          },
+          json: (b: any) => {
+            jsonBody = b;
+          },
+          end: () => {},
+        } as any
+      );
+      return { statusCode, jsonBody };
+    };
+
+    try {
+      const unconf = await callUpload();
+      expect(unconf.statusCode).toBe(400);
+      expect(unconf.jsonBody.error).toBe(
+        'Image upload is not configured. Paste an image URL instead.'
+      );
+
+      // Configured Cloudinary path
+      process.env.CLOUDINARY_UPLOAD_URL = 'https://api.cloudinary.com/v1_1/demo/image/upload';
+      process.env.CLOUDINARY_UPLOAD_PRESET = 'unsigned_preset';
+      const origFetch = globalThis.fetch;
+      globalThis.fetch = (async () =>
+        ({
+          ok: true,
+          json: async () => ({
+            secure_url: 'https://res.cloudinary.com/demo/image/upload/v1/dish.webp',
+          }),
+        }) as any) as any;
+
+      try {
+        const conf = await callUpload();
+        expect(conf.statusCode).toBe(200);
+        expect(conf.jsonBody.url).toBe(
+          'https://res.cloudinary.com/demo/image/upload/v1/dish.webp'
+        );
+        const mediaSnap = await getRtdb().ref('mediaUploads').get();
+        expect(mediaSnap.exists()).toBe(false);
+      } finally {
+        globalThis.fetch = origFetch;
+      }
+    } finally {
+      if (prevUrl === undefined) delete process.env.CLOUDINARY_UPLOAD_URL;
+      else process.env.CLOUDINARY_UPLOAD_URL = prevUrl;
+      if (prevPreset === undefined) delete process.env.CLOUDINARY_UPLOAD_PRESET;
+      else process.env.CLOUDINARY_UPLOAD_PRESET = prevPreset;
+    }
+  });
+
+  it('35. Admin order mutation reads fresh order state from RTDB instead of relying on stale in-memory cache', async () => {
+    await ensureFirebaseSeeded();
+    const owner = db.adminUsers.find((u) => u.role === 'owner')!;
+    const accessToken = signJwt(
+      {
+        sub: owner.id,
+        email: owner.email,
+        role: owner.role,
+        name: owner.name,
+        tv: owner.tokenVersion,
+        sid: db.adminSessions[0]?.id || 'sess_seed',
+        type: 'access',
+      },
+      ACCESS_TTL_SEC
+    );
+
+    const orderId = `ord_fresh_mut_${Date.now()}`;
+    const { order } = await seedTestOrderAndPayment({
+      orderId,
+      orderNumber: 'AAN-9702',
+      razorpayOrderId: '',
+      grandTotal: 310,
+      status: 'PLACED',
+      paymentStatus: 'PENDING',
+    });
+    order.paymentMethod = 'COD';
+    await syncOrderRealtimePaths(order);
+
+    // Simulate another serverless instance updating the order to CANCELLED in RTDB
+    // while current instance still has stale status: 'PLACED' in db.orders
+    await getRtdb().ref(`orders/${orderId}/status`).set('CANCELLED');
+
+    let statusCode = 200;
+    let jsonBody: any = null;
+    await adminHandler(
+      {
+        method: 'PATCH',
+        originalUrl: `/api/admin/orders/${orderId}`,
+        url: `/api/admin/orders/${orderId}`,
+        headers: { authorization: `Bearer ${accessToken}` },
+        body: { status: 'ACCEPTED', prepTimeMins: 20 },
+        socket: { remoteAddress: '127.0.0.1' },
+      } as any,
+      {
+        setHeader: () => ({}),
+        status: (c: number) => {
+          statusCode = c;
+          return { json: (b: any) => (jsonBody = b) };
+        },
+        json: (b: any) => {
+          jsonBody = b;
+        },
+        end: () => {},
+      } as any
+    );
+
+    // Even if in-memory cache was stale, fresh RTDB read updated the order before mutating
+    expect(statusCode).toBe(200);
+    expect(jsonBody.order.status).toBe('ACCEPTED');
+
+    db.orders = db.orders.filter((o) => o.id !== orderId);
+    await getRtdb().ref(`orders/${orderId}`).remove();
+    await getRtdb().ref(`adminOrders/${orderId}`).remove();
+    await getRtdb().ref(`tracking/${order.trackingToken}`).remove();
+  });
+
+  it('36. Placing a COD order and an online order both work, admin sees both, and Telegram alert is sent for both', async () => {
+    await ensureFirebaseSeeded();
+    const prevOpen = db.settings.isOpen;
+    const prevAuto = db.settings.autoScheduleEnabled;
+    const prevZone = db.deliveryZone.zoneEnabled;
+    const prevTgToken = process.env.TELEGRAM_BOT_TOKEN;
+    const prevTgChat = process.env.TELEGRAM_CHAT_ID;
+    const prevDemoMode = process.env.DEMO_MODE;
+    const prevRzpMode = process.env.RAZORPAY_MODE;
+
+    db.settings.isOpen = true;
+    db.settings.autoScheduleEnabled = false;
+    db.deliveryZone.zoneEnabled = false;
+    process.env.TELEGRAM_BOT_TOKEN = 'test_bot_token_123';
+    process.env.TELEGRAM_CHAT_ID = 'test_chat_456';
+    process.env.DEMO_MODE = 'true';
+    process.env.RAZORPAY_MODE = 'demo';
+
+    const telegramMessages: string[] = [];
+    let expectedAmountPaise = 0;
+    let lastRzpOrderId = '';
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: any, init?: any) => {
+      const url = typeof input === 'string' ? input : input?.url || '';
+      if (url.includes('api.telegram.org')) {
+        const body = init?.body ? JSON.parse(String(init.body)) : {};
+        telegramMessages.push(String(body.text || ''));
+        return { ok: true, json: async () => ({ ok: true, result: { message_id: 1 } }) } as any;
+      }
+      if (url.includes('api.razorpay.com/v1/orders')) {
+        const reqBody = init?.body ? JSON.parse(String(init.body)) : {};
+        expectedAmountPaise = reqBody.amount;
+        lastRzpOrderId = `order_rzp_mock_${Date.now()}`;
+        return {
+          ok: true,
+          json: async () => ({
+            id: lastRzpOrderId,
+            amount: reqBody.amount,
+            currency: 'INR',
+            receipt: reqBody.receipt,
+          }),
+        } as any;
+      }
+      if (url.includes('api.razorpay.com/v1/payments/')) {
+        const payId = url.split('/').pop();
+        return {
+          ok: true,
+          json: async () => ({
+            id: payId,
+            order_id: lastRzpOrderId,
+            status: 'captured',
+            currency: 'INR',
+            amount: expectedAmountPaise,
+          }),
+        } as any;
+      }
+      return origFetch(input, init);
+    }) as any;
+
+    const createdOrderIds: string[] = [];
+    const firstItem = db.menuItems.find((m) => m.inStock && !m.isDeleted)!;
+
+    const placeOrder = async (paymentMethod: 'COD' | 'RAZORPAY') => {
+      let statusCode = 200;
+      let jsonBody: any = null;
+      await ordersHandler(
+        {
+          method: 'POST',
+          originalUrl: '/api/orders',
+          url: '/api/orders',
+          headers: { 'x-forwarded-for': paymentMethod === 'COD' ? '127.0.10.1' : '127.0.10.2' },
+          body: {
+            customerName: `E2E ${paymentMethod} Guest`,
+            customerPhone: paymentMethod === 'COD' ? '9811111111' : '9822222222',
+            deliveryAddress: '45 Test Market Road, City',
+            deliveryPincode: '400050',
+            deliveryLat: db.deliveryZone.shopLat + 0.005,
+            deliveryLng: db.deliveryZone.shopLng + 0.005,
+            paymentMethod,
+            items: [{ menuItemId: firstItem.id, quantity: 2, addonIds: [] }],
+          },
+          socket: { remoteAddress: '127.0.0.1' },
+        } as any,
+        {
+          setHeader: () => ({}),
+          status: (c: number) => {
+            statusCode = c;
+            return { json: (b: any) => (jsonBody = b) };
+          },
+          json: (b: any) => {
+            jsonBody = b;
+          },
+          end: () => {},
+        } as any
+      );
+      return { statusCode, jsonBody };
+    };
+
+    try {
+      // 1) COD order
+      const codRes = await placeOrder('COD');
+      expect(codRes.statusCode).toBe(201);
+      expect(codRes.jsonBody.order.paymentMethod).toBe('COD');
+      createdOrderIds.push(codRes.jsonBody.order.id);
+      expect(telegramMessages.some((t) => t.includes(codRes.jsonBody.order.orderNumber))).toBe(true);
+
+      // 2) Online Razorpay order + verify
+      const onlineRes = await placeOrder('RAZORPAY');
+      expect(onlineRes.statusCode).toBe(201);
+      const onlineOrder = onlineRes.jsonBody.order as OrderRecord;
+      createdOrderIds.push(onlineOrder.id);
+      expectedAmountPaise = Math.round(onlineOrder.grandTotal * 100);
+
+      const cfg = getRazorpayConfig();
+      const rzpPayId = `pay_e2e_${Date.now()}`;
+      const rzpSig = crypto
+        .createHmac('sha256', cfg.keySecret)
+        .update(`${onlineOrder.razorpayOrderId}|${rzpPayId}`)
+        .digest('hex');
+
+      const verifyRes = await verifyRazorpayPaymentAuthoritative({
+        razorpayOrderId: onlineOrder.razorpayOrderId!,
+        razorpayPaymentId: rzpPayId,
+        razorpaySignature: rzpSig,
+        clientIp: '127.0.10.2',
+      });
+      expect(verifyRes).not.toHaveProperty('error');
+      expect(telegramMessages.some((t) => t.includes(onlineOrder.orderNumber))).toBe(true);
+
+      // 3) Admin bootstrap sees both orders
+      const owner = db.adminUsers.find((u) => u.role === 'owner')!;
+      const accessToken = signJwt(
+        {
+          sub: owner.id,
+          email: owner.email,
+          role: owner.role,
+          name: owner.name,
+          tv: owner.tokenVersion,
+          sid: db.adminSessions[0]?.id || 'sess_seed',
+          type: 'access',
+        },
+        ACCESS_TTL_SEC
+      );
+      let bootCode = 200;
+      let bootBody: any = null;
+      await adminHandler(
+        {
+          method: 'GET',
+          originalUrl: '/api/admin/bootstrap',
+          url: '/api/admin/bootstrap',
+          query: {},
+          headers: { authorization: `Bearer ${accessToken}` },
+          socket: { remoteAddress: '127.0.0.1' },
+        } as any,
+        {
+          setHeader: () => ({}),
+          status: (c: number) => {
+            bootCode = c;
+            return { json: (b: any) => (bootBody = b) };
+          },
+          json: (b: any) => {
+            bootBody = b;
+          },
+          end: () => {},
+        } as any
+      );
+      expect(bootCode).toBe(200);
+      expect(bootBody.orders.some((o: any) => o.id === codRes.jsonBody.order.id)).toBe(true);
+      expect(bootBody.orders.some((o: any) => o.id === onlineOrder.id)).toBe(true);
+    } finally {
+      globalThis.fetch = origFetch;
+      db.settings.isOpen = prevOpen;
+      db.settings.autoScheduleEnabled = prevAuto;
+      db.deliveryZone.zoneEnabled = prevZone;
+      if (prevTgToken === undefined) delete process.env.TELEGRAM_BOT_TOKEN;
+      else process.env.TELEGRAM_BOT_TOKEN = prevTgToken;
+      if (prevTgChat === undefined) delete process.env.TELEGRAM_CHAT_ID;
+      else process.env.TELEGRAM_CHAT_ID = prevTgChat;
+      if (prevDemoMode === undefined) delete process.env.DEMO_MODE;
+      else process.env.DEMO_MODE = prevDemoMode;
+      if (prevRzpMode === undefined) delete process.env.RAZORPAY_MODE;
+      else process.env.RAZORPAY_MODE = prevRzpMode;
+
+      const rtdb = getRtdb();
+      for (const id of createdOrderIds) {
+        const ord = db.orders.find((o) => o.id === id);
+        db.orders = db.orders.filter((o) => o.id !== id);
+        await rtdb.ref(`orders/${id}`).remove();
+        await rtdb.ref(`adminOrders/${id}`).remove();
+        if (ord?.trackingToken) await rtdb.ref(`tracking/${ord.trackingToken}`).remove();
+      }
+    }
+  });
 });
+
 
 

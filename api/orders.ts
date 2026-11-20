@@ -24,16 +24,25 @@ import {
   db,
   ensureFirebaseSeeded,
   expireStaleOrdersLazy,
+  findOrderFresh,
+  findPaymentFresh,
   findVerifiedCodOtpSession,
   formatTime24To12,
   getCodOtpSession,
+  getFreshCustomer,
+  getFreshOrderById,
   invalidateHomeHydration,
   isRefundPendingCancelledOrder,
+  isRefundSettledCancelledOrder,
+  refreshActiveOrdersFresh,
+  refreshCouponsAndUsagesFresh,
   refreshHydrationCache,
+  refreshMenuItemsFresh,
   runScheduledShopAndArchiveCheck,
   saveCodOtpSession,
   syncCancelledPendingRefundToHistory,
   syncOrderRealtimePaths,
+  upsertPaymentInMemory,
   verifyAndIncrementMenuStockSalesTx,
 } from './_lib/store.ts';
 import { notifyTelegramCancelledOrder, notifyTelegramNewOrder } from './_lib/telegram.ts';
@@ -196,6 +205,12 @@ export default async function handler(req: Request, res: Response) {
         return;
       }
 
+      const cleanPreviewPhone = String(parsed.data.customerPhone || '').replace(/\D/g, '');
+      await Promise.all([
+        refreshMenuItemsFresh(),
+        refreshCouponsAndUsagesFresh(),
+        cleanPreviewPhone.length === 10 ? getFreshCustomer(cleanPreviewPhone) : Promise.resolve(null),
+      ]);
       const preview = calculateAuthoritativeBill(parsed.data);
       res.json(preview);
       return;
@@ -290,14 +305,34 @@ export default async function handler(req: Request, res: Response) {
       const safeTokens = tokens
         .filter((t): t is string => typeof t === 'string' && t.length >= 8)
         .slice(0, 30);
-      const matched = db.orders.filter((o) => {
-        if (!safeTokens.includes(o.trackingToken)) return false;
-        if (o.status === 'CANCELLED' || o.status === 'REJECTED') {
-          return isRefundPendingCancelledOrder(o);
+
+      const resolved = await Promise.all(
+        safeTokens.map(async (tok) => ({
+          token: tok,
+          order: await findOrderFresh({ trackingToken: tok }),
+        }))
+      );
+
+      const matched: OrderRecord[] = [];
+      const expiredTokens: string[] = [];
+      for (const { token, order } of resolved) {
+        if (!order || isRefundSettledCancelledOrder(order)) {
+          expiredTokens.push(token);
+          continue;
         }
-        return true;
-      });
-      res.json({ orders: matched });
+        if (order.status === 'CANCELLED' || order.status === 'REJECTED') {
+          if (isRefundPendingCancelledOrder(order)) {
+            matched.push(order);
+          } else {
+            expiredTokens.push(token);
+          }
+          continue;
+        }
+        matched.push(order);
+      }
+
+      matched.sort((a, b) => new Date(b.placedAt).getTime() - new Date(a.placedAt).getTime());
+      res.json({ orders: matched, expiredTokens });
       return;
     }
 
@@ -308,7 +343,7 @@ export default async function handler(req: Request, res: Response) {
         res.status(400).json({ error: 'Tracking token is required' });
         return;
       }
-      const order = db.orders.find((o) => o.trackingToken === trackingToken);
+      const order = await findOrderFresh({ trackingToken });
       if (!order) {
         res.status(404).json({ error: 'Order not found' });
         return;
@@ -365,9 +400,10 @@ export default async function handler(req: Request, res: Response) {
         return;
       }
 
+      const activeOrders = await refreshActiveOrdersFresh();
       const cleanOrderNo = parsed.data.orderNumber.toUpperCase();
       const cleanPhone = parsed.data.phone.replace(/\D/g, '');
-      const order = db.orders.find(
+      const order = activeOrders.find(
         (o) =>
           (o.orderNumber.toUpperCase() === cleanOrderNo ||
             o.orderNumber.toUpperCase() === `AAN-${cleanOrderNo.replace(/^AAN-/i, '')}`) &&
@@ -416,23 +452,26 @@ export default async function handler(req: Request, res: Response) {
       }
 
       const { orderId, trackingToken, orderNumber, phone, reason } = parsed.data;
-      let order: OrderRecord | undefined;
+      let order: OrderRecord | null = null;
 
       if (trackingToken && orderId) {
-        order = db.orders.find(
-          (o) => o.id === orderId && o.trackingToken === trackingToken
-        );
+        const fresh = await getFreshOrderById(orderId);
+        if (fresh && fresh.trackingToken === trackingToken) {
+          order = fresh;
+        }
       } else if (trackingToken && !orderId) {
-        order = db.orders.find((o) => o.trackingToken === trackingToken);
+        order = await findOrderFresh({ trackingToken });
       } else if (orderNumber && phone) {
+        const activeOrders = await refreshActiveOrdersFresh();
         const cleanOrderNo = orderNumber.toUpperCase();
         const cleanPhone = phone.replace(/\D/g, '');
-        order = db.orders.find(
-          (o) =>
-            (o.orderNumber.toUpperCase() === cleanOrderNo ||
-              o.orderNumber.toUpperCase() === `AAN-${cleanOrderNo.replace(/^AAN-/i, '')}`) &&
-            o.customerPhone === cleanPhone
-        );
+        order =
+          activeOrders.find(
+            (o) =>
+              (o.orderNumber.toUpperCase() === cleanOrderNo ||
+                o.orderNumber.toUpperCase() === `AAN-${cleanOrderNo.replace(/^AAN-/i, '')}`) &&
+              o.customerPhone === cleanPhone
+          ) || null;
       } else {
         res.status(400).json({
           error: 'Order verification (orderId + trackingToken or orderNumber + phone) is required.',
@@ -470,10 +509,13 @@ export default async function handler(req: Request, res: Response) {
         order.refundPending = true;
       } else if (order.paymentStatus === 'PENDING') {
         order.paymentStatus = 'FAILED';
-        updatedPayment = db.payments.find((p) => p.orderId === order.id);
+        updatedPayment =
+          (await findPaymentFresh({ orderId: order.id })) ||
+          db.payments.find((p) => p.orderId === order.id);
         if (updatedPayment) {
           updatedPayment.status = 'FAILED';
           updatedPayment.updatedAt = nowIso;
+          upsertPaymentInMemory(updatedPayment);
         }
       }
 
@@ -641,6 +683,14 @@ export default async function handler(req: Request, res: Response) {
         });
         return;
       }
+
+      // Refresh stock, coupons, customer, and active orders so checkout never uses stale cache
+      await Promise.all([
+        refreshMenuItemsFresh(),
+        refreshCouponsAndUsagesFresh(),
+        getFreshCustomer(cleanPhone),
+        refreshActiveOrdersFresh(),
+      ]);
 
       // Authoritative Server-Side Cart & Bill Calculation (never trusts client amount)
       const bill = calculateAuthoritativeBill({

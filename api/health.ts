@@ -14,9 +14,7 @@ export default async function handler(req: Request, res: Response) {
     (process.env.CLOUDINARY_UPLOAD_PRESET || '').trim()
   );
 
-  const isStorageConfigured = Boolean(
-    process.env.FIREBASE_STORAGE_BUCKET || isCloudinaryConfigured
-  );
+  const isStorageConfigured = isCloudinaryConfigured;
 
   const isWhatsappConfigured = Boolean(
     (process.env.WHATSAPP_CLOUD_API_TOKEN || '').trim() &&
@@ -37,7 +35,7 @@ export default async function handler(req: Request, res: Response) {
     firebase: {
       adminConfigured: Boolean(process.env.FIREBASE_SERVICE_ACCOUNT),
       dbUrlConfigured: Boolean(process.env.FIREBASE_DB_URL),
-      storageConfigured: Boolean(process.env.FIREBASE_STORAGE_BUCKET),
+      storageConfigured: false,
       isLiveConnected: rtdbClient.isLiveFirebase,
       appInitialized: Boolean(fbApp),
     },
@@ -51,7 +49,7 @@ export default async function handler(req: Request, res: Response) {
     storage: {
       configured: isStorageConfigured,
       cloudinary: isCloudinaryConfigured,
-      firebaseStorage: Boolean(process.env.FIREBASE_STORAGE_BUCKET),
+      firebaseStorage: false,
     },
     notifications: {
       whatsapp: isWhatsappConfigured,

@@ -13,16 +13,69 @@ import {
   db,
   ensureFirebaseSeeded,
   expireStaleOrdersLazy,
+  findPaymentFresh,
+  getFreshOrderById,
+  getKolkataDateKey,
+  getOrderArchiveDateKeyIST,
   refreshHydrationCache,
   syncOrderRealtimePaths,
+  upsertPaymentInMemory,
 } from './_lib/store.ts';
 import { notifyTelegramDeliveredOrder } from './_lib/telegram.ts';
 import { notifyCustomerOrderStatus } from './_lib/customerNotifier.ts';
-import type { DeliveryBoy } from '../src/types.ts';
+import type { DeliveryBoy, OrderHistoryRecord, OrderRecord } from '../src/types.ts';
 
 function toPublicDeliveryBoy(r: DeliveryBoy) {
   const { passwordHash, ...rest } = r;
   return rest;
+}
+
+async function getRiderOrdersAndArchivedStats(riderId: string): Promise<{
+  assignedOrders: OrderRecord[];
+  archivedTodayStats: { deliveriesCount: number; cashCollected: number };
+}> {
+  const rtdb = getRtdb();
+  const [activeSnap, histSnap] = await Promise.all([
+    rtdb.ref('orders').orderByChild('deliveryBoyId').equalTo(riderId).get(),
+    rtdb.ref('orderHistory').orderByChild('deliveryBoyId').equalTo(riderId).get(),
+  ]);
+
+  const rawActive = activeSnap.val();
+  const assignedOrders: OrderRecord[] = rawActive && typeof rawActive === 'object'
+    ? (Object.values(rawActive).filter(Boolean) as OrderRecord[])
+    : [];
+  assignedOrders.sort(
+    (a, b) => new Date(b.placedAt).getTime() - new Date(a.placedAt).getTime()
+  );
+
+  const activeIds = new Set(assignedOrders.map((o) => o.id));
+  const todayKeyIST = getKolkataDateKey();
+  const rawHist = histSnap.val();
+  const histRecords: OrderHistoryRecord[] = rawHist && typeof rawHist === 'object'
+    ? (Object.values(rawHist).filter(Boolean) as OrderHistoryRecord[])
+    : [];
+
+  let deliveriesCount = 0;
+  let cashCollected = 0;
+  for (const h of histRecords) {
+    if (!h || h.status !== 'DELIVERED' || activeIds.has(h.id)) continue;
+    const dateKey = h.dateKeyIST || getOrderArchiveDateKeyIST({
+      deliveredAt: h.deliveredAt,
+      updatedAt: h.archivedAt,
+      placedAt: h.placedAt,
+    } as OrderRecord, 'DELIVERED');
+    if (dateKey === todayKeyIST) {
+      deliveriesCount += 1;
+      if (h.paymentMethod === 'COD') {
+        cashCollected += Number(h.grandTotal) || 0;
+      }
+    }
+  }
+
+  return {
+    assignedOrders,
+    archivedTodayStats: { deliveriesCount, cashCollected },
+  };
 }
 
 export default async function handler(req: Request, res: Response) {
@@ -86,17 +139,20 @@ export default async function handler(req: Request, res: Response) {
       const sig = crypto.createHmac('sha256', secret).update(`${header}.${body}`).digest('base64url');
       const sessionToken = `${header}.${body}.${sig}`;
 
-      const assignedOrders = db.orders.filter((o) => o.deliveryBoyId === rider.id);
-      const firebaseCustomToken = await createFirebaseCustomToken(`rider_${rider.id}`, {
-        riderId: rider.id,
-        role: 'rider',
-      });
+      const [{ assignedOrders, archivedTodayStats }, firebaseCustomToken] = await Promise.all([
+        getRiderOrdersAndArchivedStats(rider.id),
+        createFirebaseCustomToken(`rider_${rider.id}`, {
+          riderId: rider.id,
+          role: 'rider',
+        }),
+      ]);
 
       res.json({
         token: sessionToken,
         shopName: db.settings.shopName,
         rider: toPublicDeliveryBoy(rider),
         orders: assignedOrders,
+        archivedTodayStats,
         firebaseCustomToken,
         firebaseClientConfig: process.env.FIREBASE_DB_URL
           ? {
@@ -155,16 +211,19 @@ export default async function handler(req: Request, res: Response) {
 
     // 2. GET /api/rider/me
     if (req.method === 'GET' && !isDeliver) {
-      const assignedOrders = db.orders.filter((o) => o.deliveryBoyId === rider.id);
-      const firebaseCustomToken = await createFirebaseCustomToken(`rider_${rider.id}`, {
-        riderId: rider.id,
-        role: 'rider',
-      });
+      const [{ assignedOrders, archivedTodayStats }, firebaseCustomToken] = await Promise.all([
+        getRiderOrdersAndArchivedStats(rider.id),
+        createFirebaseCustomToken(`rider_${rider.id}`, {
+          riderId: rider.id,
+          role: 'rider',
+        }),
+      ]);
 
       res.json({
         shopName: db.settings.shopName,
         rider: toPublicDeliveryBoy(rider),
         orders: assignedOrders,
+        archivedTodayStats,
         firebaseCustomToken,
         firebaseClientConfig: process.env.FIREBASE_DB_URL
           ? {
@@ -180,7 +239,8 @@ export default async function handler(req: Request, res: Response) {
     // 3. POST /api/rider/deliver
     if (req.method === 'POST' && isDeliver) {
       const { orderId, otp } = req.body || {};
-      const order = db.orders.find((o) => o.id === orderId && o.deliveryBoyId === rider.id);
+      const freshOrder = typeof orderId === 'string' ? await getFreshOrderById(orderId) : null;
+      const order = freshOrder && freshOrder.deliveryBoyId === rider.id ? freshOrder : null;
       if (!order) {
         res.status(404).json({ error: 'Assigned order not found' });
         return;
@@ -234,15 +294,27 @@ export default async function handler(req: Request, res: Response) {
       order.deliveredAt = nowIso;
       order.paymentStatus = 'PAID';
 
-      const payment = db.payments.find((p) => p.orderId === order.id);
+      const payment =
+        (await findPaymentFresh({ orderId: order.id })) ||
+        db.payments.find((p) => p.orderId === order.id);
       if (payment) {
         payment.status = 'VERIFIED';
         payment.updatedAt = nowIso;
+        upsertPaymentInMemory(payment);
       }
 
-      rider.activeOrders = db.orders.filter(
+      const assignedSnap = await rtdb
+        .ref('orders')
+        .orderByChild('deliveryBoyId')
+        .equalTo(rider.id)
+        .get();
+      const assignedList =
+        assignedSnap.exists() && typeof assignedSnap.val() === 'object'
+          ? (Object.values(assignedSnap.val()).filter(Boolean) as OrderRecord[])
+          : [];
+      rider.activeOrders = assignedList.filter(
         (o) =>
-          o.deliveryBoyId === rider.id &&
+          o.id !== order.id &&
           !['DELIVERED', 'CANCELLED', 'REJECTED'].includes(o.status)
       ).length;
 

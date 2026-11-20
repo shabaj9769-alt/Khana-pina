@@ -75,6 +75,7 @@ import {
   AboutPageConfig,
   AboutPageSectionCard,
   OrderHistoryRecord,
+  AuditLogRecord,
 } from '../types';
 import {
   DEFAULT_STOREFRONT_THEME,
@@ -188,6 +189,7 @@ interface PhotoLinkInputProps {
   previewClassName?: string;
   allowClear?: boolean;
   inputClassName?: string;
+  onUploadFile?: (file: File) => Promise<{ url: string | null; error?: string }>;
 }
 
 function PhotoLinkInput({
@@ -198,8 +200,11 @@ function PhotoLinkInput({
   previewClassName = 'w-20 h-20 rounded-xl object-cover border border-border bg-bg shrink-0',
   allowClear = false,
   inputClassName = 'w-full min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs text-text',
+  onUploadFile,
 }: PhotoLinkInputProps) {
   const [loadFailed, setLoadFailed] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const trimmed = (value || '').trim();
 
   useEffect(() => {
@@ -212,16 +217,48 @@ function PhotoLinkInput({
 
   return (
     <div className="space-y-2 min-w-0">
-      <div className="flex items-center gap-2 min-w-0">
+      <div className="flex flex-wrap items-center gap-2 min-w-0">
         <input
           type="text"
           maxLength={500}
           value={value}
-          onChange={(e) => onChange(e.target.value)}
+          onChange={(e) => {
+            setUploadError(null);
+            onChange(e.target.value);
+          }}
           placeholder="Photo link (direct image URL)"
           aria-label="Photo link (direct image URL)"
-          className={`flex-1 min-w-0 ${inputClassName}`}
+          className={`flex-1 min-w-[160px] ${inputClassName}`}
         />
+        {onUploadFile && (
+          <label className="min-h-[40px] px-3 rounded-xl border border-border bg-bg hover:bg-surface text-xs font-semibold text-text inline-flex items-center gap-1.5 cursor-pointer shrink-0">
+            <Upload className="w-3.5 h-3.5 shrink-0" />
+            <span>{uploading ? 'Uploading...' : 'Upload'}</span>
+            <input
+              type="file"
+              accept="image/*"
+              disabled={uploading}
+              className="sr-only"
+              onChange={async (e) => {
+                const file = e.target.files?.[0];
+                e.target.value = '';
+                if (!file) return;
+                setUploading(true);
+                setUploadError(null);
+                try {
+                  const res = await onUploadFile(file);
+                  if (res.url) {
+                    onChange(res.url);
+                  } else if (res.error) {
+                    setUploadError(res.error);
+                  }
+                } finally {
+                  setUploading(false);
+                }
+              }}
+            />
+          </label>
+        )}
         {allowClear && trimmed && (
           <button
             type="button"
@@ -232,6 +269,11 @@ function PhotoLinkInput({
           </button>
         )}
       </div>
+      {uploadError && (
+        <p className="text-xs font-semibold text-amber-600 dark:text-amber-400 break-words">
+          {uploadError}
+        </p>
+      )}
       <p className="text-[11px] text-muted leading-snug">{PHOTO_LINK_HINT}</p>
       <div className="flex items-center gap-2.5 min-w-0">
         <SafeImage
@@ -350,6 +392,23 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const [banners, setBanners] = useState<Banner[]>([]);
   const [payments, setPayments] = useState<PaymentRecord[]>([]);
   const [refunds, setRefunds] = useState<RefundRecord[]>([]);
+  const [auditLogs, setAuditLogs] = useState<AuditLogRecord[]>([]);
+  const [historyPagination, setHistoryPagination] = useState<{
+    hasMore: boolean;
+    nextCursor: string | null;
+    loading: boolean;
+  }>({ hasMore: false, nextCursor: null, loading: false });
+  const [paymentsPagination, setPaymentsPagination] = useState<{
+    hasMore: boolean;
+    nextCursor: string | null;
+    loading: boolean;
+  }>({ hasMore: false, nextCursor: null, loading: false });
+  const [auditLogsPagination, setAuditLogsPagination] = useState<{
+    hasMore: boolean;
+    nextCursor: string | null;
+    loading: boolean;
+  }>({ hasMore: false, nextCursor: null, loading: false });
+  const knownOrderIdsRef = useRef<Set<string>>(new Set());
   const [broadcastProviderConfigured, setBroadcastProviderConfigured] = useState(false);
   const [razorpayConfigured, setRazorpayConfigured] = useState<boolean>(false);
   const [broadcastMessage, setBroadcastMessage] = useState('');
@@ -503,6 +562,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const [refundReasonInput, setRefundReasonInput] = useState<Record<string, string>>({});
   const [refundBusyId, setRefundBusyId] = useState<string | null>(null);
   const [paymentHistoryOpen, setPaymentHistoryOpen] = useState(false);
+  const [auditLogsOpen, setAuditLogsOpen] = useState(false);
 
   // Reports Filter State
   const [reportRange, setReportRange] = useState<'ALL' | 'TODAY' | '7D' | '30D' | 'CUSTOM'>('ALL');
@@ -850,6 +910,23 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       setBanners(data.banners || []);
       setPayments(data.payments || []);
       setRefunds(data.refunds || []);
+      setAuditLogs(data.auditLogs || []);
+      setHistoryPagination({
+        hasMore: Boolean(data.pagination?.orderHistory?.hasMore),
+        nextCursor: data.pagination?.orderHistory?.nextCursor || null,
+        loading: false,
+      });
+      setPaymentsPagination({
+        hasMore: Boolean(data.pagination?.payments?.hasMore),
+        nextCursor: data.pagination?.payments?.nextCursor || null,
+        loading: false,
+      });
+      setAuditLogsPagination({
+        hasMore: Boolean(data.pagination?.auditLogs?.hasMore),
+        nextCursor: data.pagination?.auditLogs?.nextCursor || null,
+        loading: false,
+      });
+      knownOrderIdsRef.current = new Set((data.orders || []).map((o: OrderRecord) => o.id));
       setBroadcastProviderConfigured(Boolean(data.broadcastProviderConfigured));
       setRazorpayConfigured(Boolean(data.razorpayConfigured ?? data.onlinePaymentEnabled));
 
@@ -909,6 +986,100 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       console.error('Admin bootstrap failed:', e);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleLoadMoreHistory = async () => {
+    if (historyPagination.loading || !historyPagination.hasMore || !historyPagination.nextCursor) {
+      return;
+    }
+    setHistoryPagination((p) => ({ ...p, loading: true }));
+    try {
+      const res = await adminFetch(
+        `/api/admin/history?limit=200&cursor=${encodeURIComponent(historyPagination.nextCursor)}`
+      );
+      if (!res.ok) return;
+      const data = await res.json();
+      const nextItems: OrderHistoryRecord[] = data.orderHistory || [];
+      setOrderHistory((prev) => {
+        const seen = new Set(prev.map((h) => h.id));
+        const merged = [...prev];
+        for (const h of nextItems) {
+          if (!seen.has(h.id)) merged.push(h);
+        }
+        return merged;
+      });
+      setHistoryPagination({
+        hasMore: Boolean(data.hasMore),
+        nextCursor: data.nextCursor || null,
+        loading: false,
+      });
+    } finally {
+      setHistoryPagination((p) => ({ ...p, loading: false }));
+    }
+  };
+
+  const handleLoadMorePayments = async () => {
+    if (paymentsPagination.loading || !paymentsPagination.hasMore || !paymentsPagination.nextCursor) {
+      return;
+    }
+    setPaymentsPagination((p) => ({ ...p, loading: true }));
+    try {
+      const res = await adminFetch(
+        `/api/admin/payments?limit=200&cursor=${encodeURIComponent(paymentsPagination.nextCursor)}`
+      );
+      if (!res.ok) return;
+      const data = await res.json();
+      const nextItems: PaymentRecord[] = data.payments || [];
+      setPayments((prev) => {
+        const seen = new Set(prev.map((x) => x.id));
+        const merged = [...prev];
+        for (const item of nextItems) {
+          if (!seen.has(item.id)) merged.push(item);
+        }
+        return merged;
+      });
+      setPaymentsPagination({
+        hasMore: Boolean(data.hasMore),
+        nextCursor: data.nextCursor || null,
+        loading: false,
+      });
+    } finally {
+      setPaymentsPagination((p) => ({ ...p, loading: false }));
+    }
+  };
+
+  const handleLoadMoreAuditLogs = async () => {
+    if (
+      auditLogsPagination.loading ||
+      !auditLogsPagination.hasMore ||
+      !auditLogsPagination.nextCursor
+    ) {
+      return;
+    }
+    setAuditLogsPagination((p) => ({ ...p, loading: true }));
+    try {
+      const res = await adminFetch(
+        `/api/admin/audit-logs?limit=200&cursor=${encodeURIComponent(auditLogsPagination.nextCursor)}`
+      );
+      if (!res.ok) return;
+      const data = await res.json();
+      const nextItems: AuditLogRecord[] = data.auditLogs || [];
+      setAuditLogs((prev) => {
+        const seen = new Set(prev.map((a) => a.id));
+        const merged = [...prev];
+        for (const a of nextItems) {
+          if (!seen.has(a.id)) merged.push(a);
+        }
+        return merged;
+      });
+      setAuditLogsPagination({
+        hasMore: Boolean(data.hasMore),
+        nextCursor: data.nextCursor || null,
+        loading: false,
+      });
+    } finally {
+      setAuditLogsPagination((p) => ({ ...p, loading: false }));
     }
   };
 
@@ -981,14 +1152,13 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     };
   }, []);
 
-  // Subscribe to Firebase RTDB adminOrders/ using signInWithCustomToken + onChildAdded / onValue
+  // Subscribe to Firebase RTDB adminOrders/ using onChildAdded, onChildChanged, and onChildRemoved ONLY (no onValue)
   useEffect(() => {
     if (!adminUser) return;
-    const knownIds = new Set(orders.map((o) => o.id));
     const unsub = subscribeToAdminOrders({
       customToken: firebaseCustomToken,
       firebaseConfig: firebaseClientConfig as { databaseURL: string; apiKey?: string; projectId?: string } | null,
-      knownOrderIds: knownIds,
+      knownOrderIds: knownOrderIdsRef.current,
       onNewOrder: (newOrder: OrderRecord) => {
         setOrders((prev) => {
           if (prev.some((o) => o.id === newOrder.id)) return prev;
@@ -998,6 +1168,16 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         playOrderChime();
         triggerBrowserNotification(newOrder);
         showToast(`New Order ${newOrder.orderNumber} received!`);
+      },
+      onOrderChanged: (updatedOrder: OrderRecord) => {
+        setOrders((prev) => {
+          const exists = prev.some((o) => o.id === updatedOrder.id);
+          if (!exists) return [updatedOrder, ...prev];
+          return prev.map((o) => (o.id === updatedOrder.id ? updatedOrder : o));
+        });
+      },
+      onOrderRemoved: (removedOrderId: string) => {
+        setOrders((prev) => prev.filter((o) => o.id !== removedOrderId));
       },
       onOrdersSnapshot: (allOrders: OrderRecord[]) => {
         setOrders(allOrders);
@@ -1030,7 +1210,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     }
   };
 
-  // Compress image automatically before upload using canvas
+  // Compress image in browser before upload (max width 1200px, ~300 KB target)
   const compressImageToDataUrl = (file: File): Promise<string> => {
     return new Promise((resolve, reject) => {
       if (file.type === 'image/svg+xml') {
@@ -1045,16 +1225,11 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       const img = new Image();
       img.onload = () => {
         try {
-          const maxDim = 1080;
+          const maxWidth = 1200;
           let { width, height } = img;
-          if (width > maxDim || height > maxDim) {
-            if (width >= height) {
-              height = Math.max(1, Math.round((height * maxDim) / width));
-              width = maxDim;
-            } else {
-              width = Math.max(1, Math.round((width * maxDim) / height));
-              height = maxDim;
-            }
+          if (width > maxWidth) {
+            height = Math.max(1, Math.round((height * maxWidth) / width));
+            width = maxWidth;
           }
           const canvas = document.createElement('canvas');
           canvas.width = Math.max(1, width);
@@ -1066,9 +1241,18 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             return;
           }
           ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-          let dataUrl = canvas.toDataURL('image/webp', 0.8);
-          if (!dataUrl.startsWith('data:image/webp')) {
-            dataUrl = canvas.toDataURL('image/jpeg', 0.82);
+
+          const TARGET_BASE64_BYTES = 415_000; // ~300 KB binary payload
+          const qualities = [0.82, 0.72, 0.62, 0.5, 0.4, 0.32];
+          let dataUrl = '';
+          for (const q of qualities) {
+            dataUrl = canvas.toDataURL('image/webp', q);
+            if (!dataUrl.startsWith('data:image/webp')) {
+              dataUrl = canvas.toDataURL('image/jpeg', q);
+            }
+            if (dataUrl.length <= TARGET_BASE64_BYTES) {
+              break;
+            }
           }
           URL.revokeObjectURL(objectUrl);
           resolve(dataUrl);
@@ -1088,8 +1272,11 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     });
   };
 
-  // Image File Upload helper (compresses automatically and calls /api/admin/upload-image)
-  const uploadImageFile = async (file: File, prefix: string): Promise<string | null> => {
+  // Image File Upload helper (compresses automatically and calls /api/admin/upload-image -> Cloudinary)
+  const uploadImageFile = async (
+    file: File,
+    prefix: string
+  ): Promise<{ url: string | null; error?: string }> => {
     setIsUploadingImage(true);
     try {
       const dataUrl = await compressImageToDataUrl(file);
@@ -1099,14 +1286,16 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       });
       const data = await res.json();
       if (!res.ok) {
-        showToast(data.error || 'Could not upload photo');
-        return null;
+        const msg = data.error || 'Could not upload photo';
+        showToast(msg);
+        return { url: null, error: msg };
       }
       showToast('Photo uploaded');
-      return data.url;
+      return { url: data.url || null };
     } catch {
-      showToast('Could not upload photo');
-      return null;
+      const msg = 'Could not upload photo';
+      showToast(msg);
+      return { url: null, error: msg };
     } finally {
       setIsUploadingImage(false);
     }
@@ -4019,6 +4208,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         alt={newCategoryName || 'Category preview'}
                         previewClassName="w-12 h-12 rounded-xl object-cover border border-border bg-bg shrink-0"
                         allowClear
+                        onUploadFile={(file) => uploadImageFile(file, 'category')}
                       />
                     </div>
                   </form>
@@ -4077,6 +4267,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                               alt={editingCategoryName || 'Category preview'}
                               previewClassName="w-12 h-12 rounded-xl object-cover border border-border bg-bg shrink-0"
                               allowClear
+                              onUploadFile={(file) => uploadImageFile(file, 'category')}
                             />
                           </div>
                         ) : (
@@ -4389,6 +4580,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         defaultPreviewUrl="/assets/images/hero_artisanal_feast_1793975537331.webp"
                         previewClassName="w-24 h-14 rounded-lg object-cover border border-border shrink-0 bg-bg"
                         allowClear
+                        onUploadFile={(file) => uploadImageFile(file, 'banner')}
                       />
                     </div>
                     <button
@@ -4720,6 +4912,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         previewClassName="w-12 h-12 rounded-xl object-cover border border-border bg-bg shrink-0"
                         allowClear
                         inputClassName="w-full min-h-[42px] px-3 rounded-xl border border-border bg-bg text-xs text-text"
+                        onUploadFile={(file) => uploadImageFile(file, 'logo')}
                       />
                     </div>
 
@@ -4939,6 +5132,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         previewClassName="w-24 h-16 rounded-xl object-cover border border-border bg-bg shrink-0"
                         allowClear
                         inputClassName="w-full min-h-[42px] px-3 rounded-xl border border-border bg-bg text-xs text-text"
+                        onUploadFile={(file) => uploadImageFile(file, 'about')}
                       />
                     </div>
 
@@ -6569,6 +6763,18 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                               );
                             })
                           )}
+                          {paymentsPagination.hasMore && (
+                            <div className="pt-2 flex justify-center">
+                              <button
+                                type="button"
+                                disabled={paymentsPagination.loading}
+                                onClick={handleLoadMorePayments}
+                                className="min-h-[38px] px-4 rounded-xl border border-border bg-bg hover:bg-surface text-xs font-bold text-text cursor-pointer disabled:opacity-50"
+                              >
+                                {paymentsPagination.loading ? 'Loading...' : 'Load more'}
+                              </button>
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>
@@ -7045,6 +7251,18 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       </div>
                     </div>
                   ))}
+                  {historyPagination.hasMore && (
+                    <div className="flex justify-center pt-1">
+                      <button
+                        type="button"
+                        disabled={historyPagination.loading}
+                        onClick={handleLoadMoreHistory}
+                        className="min-h-[40px] px-5 rounded-xl border border-border bg-surface hover:bg-bg text-xs font-bold text-text cursor-pointer disabled:opacity-50"
+                      >
+                        {historyPagination.loading ? 'Loading older history...' : 'Load more'}
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -7497,6 +7715,70 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   </div>
                 );
               })()}
+
+              {/* Security Audit Logs (newest 200 first with Load more) */}
+              <div className="bg-surface rounded-2xl border border-border p-4 space-y-3 min-w-0">
+                <button
+                  type="button"
+                  onClick={() => setAuditLogsOpen((prev) => !prev)}
+                  className="w-full flex items-center justify-between gap-2 text-left cursor-pointer"
+                >
+                  <div>
+                    <h3 className="text-sm font-bold text-text">
+                      Audit Logs ({auditLogs.length})
+                    </h3>
+                    <p className="text-[11px] text-muted">
+                      Recent admin and cleanup actions (newest 200 loaded first)
+                    </p>
+                  </div>
+                  <span className="inline-flex items-center gap-1 text-xs font-semibold text-primary shrink-0">
+                    <span>{auditLogsOpen ? 'Hide' : 'Show'}</span>
+                    {auditLogsOpen ? (
+                      <ChevronUp className="w-4 h-4" />
+                    ) : (
+                      <ChevronDown className="w-4 h-4" />
+                    )}
+                  </span>
+                </button>
+
+                {auditLogsOpen && (
+                  <div className="space-y-2 pt-2 border-t border-border">
+                    {auditLogs.length === 0 ? (
+                      <p className="text-xs text-muted text-center py-3">No audit entries yet.</p>
+                    ) : (
+                      auditLogs.map((log) => (
+                        <div
+                          key={log.id}
+                          className="p-2.5 rounded-xl border border-border bg-bg text-xs space-y-0.5 min-w-0"
+                        >
+                          <div className="flex flex-wrap items-center justify-between gap-1.5">
+                            <span className="font-bold text-text">{log.action}</span>
+                            <span className="text-[11px] text-muted tabular-nums">
+                              {formatOrderPlacedAt(log.createdAt)}
+                            </span>
+                          </div>
+                          <p className="text-muted break-words">{log.details}</p>
+                          <p className="text-[11px] text-muted">
+                            {log.adminEmail} • {log.ipAddress}
+                          </p>
+                        </div>
+                      ))
+                    )}
+                    {auditLogsPagination.hasMore && (
+                      <div className="pt-1 flex justify-center">
+                        <button
+                          type="button"
+                          disabled={auditLogsPagination.loading}
+                          onClick={handleLoadMoreAuditLogs}
+                          className="min-h-[38px] px-4 rounded-xl border border-border bg-bg hover:bg-surface text-xs font-bold text-text cursor-pointer disabled:opacity-50"
+                        >
+                          {auditLogsPagination.loading ? 'Loading...' : 'Load more'}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </main>
@@ -8023,6 +8305,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 defaultPreviewUrl="/assets/images/hero_artisanal_feast_1793975537331.webp"
                 previewClassName="w-20 h-20 rounded-xl object-cover border border-border bg-bg shrink-0"
                 allowClear
+                onUploadFile={(file) => uploadImageFile(file, 'dish')}
               />
             </div>
 

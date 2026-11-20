@@ -28,23 +28,28 @@
     },
     "orders": {
       ".read": false,
-      ".write": false
+      ".write": false,
+      ".indexOn": ["createdAt", "dateKeyIST", "status", "deliveryBoyId", "customerPhone", "trackingToken"]
     },
     "orderHistory": {
       ".read": "auth != null && (auth.token.role === 'owner' || auth.token.role === 'manager' || auth.token.role === 'staff')",
-      ".write": "auth != null && auth.token.role === 'owner'"
+      ".write": "auth != null && auth.token.role === 'owner'",
+      ".indexOn": ["archivedAt", "placedAt", "createdAt", "dateKeyIST", "deliveryBoyId", "status", "trackingToken"]
     },
     "payments": {
       ".read": false,
-      ".write": false
+      ".write": false,
+      ".indexOn": ["createdAt", "orderId", "status", "razorpayOrderId"]
     },
     "paymentLocks": {
       ".read": false,
-      ".write": false
+      ".write": false,
+      ".indexOn": ["lockedAt"]
     },
     "webhookEvents": {
       ".read": false,
-      ".write": false
+      ".write": false,
+      ".indexOn": ["processedAt"]
     },
     "menuItems": {
       ".read": false,
@@ -72,7 +77,8 @@
     },
     "auditLogs": {
       ".read": false,
-      ".write": false
+      ".write": false,
+      ".indexOn": ["createdAt"]
     },
     "adminUsers": {
       ".read": false,
@@ -104,11 +110,13 @@
     },
     "refunds": {
       ".read": false,
-      ".write": false
+      ".write": false,
+      ".indexOn": ["createdAt", "paymentId", "orderId"]
     },
     "reviews": {
       ".read": false,
-      ".write": false
+      ".write": false,
+      ".indexOn": ["createdAt", "orderId"]
     },
     "deliveryZone": {
       ".read": false,
@@ -120,7 +128,8 @@
     },
     "codOtpSessions": {
       ".read": false,
-      ".write": false
+      ".write": false,
+      ".indexOn": ["verifiedToken", "expiresAt"]
     },
     "rateLimits": {
       ".read": false,

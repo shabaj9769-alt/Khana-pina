@@ -36,12 +36,14 @@ import {
   syncServerTimeFromResponse,
 } from '../utils/formatOrderTime.ts';
 import { applyShopBrandingToDocument, getCachedShopName } from '../utils/themeTokens.ts';
+import { guestAuthLayer } from '../auth/guestAuthLayer.ts';
 
 interface OrderTrackingViewProps {
   trackingToken: string;
   initialOrder?: OrderRecord | null;
   onOrderLoaded?: (order: OrderRecord) => void;
   onStatusKnown?: (status: OrderStatus) => void;
+  onOrderExpired?: () => void;
   onBackToStore: () => void;
   onReorder: (order: OrderRecord) => void;
 }
@@ -104,6 +106,7 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
   initialOrder,
   onOrderLoaded,
   onStatusKnown,
+  onOrderExpired,
   onBackToStore,
   onReorder,
 }) => {
@@ -121,6 +124,7 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
     shopAddress: string;
   } | null>(null);
   const [loading, setLoading] = useState(() => !matchingInitialOrder);
+  const [expired, setExpired] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [statusPulse, setStatusPulse] = useState(false);
   const [, setNowTick] = useState(() => Date.now());
@@ -149,12 +153,24 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
       const res = await fetch(`/api/track/${encodeURIComponent(trackingToken)}`);
       syncServerTimeFromResponse(res);
       const data = await res.json();
+      if (res.status === 410 || data.expired) {
+        setExpired(true);
+        setOrder(null);
+        setLiveProjection(null);
+        setPayment(null);
+        setReview(null);
+        setError(null);
+        guestAuthLayer.removeRecentOrderTokens([trackingToken]);
+        onOrderExpired?.();
+        return;
+      }
       if (!res.ok) {
         if (!silent) {
           setError(data.error || 'Could not find order for this secret tracking link.');
         }
         return;
       }
+      setExpired(false);
       setOrder(data.order);
       if (data.order) {
         onOrderLoaded?.(data.order);
@@ -184,6 +200,7 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
   };
 
   useEffect(() => {
+    setExpired(false);
     const hasMatchingInitial = Boolean(
       initialOrder && initialOrder.trackingToken === trackingToken
     );
@@ -215,9 +232,15 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
     }
   }, [order?.status]);
 
-  // Listen to Firebase Realtime Database path tracking/{trackingToken} via onValue
+  // Listen to Firebase Realtime Database path tracking/{trackingToken} via onValue.
+  // Automatically disconnects once status is DELIVERED, CANCELLED, or REJECTED, or link expires.
+  const isTerminalTrackingStatus =
+    order?.status === 'DELIVERED' ||
+    order?.status === 'CANCELLED' ||
+    order?.status === 'REJECTED';
+
   useEffect(() => {
-    if (!trackingToken || order?.status === 'DELIVERED') return;
+    if (!trackingToken || expired || isTerminalTrackingStatus) return;
     const unsub = subscribeToCustomerTracking({
       trackingToken,
       onUpdate: (proj) => {
@@ -248,9 +271,18 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
             : prev
         );
       },
+      onExpired: () => {
+        setExpired(true);
+        setOrder(null);
+        setLiveProjection(null);
+        setPayment(null);
+        setReview(null);
+        guestAuthLayer.removeRecentOrderTokens([trackingToken]);
+        onOrderExpired?.();
+      },
     });
     return () => unsub();
-  }, [trackingToken, order?.status === 'DELIVERED']);
+  }, [trackingToken, expired, isTerminalTrackingStatus]);
 
   useEffect(() => {
     if (!order || ['PLACED', 'DELIVERED', 'CANCELLED', 'REJECTED'].includes(order.status)) {
@@ -389,6 +421,26 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
             <div className="h-16 w-full rounded-xl skeleton-shimmer" />
             <div className="h-11 w-full rounded-xl skeleton-shimmer" />
           </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (expired) {
+    return (
+      <div className="w-full max-w-[480px] mx-auto px-4 py-12 text-center overflow-x-clip min-w-0">
+        <div className="rounded-theme border border-border bg-surface p-6 space-y-4">
+          <Clock className="w-10 h-10 text-muted mx-auto" />
+          <p className="text-sm font-semibold text-text">
+            This order is completed and the link has expired.
+          </p>
+          <button
+            type="button"
+            onClick={onBackToStore}
+            className="w-full min-h-[46px] px-4 rounded-xl bg-primary text-primary-contrast text-sm font-semibold whitespace-nowrap cursor-pointer"
+          >
+            Go to menu
+          </button>
         </div>
       </div>
     );
@@ -614,16 +666,17 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
 
         {/* Step Tracker Timeline (Icon + Label + Timestamp + Active Step Highlight) */}
         {isCancelledOrRejected ? (
-          <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-[13px] text-red-600 space-y-1">
+          <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-[13px] text-red-600 space-y-1.5">
             <p className="font-bold">Reason: {order.cancelReason || 'Order cancelled'}</p>
             {order.paymentStatus === 'REFUNDED' && (
               <p>
                 A full refund of ₹{order.grandTotal} has been initiated to your original payment method.
               </p>
             )}
-            {order.paymentMethod === 'RAZORPAY' && order.paymentStatus === 'PAID' && (
-              <p>
-                Online payment refund (₹{order.grandTotal}) will be processed manually by the kitchen.
+            {(order.refundPending ||
+              (order.paymentMethod === 'RAZORPAY' && order.paymentStatus === 'PAID')) && (
+              <p className="font-semibold">
+                Refund pending — Online payment refund (₹{order.grandTotal}) will be processed by the kitchen.
               </p>
             )}
           </div>

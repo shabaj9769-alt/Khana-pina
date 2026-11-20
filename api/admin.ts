@@ -55,22 +55,33 @@ import {
   ensureHomeDataLoaded,
   expireStaleOrdersLazy,
   formatTime24To12,
+  getFreshCustomer,
+  getFreshOrderById,
+  getFreshPaymentById,
   getKolkataDateKey,
   getOrderArchiveDateKeyIST,
+  getRefundsForPaymentFresh,
   IMG_HERO,
   invalidateHomeHydration,
   isClosedOrderStatus,
   isLoginLockedFirebase,
   isOrderVisibleToKitchen,
   logAudit,
-  persistFullStateToFirebase,
   purgeNonOwnerAdmins,
+  queryPaginatedAuditLogs,
+  queryPaginatedOrderHistory,
+  queryPaginatedPayments,
+  queryPaginatedRefunds,
+  queryPaginatedReviews,
   recordLoginFailureFirebase,
+  refreshActiveOrdersFresh,
   refreshHydrationCache,
+  refreshMenuItemsFresh,
   runScheduledShopAndArchiveCheck,
   syncCancelledPendingRefundToHistory,
   syncOrderRealtimePaths,
   toPublicAdminUser,
+  upsertPaymentInMemory,
 } from './_lib/store.ts';
 import type { BroadcastRecord, VerifiedAdminContext } from './_lib/store.ts';
 import {
@@ -657,13 +668,18 @@ export default async function handler(req: Request, res: Response) {
       user.email = cleanNewEmail;
       user.tokenVersion += 1;
 
+      const authUpdates: Record<string, any> = {
+        [`adminUsers/${user.id}`]: user,
+      };
       for (const s of db.adminSessions) {
         if (s.userId === user.id) {
           s.revoked = true;
+          authUpdates[`adminSessions/${s.id}`] = s;
         }
       }
 
-      await persistFullStateToFirebase();
+      await rtdb.ref().update(authUpdates);
+      refreshHydrationCache();
       clearAdminAuthCookies(res);
       await logAudit(
         cleanNewEmail,
@@ -736,10 +752,17 @@ export default async function handler(req: Request, res: Response) {
         return;
       }
       target.tokenVersion += 1;
+      const authUpdates: Record<string, any> = {
+        [`adminUsers/${target.id}`]: target,
+      };
       for (const s of db.adminSessions) {
-        if (s.userId === target.id) s.revoked = true;
+        if (s.userId === target.id) {
+          s.revoked = true;
+          authUpdates[`adminSessions/${s.id}`] = s;
+        }
       }
-      await persistFullStateToFirebase();
+      await rtdb.ref().update(authUpdates);
+      refreshHydrationCache();
       await logAudit(
         admin.email,
         admin.role,
@@ -761,10 +784,17 @@ export default async function handler(req: Request, res: Response) {
       const target = db.adminUsers.find((u) => u.id === admin.userId);
       if (target) {
         target.tokenVersion += 1;
+        const authUpdates: Record<string, any> = {
+          [`adminUsers/${target.id}`]: target,
+        };
         for (const s of db.adminSessions) {
-          if (s.userId === target.id) s.revoked = true;
+          if (s.userId === target.id) {
+            s.revoked = true;
+            authUpdates[`adminSessions/${s.id}`] = s;
+          }
         }
-        await persistFullStateToFirebase();
+        await rtdb.ref().update(authUpdates);
+        refreshHydrationCache();
       }
       clearAdminAuthCookies(res);
       await logAudit(
@@ -900,7 +930,32 @@ export default async function handler(req: Request, res: Response) {
     if (method === 'GET' && subPath === '/bootstrap') {
       const admin = await verifyAdminAuthorized(req, res);
       if (!admin) return;
-      const [, , , firebaseCustomToken] = await Promise.all([
+      const ordersOnly = String((req.query as any)?.ordersOnly || '') === '1';
+
+      if (ordersOnly) {
+        await Promise.all([
+          expireStaleOrdersLazy({ minIntervalMs: 45_000 }),
+          runScheduledShopAndArchiveCheck({ minIntervalMs: 45_000 }),
+        ]);
+        const freshOrders = await refreshActiveOrdersFresh();
+        res.json({
+          orders: freshOrders.filter(isOrderVisibleToKitchen),
+        });
+        return;
+      }
+
+      const [
+        ,
+        ,
+        ,
+        firebaseCustomToken,
+        freshOrders,
+        histPage,
+        payPage,
+        refundPage,
+        reviewPage,
+        auditPage,
+      ] = await Promise.all([
         purgeNonOwnerAdmins(),
         expireStaleOrdersLazy({ minIntervalMs: 45_000 }),
         runScheduledShopAndArchiveCheck({ minIntervalMs: 45_000 }),
@@ -908,6 +963,12 @@ export default async function handler(req: Request, res: Response) {
           role: admin.role,
           adminId: admin.userId,
         }),
+        refreshActiveOrdersFresh(),
+        queryPaginatedOrderHistory(200),
+        queryPaginatedPayments(200),
+        queryPaginatedRefunds(200),
+        queryPaginatedReviews(200),
+        queryPaginatedAuditLogs(200),
       ]);
 
       const currentUser = db.adminUsers.find((u) => u.id === admin.userId);
@@ -939,13 +1000,20 @@ export default async function handler(req: Request, res: Response) {
         coupons: db.coupons,
         customers: Object.values(db.customers),
         // Requirement 8: Unpaid RAZORPAY orders do NOT enter the kitchen board
-        orders: db.orders.filter(isOrderVisibleToKitchen),
-        orderHistory: db.orderHistory,
-        payments: db.payments,
-        refunds: db.refunds,
+        orders: freshOrders.filter(isOrderVisibleToKitchen),
+        orderHistory: histPage.items,
+        payments: payPage.items,
+        refunds: refundPage.items,
         deliveryBoys: db.deliveryBoys.map(toPublicDeliveryBoy),
-        reviews: db.reviews,
-        auditLogs: db.auditLogs,
+        reviews: reviewPage.items,
+        auditLogs: auditPage.items,
+        pagination: {
+          orderHistory: { hasMore: histPage.hasMore, nextCursor: histPage.nextCursor },
+          payments: { hasMore: payPage.hasMore, nextCursor: payPage.nextCursor },
+          refunds: { hasMore: refundPage.hasMore, nextCursor: refundPage.nextCursor },
+          reviews: { hasMore: reviewPage.hasMore, nextCursor: reviewPage.nextCursor },
+          auditLogs: { hasMore: auditPage.hasMore, nextCursor: auditPage.nextCursor },
+        },
         blockedList: db.blockedList,
         broadcasts: db.broadcasts,
         adminUsers: db.adminUsers.map(toPublicAdminUser),
@@ -995,6 +1063,7 @@ export default async function handler(req: Request, res: Response) {
       const { customerName, customerPhone, deliveryAddress, orderNotes, paymentMethod, items } =
         parsed.data;
       const cleanPhone = customerPhone.replace(/\D/g, '');
+      await refreshMenuItemsFresh();
 
       const bill = calculateAuthoritativeBill({
         items,
@@ -1064,15 +1133,16 @@ export default async function handler(req: Request, res: Response) {
       };
 
       db.orders.unshift(newOrder);
-      db.payments.unshift(paymentRecord);
+      upsertPaymentInMemory(paymentRecord);
 
-      const existingCust = db.customers[cleanPhone];
+      const existingCust = (await getFreshCustomer(cleanPhone)) || db.customers[cleanPhone];
       if (existingCust) {
         existingCust.name = customerName;
         existingCust.lastOrderAt = nowIso;
         existingCust.lastAddress = deliveryAddress;
         existingCust.orderCount += 1;
         existingCust.totalSpent += bill.grandTotal;
+        db.customers[cleanPhone] = existingCust;
       } else {
         db.customers[cleanPhone] = {
           phone: cleanPhone,
@@ -1108,7 +1178,7 @@ export default async function handler(req: Request, res: Response) {
       const admin = await verifyAdminAuthorized(req, res);
       if (!admin) return;
       const orderId = decodeURIComponent(subPath.split('/')[2]);
-      const order = db.orders.find((o) => o.id === orderId);
+      const order = await getFreshOrderById(orderId);
       if (!order) {
         res.status(404).json({ error: 'Order not found' });
         return;
@@ -1220,16 +1290,17 @@ export default async function handler(req: Request, res: Response) {
 
       order.updatedAt = nowIso;
 
+      await syncOrderRealtimePaths(order, previousRiderId);
+      const freshOrdersAfterPatch = await refreshActiveOrdersFresh();
       await Promise.all([
         ...db.deliveryBoys.map((r) => {
-          r.activeOrders = db.orders.filter(
+          r.activeOrders = freshOrdersAfterPatch.filter(
             (o) =>
               o.deliveryBoyId === r.id &&
               !['DELIVERED', 'CANCELLED', 'REJECTED'].includes(o.status)
           ).length;
           return rtdb.ref(`deliveryBoys/${r.id}`).set(r);
         }),
-        syncOrderRealtimePaths(order, previousRiderId),
         order.refundPending ? syncCancelledPendingRefundToHistory(order) : Promise.resolve(),
       ]);
 
@@ -1279,13 +1350,14 @@ export default async function handler(req: Request, res: Response) {
         return;
       }
 
+      const activeOrders = await refreshActiveOrdersFresh();
       const payload = parsed.data;
       let ordersToDelete: OrderRecord[] = [];
       let scopeLabel = '';
 
       if ('orderIds' in payload) {
         const idSet = new Set(payload.orderIds);
-        const matched = db.orders.filter((o) => idSet.has(o.id));
+        const matched = activeOrders.filter((o) => idSet.has(o.id));
         const liveMatched = matched.find((o) => !isClosedOrderStatus(o.status));
         if (liveMatched) {
           res.status(400).json({
@@ -1296,7 +1368,7 @@ export default async function handler(req: Request, res: Response) {
         ordersToDelete = matched;
         scopeLabel = `orderIds (${payload.orderIds.length} requested)`;
       } else if ('date' in payload) {
-        ordersToDelete = db.orders.filter((o) => {
+        ordersToDelete = activeOrders.filter((o) => {
           if (payload.status === 'DELIVERED') {
             return (
               o.status === 'DELIVERED' &&
@@ -1310,7 +1382,7 @@ export default async function handler(req: Request, res: Response) {
         });
         scopeLabel = `${payload.status} day ${payload.date}`;
       } else {
-        ordersToDelete = db.orders.filter((o) => {
+        ordersToDelete = activeOrders.filter((o) => {
           if (payload.status === 'DELIVERED') return o.status === 'DELIVERED';
           return o.status === 'CANCELLED' || o.status === 'REJECTED';
         });
@@ -1339,11 +1411,12 @@ export default async function handler(req: Request, res: Response) {
         clientIp
       );
 
+      const latestPayments = await queryPaginatedPayments(200);
       res.json({
         deletedCount: result.deletedCount,
         deletedOrderIds: result.deletedOrderIds,
         orders: db.orders.filter(isOrderVisibleToKitchen),
-        payments: db.payments,
+        payments: latestPayments.items,
       });
       return;
     }
@@ -1364,7 +1437,7 @@ export default async function handler(req: Request, res: Response) {
         return;
       }
 
-      const order = db.orders.find((o) => o.id === parsedId.data);
+      const order = await getFreshOrderById(parsedId.data);
       if (!order) {
         res.status(404).json({ error: 'Order not found' });
         return;
@@ -1390,11 +1463,12 @@ export default async function handler(req: Request, res: Response) {
         clientIp
       );
 
+      const latestPayments = await queryPaginatedPayments(200);
       res.json({
         deletedCount: result.deletedCount,
         deletedOrderIds: result.deletedOrderIds,
         orders: db.orders.filter(isOrderVisibleToKitchen),
-        payments: db.payments,
+        payments: latestPayments.items,
       });
       return;
     }
@@ -1497,7 +1571,10 @@ export default async function handler(req: Request, res: Response) {
             count++;
           }
         }
-        await persistFullStateToFirebase();
+        const menuMap: Record<string, MenuItem> = {};
+        for (const m of db.menuItems) menuMap[m.id] = m;
+        await rtdb.ref('menuItems').set(menuMap);
+        refreshHydrationCache();
         clearHomeCache();
         invalidateHomeHydration();
         await logAudit(
@@ -1528,7 +1605,10 @@ export default async function handler(req: Request, res: Response) {
             count++;
           }
         }
-        await persistFullStateToFirebase();
+        const menuMap: Record<string, MenuItem> = {};
+        for (const m of db.menuItems) menuMap[m.id] = m;
+        await rtdb.ref('menuItems').set(menuMap);
+        refreshHydrationCache();
         clearHomeCache();
         invalidateHomeHydration();
         await logAudit(
@@ -1590,7 +1670,10 @@ export default async function handler(req: Request, res: Response) {
           });
           importedCount++;
         }
-        await persistFullStateToFirebase();
+        const menuMap: Record<string, MenuItem> = {};
+        for (const m of db.menuItems) menuMap[m.id] = m;
+        await rtdb.ref('menuItems').set(menuMap);
+        refreshHydrationCache();
         clearHomeCache();
         invalidateHomeHydration();
         await logAudit(
@@ -1775,10 +1858,16 @@ export default async function handler(req: Request, res: Response) {
         return;
       }
       db.menuItems = db.menuItems.filter((m) => m.id !== itemId);
+      const homeSectionsMap: Record<string, any> = {};
       for (const sec of db.homeSections) {
         sec.itemIds = sec.itemIds.filter((id) => id !== itemId);
+        homeSectionsMap[sec.id] = sec;
       }
-      await persistFullStateToFirebase();
+      await rtdb.ref().update({
+        [`menuItems/${itemId}`]: null,
+        homeSections: homeSectionsMap,
+      });
+      refreshHydrationCache();
       clearHomeCache();
       invalidateHomeHydration();
       await logAudit(
@@ -1845,7 +1934,18 @@ export default async function handler(req: Request, res: Response) {
           }
         }
       }
-      await persistFullStateToFirebase();
+      const bannersMap: Record<string, any> = {};
+      for (const b of db.banners) bannersMap[b.id] = b;
+      const sectionsMap: Record<string, any> = {};
+      for (const s of db.homeSections) sectionsMap[s.id] = s;
+      const menuMap: Record<string, MenuItem> = {};
+      for (const m of db.menuItems) menuMap[m.id] = m;
+      await rtdb.ref().update({
+        banners: bannersMap,
+        homeSections: sectionsMap,
+        menuItems: menuMap,
+      });
+      refreshHydrationCache();
       clearHomeCache();
       invalidateHomeHydration();
       await logAudit(
@@ -2324,10 +2424,17 @@ export default async function handler(req: Request, res: Response) {
 
       if (unblock) {
         db.blockedList = db.blockedList.filter((b) => b.targetValue !== val);
+        const blockedMap: Record<string, any> = {};
+        for (const b of db.blockedList) blockedMap[b.id] = b;
+        const unblockUpdates: Record<string, any> = {
+          blockedList: blockedMap,
+        };
         if (db.customers[val]) {
           db.customers[val].isBlocked = false;
+          unblockUpdates[`customers/${val}`] = db.customers[val];
         }
-        await persistFullStateToFirebase();
+        await rtdb.ref().update(unblockUpdates);
+        refreshHydrationCache();
         await logAudit(admin.email, admin.role, 'UNBLOCKED_ENTITY', `Unblocked ${val}`, clientIp);
       } else {
         if (!db.blockedList.some((b) => b.targetValue === val)) {
@@ -2368,15 +2475,14 @@ export default async function handler(req: Request, res: Response) {
       const admin = await verifyAdminAuthorized(req, res);
       if (!admin) return;
       const paymentId = decodeURIComponent(subPath.split('/')[2]);
-      const payment = db.payments.find((p) => p.id === paymentId);
+      const payment = (await getFreshPaymentById(paymentId)) || db.payments.find((p) => p.id === paymentId);
       if (!payment) {
         res.status(404).json({ error: 'Payment record not found' });
         return;
       }
+      upsertPaymentInMemory(payment);
 
-      const targetOrder = db.orders.find(
-        (o) => o.id === payment.orderId || o.orderNumber === payment.orderNumber
-      );
+      const targetOrder = await getFreshOrderById(payment.orderId);
       if (!targetOrder || (targetOrder.status !== 'CANCELLED' && targetOrder.status !== 'REJECTED')) {
         res.status(400).json({
           error:
@@ -2405,9 +2511,16 @@ export default async function handler(req: Request, res: Response) {
         return;
       }
 
-      const alreadyRefunded = db.refunds
-        .filter((r) => r.paymentId === payment.id && r.status === 'PROCESSED')
-        .reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
+      const freshPaymentRefunds = await getRefundsForPaymentFresh(payment.id);
+      const seenRefundIds = new Set<string>();
+      let alreadyRefunded = 0;
+      for (const r of [...freshPaymentRefunds, ...db.refunds.filter((r) => r.paymentId === payment.id)]) {
+        if (seenRefundIds.has(r.id)) continue;
+        seenRefundIds.add(r.id);
+        if (r.status === 'PROCESSED') {
+          alreadyRefunded += Number(r.amount) || 0;
+        }
+      }
       const remainingRefundable = Math.max(0, payment.amount - alreadyRefunded);
 
       if (remainingRefundable <= 0) {
@@ -2498,13 +2611,17 @@ export default async function handler(req: Request, res: Response) {
       const admin = await verifyAdminAuthorized(req, res);
       if (!admin) return;
       const reviewId = decodeURIComponent(subPath.split('/')[2]);
-      const rev = db.reviews.find((r) => r.id === reviewId);
+      const revSnap = await rtdb.ref(`reviews/${reviewId}`).get();
+      const rev = (revSnap.val() as any) || db.reviews.find((r) => r.id === reviewId);
       if (!rev) {
         res.status(404).json({ error: 'Review not found' });
         return;
       }
       rev.complaintStatus = 'RESOLVED';
       await rtdb.ref(`reviews/${rev.id}`).set(rev);
+      const memIdx = db.reviews.findIndex((r) => r.id === rev.id);
+      if (memIdx >= 0) db.reviews[memIdx] = rev;
+      else db.reviews.unshift(rev);
       refreshHydrationCache();
       await logAudit(
         admin.email,
@@ -2513,7 +2630,8 @@ export default async function handler(req: Request, res: Response) {
         `Resolved complaint for ${rev.orderNumber}`,
         clientIp
       );
-      res.json({ reviews: db.reviews });
+      const latestReviews = await queryPaginatedReviews(200);
+      res.json({ review: rev, reviews: latestReviews.items });
       return;
     }
 
@@ -2555,7 +2673,7 @@ export default async function handler(req: Request, res: Response) {
       return;
     }
 
-    // 27. POST /api/admin/upload-image (Requirement 7: Uploads to Firebase Storage / Cloudinary, saves URL in DB)
+    // 27. POST /api/admin/upload-image (Cloudinary only for Spark plan; never Firebase Storage or RTDB base64)
     if (method === 'POST' && subPath === '/upload-image') {
       const admin = await verifyAdminAuthorized(req, res);
       if (!admin) return;
@@ -2584,13 +2702,9 @@ export default async function handler(req: Request, res: Response) {
         (process.env.CLOUDINARY_UPLOAD_URL || '').trim() &&
         (process.env.CLOUDINARY_UPLOAD_PRESET || '').trim()
       );
-      const isStorageConfigured = Boolean(
-        process.env.FIREBASE_STORAGE_BUCKET || isCloudinaryConfigured
-      );
-      if (!isStorageConfigured) {
+      if (!isCloudinaryConfigured) {
         res.status(400).json({
-          error:
-            'FIREBASE_STORAGE_BUCKET or Cloudinary is not configured. Please set the environment variable or paste a direct photo link.',
+          error: 'Image upload is not configured. Paste an image URL instead.',
         });
         return;
       }
@@ -2607,7 +2721,7 @@ export default async function handler(req: Request, res: Response) {
         admin.email,
         admin.role,
         'IMAGE_UPLOADED',
-        `Uploaded image to Firebase/Cloud storage (${Math.round(buffer.byteLength / 1024)} KB)`,
+        `Uploaded image to Cloudinary (${Math.round(buffer.byteLength / 1024)} KB)`,
         clientIp
       );
       res.json({ url: uploadedUrl });
@@ -2625,10 +2739,26 @@ export default async function handler(req: Request, res: Response) {
         'Downloaded full JSON database backup from Firebase RTDB',
         clientIp
       );
+      const [histSnap, paySnap, refSnap, revSnap, audSnap] = await Promise.all([
+        rtdb.ref('orderHistory').get(),
+        rtdb.ref('payments').get(),
+        rtdb.ref('refunds').get(),
+        rtdb.ref('reviews').get(),
+        rtdb.ref('auditLogs').get(),
+      ]);
+      const toList = (val: any) => (val && typeof val === 'object' ? Object.values(val).filter(Boolean) : []);
+      const fullSnapshot = {
+        ...db,
+        orderHistory: histSnap.exists() ? toList(histSnap.val()) : db.orderHistory,
+        payments: paySnap.exists() ? toList(paySnap.val()) : db.payments,
+        refunds: refSnap.exists() ? toList(refSnap.val()) : db.refunds,
+        reviews: revSnap.exists() ? toList(revSnap.val()) : db.reviews,
+        auditLogs: audSnap.exists() ? toList(audSnap.val()) : db.auditLogs,
+      };
       const filename = `khana-pina-backup-${new Date().toISOString().slice(0, 10)}.json`;
       res.setHeader('Content-Type', 'application/json');
       res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-      res.send(JSON.stringify(db, null, 2));
+      res.send(JSON.stringify(fullSnapshot, null, 2));
       return;
     }
 
@@ -2650,11 +2780,74 @@ export default async function handler(req: Request, res: Response) {
       return;
     }
 
-    // 30. GET /api/admin/history & DELETE /api/admin/history/:orderId
+    // 30. Paginated admin ledger endpoints (newest 200 first + cursor pagination)
     if (method === 'GET' && subPath === '/history') {
       const admin = await verifyAdminAuthorized(req, res);
       if (!admin) return;
-      res.json({ orderHistory: db.orderHistory });
+      const limit = Number((req.query as any)?.limit) || 200;
+      const cursor = typeof (req.query as any)?.cursor === 'string' ? (req.query as any).cursor : null;
+      const page = await queryPaginatedOrderHistory(limit, cursor);
+      res.json({
+        orderHistory: page.items,
+        hasMore: page.hasMore,
+        nextCursor: page.nextCursor,
+      });
+      return;
+    }
+
+    if (method === 'GET' && subPath === '/payments') {
+      const admin = await verifyAdminAuthorized(req, res);
+      if (!admin) return;
+      const limit = Number((req.query as any)?.limit) || 200;
+      const cursor = typeof (req.query as any)?.cursor === 'string' ? (req.query as any).cursor : null;
+      const page = await queryPaginatedPayments(limit, cursor);
+      res.json({
+        payments: page.items,
+        hasMore: page.hasMore,
+        nextCursor: page.nextCursor,
+      });
+      return;
+    }
+
+    if (method === 'GET' && subPath === '/refunds') {
+      const admin = await verifyAdminAuthorized(req, res);
+      if (!admin) return;
+      const limit = Number((req.query as any)?.limit) || 200;
+      const cursor = typeof (req.query as any)?.cursor === 'string' ? (req.query as any).cursor : null;
+      const page = await queryPaginatedRefunds(limit, cursor);
+      res.json({
+        refunds: page.items,
+        hasMore: page.hasMore,
+        nextCursor: page.nextCursor,
+      });
+      return;
+    }
+
+    if (method === 'GET' && subPath === '/reviews') {
+      const admin = await verifyAdminAuthorized(req, res);
+      if (!admin) return;
+      const limit = Number((req.query as any)?.limit) || 200;
+      const cursor = typeof (req.query as any)?.cursor === 'string' ? (req.query as any).cursor : null;
+      const page = await queryPaginatedReviews(limit, cursor);
+      res.json({
+        reviews: page.items,
+        hasMore: page.hasMore,
+        nextCursor: page.nextCursor,
+      });
+      return;
+    }
+
+    if (method === 'GET' && subPath === '/audit-logs') {
+      const admin = await verifyAdminAuthorized(req, res);
+      if (!admin) return;
+      const limit = Number((req.query as any)?.limit) || 200;
+      const cursor = typeof (req.query as any)?.cursor === 'string' ? (req.query as any).cursor : null;
+      const page = await queryPaginatedAuditLogs(limit, cursor);
+      res.json({
+        auditLogs: page.items,
+        hasMore: page.hasMore,
+        nextCursor: page.nextCursor,
+      });
       return;
     }
 
@@ -2662,7 +2855,8 @@ export default async function handler(req: Request, res: Response) {
       const admin = await verifyAdminAuthorized(req, res);
       if (!admin) return;
       const orderId = decodeURIComponent(subPath.split('/')[2]);
-      const target = db.orderHistory.find((h) => h.id === orderId);
+      const histSnap = await rtdb.ref(`orderHistory/${orderId}`).get();
+      const target = (histSnap.val() as any) || db.orderHistory.find((h) => h.id === orderId);
       if (!target) {
         res.status(404).json({ error: 'History record not found' });
         return;
@@ -2677,7 +2871,13 @@ export default async function handler(req: Request, res: Response) {
         `Deleted history entry ${target.orderNumber} (₹${target.grandTotal}, ${target.dateKeyIST})`,
         clientIp
       );
-      res.json({ ok: true, orderHistory: db.orderHistory });
+      const latestHistory = await queryPaginatedOrderHistory(200);
+      res.json({
+        ok: true,
+        orderHistory: latestHistory.items,
+        hasMore: latestHistory.hasMore,
+        nextCursor: latestHistory.nextCursor,
+      });
       return;
     }
 

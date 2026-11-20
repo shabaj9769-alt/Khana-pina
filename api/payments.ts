@@ -15,8 +15,18 @@ import {
   isRazorpayConfigured,
 } from './_lib/security.ts';
 
-import type { PaymentRecord } from '../src/types.ts';
-import { db, ensureFirebaseSeeded, refreshHydrationCache, syncOrderRealtimePaths } from './_lib/store.ts';
+import type { OrderRecord, PaymentRecord } from '../src/types.ts';
+import {
+  db,
+  ensureFirebaseSeeded,
+  findOrderFresh,
+  findPaymentFresh,
+  getFreshOrderById,
+  refreshActiveOrdersFresh,
+  refreshHydrationCache,
+  syncOrderRealtimePaths,
+  upsertPaymentInMemory,
+} from './_lib/store.ts';
 
 // Disable automatic body parsing on Vercel so /api/payments/webhook can verify HMAC over the exact raw stream
 export const config = {
@@ -74,7 +84,17 @@ export default async function handler(req: Request, res: Response) {
       body?.razorpay_signature || query?.razorpay_signature || body?.razorpaySignature || ''
     ).trim();
 
-    let targetOrder = db.orders.find((o) => razorpayOrderId && o.razorpayOrderId === razorpayOrderId);
+    let targetOrder: OrderRecord | null = null;
+    if (razorpayOrderId) {
+      const matchedPay = await findPaymentFresh({ razorpayOrderId });
+      if (matchedPay) {
+        targetOrder = await getFreshOrderById(matchedPay.orderId);
+      }
+      if (!targetOrder) {
+        const activeOrders = await refreshActiveOrdersFresh();
+        targetOrder = activeOrders.find((o) => o.razorpayOrderId === razorpayOrderId) || null;
+      }
+    }
 
     if (razorpayPaymentId && razorpayOrderId && razorpaySignature) {
       const result = await verifyRazorpayPaymentAuthoritative({
@@ -208,12 +228,21 @@ export default async function handler(req: Request, res: Response) {
         return;
       }
 
-      const order = db.orders.find(
-        (o) =>
-          (trackingToken && o.trackingToken === trackingToken) ||
-          (orderId && o.id === orderId) ||
-          (razorpayOrderIdReq && o.razorpayOrderId === razorpayOrderIdReq)
-      );
+      let order: OrderRecord | null = null;
+      if (orderId) {
+        order = await getFreshOrderById(orderId);
+      } else if (trackingToken) {
+        order = await findOrderFresh({ trackingToken });
+      } else if (razorpayOrderIdReq) {
+        const matchedPay = await findPaymentFresh({ razorpayOrderId: razorpayOrderIdReq });
+        if (matchedPay) {
+          order = await getFreshOrderById(matchedPay.orderId);
+        }
+        if (!order) {
+          const activeOrders = await refreshActiveOrdersFresh();
+          order = activeOrders.find((o) => o.razorpayOrderId === razorpayOrderIdReq) || null;
+        }
+      }
 
       if (!order) {
         res.status(404).json({ error: 'Order not found' });
@@ -260,11 +289,12 @@ export default async function handler(req: Request, res: Response) {
         order.razorpayOrderId = rzpOrderId;
         order.updatedAt = new Date().toISOString();
 
-        let payment = db.payments.find((p) => p.orderId === order.id);
+        let payment = await findPaymentFresh({ orderId: order.id });
         if (payment) {
           payment.razorpayOrderId = rzpOrderId;
           payment.status = 'PENDING';
           payment.updatedAt = order.updatedAt;
+          upsertPaymentInMemory(payment);
         } else {
           payment = {
             id: `pay_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
@@ -282,7 +312,7 @@ export default async function handler(req: Request, res: Response) {
             createdAt: order.placedAt,
             updatedAt: order.updatedAt,
           };
-          db.payments.unshift(payment);
+          upsertPaymentInMemory(payment);
         }
 
         const rtdb = getRtdb();

@@ -61,10 +61,15 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = () => {
   const [isOnline, setIsOnline] = useState(true);
   const [riderTab, setRiderTab] = useState<'active' | 'completed'>('active');
   const [orders, setOrders] = useState<OrderRecord[]>([]);
+  const [archivedTodayStats, setArchivedTodayStats] = useState<{
+    deliveriesCount: number;
+    cashCollected: number;
+  }>({ deliveriesCount: 0, cashCollected: 0 });
   const [loading, setLoading] = useState(false);
   const [otpDigits, setOtpDigits] = useState<Record<string, [string, string, string, string]>>({});
   const [feedback, setFeedback] = useState<Record<string, { type: 'ok' | 'err'; msg: string }>>({});
   const [toastMsg, setToastMsg] = useState<string | null>(null);
+  const ordersCountRef = useRef(0);
   const [riderThemeMode, setRiderThemeMode] = useState<ThemeMode>(() => {
     try {
       const saved = localStorage.getItem('khanapina_rider_theme_v1');
@@ -127,6 +132,8 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = () => {
           setRiderPhone(data.rider.phone);
         }
         setOrders(data.orders || []);
+        ordersCountRef.current = (data.orders || []).length;
+        setArchivedTodayStats(data.archivedTodayStats || { deliveriesCount: 0, cashCollected: 0 });
         setRiderCustomToken(data.firebaseCustomToken || null);
         setFirebaseClientConfig(data.firebaseClientConfig || null);
         showToast('Logged in successfully');
@@ -149,6 +156,8 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = () => {
     setRiderName('');
     setRiderPhone('');
     setOrders([]);
+    ordersCountRef.current = 0;
+    setArchivedTodayStats({ deliveriesCount: 0, cashCollected: 0 });
     showToast('Logged out');
   };
 
@@ -173,6 +182,8 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = () => {
         setRiderName(data.rider.name);
         setRiderPhone(data.rider.phone);
         setOrders(data.orders || []);
+        ordersCountRef.current = (data.orders || []).length;
+        setArchivedTodayStats(data.archivedTodayStats || { deliveriesCount: 0, cashCollected: 0 });
         setRiderCustomToken(data.firebaseCustomToken || null);
         setFirebaseClientConfig(data.firebaseClientConfig || null);
       } else {
@@ -199,7 +210,25 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = () => {
       customToken: riderCustomToken,
       firebaseConfig: firebaseClientConfig as { databaseURL: string; apiKey?: string; projectId?: string } | null,
       onOrdersUpdate: (liveOrders) => {
+        const prevCount = ordersCountRef.current;
+        ordersCountRef.current = liveOrders.length;
         setOrders(liveOrders);
+        if (liveOrders.length < prevCount) {
+          // Orders may have been archived at shop close; refresh today's archived stats silently
+          void fetch('/api/rider/me', {
+            headers: { 'X-Rider-Session': sessionToken },
+          })
+            .then((r) => (r.ok ? r.json() : null))
+            .then((d) => {
+              if (d?.archivedTodayStats) {
+                setArchivedTodayStats(d.archivedTodayStats);
+              }
+            })
+            .catch(() => {});
+        }
+      },
+      onStatsUpdate: (stats) => {
+        setArchivedTodayStats(stats);
       },
       onUnauthorized: () => {
         handleLogout();
@@ -372,9 +401,13 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = () => {
   );
   const completedDeliveries = orders.filter((o) => o.status === 'DELIVERED');
 
-  const cashCollectedToday = completedDeliveries
-    .filter((o) => o.paymentMethod === 'COD')
-    .reduce((sum, o) => sum + o.grandTotal, 0);
+  const totalDeliveriesDoneToday =
+    completedDeliveries.length + (archivedTodayStats?.deliveriesCount || 0);
+  const cashCollectedToday =
+    completedDeliveries
+      .filter((o) => o.paymentMethod === 'COD')
+      .reduce((sum, o) => sum + o.grandTotal, 0) +
+    (archivedTodayStats?.cashCollected || 0);
 
   const firstName = riderName ? riderName.split(' ')[0] : 'Rider';
 
@@ -468,7 +501,7 @@ export const DeliveryPartnerView: React.FC<DeliveryPartnerViewProps> = () => {
           <div className="bg-surface rounded-theme p-4 shadow-2xs border border-border min-w-0">
             <p className="text-[12px] font-medium text-muted break-words leading-snug">Deliveries done</p>
             <p className="mt-1 text-[24px] font-bold text-text tabular-nums leading-tight">
-              {completedDeliveries.length}
+              {totalDeliveriesDoneToday}
             </p>
           </div>
           <div className="bg-surface rounded-theme p-4 shadow-2xs border border-border min-w-0">
