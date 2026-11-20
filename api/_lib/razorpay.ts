@@ -22,7 +22,11 @@ import {
   upsertPaymentInMemory,
   verifyAndIncrementMenuStockSalesTx,
 } from './store.ts';
-import { notifyTelegramCancelledOrder, notifyTelegramNewOrder } from './telegram.ts';
+import {
+  notifyTelegramCancelledOrder,
+  notifyTelegramNewOrder,
+  sendTelegram,
+} from './telegram.ts';
 import type { OrderRecord, PaymentRecord, RefundRecord } from '../../src/types.ts';
 
 export interface RazorpayGatewayPaymentEntity {
@@ -301,9 +305,10 @@ export async function verifyRazorpayPaymentAuthoritative(params: {
   if (!sigValid) {
     payment.status = 'FAILED';
     payment.updatedAt = new Date().toISOString();
-    if (order.paymentStatus !== 'PAID') {
+    if (order.paymentStatus !== 'PAID' && order.paymentMethod !== 'COD') {
       order.paymentStatus = 'FAILED';
     }
+    upsertPaymentInMemory(payment);
     await getRtdb().ref(`payments/${payment.id}`).set(payment);
     await syncOrderRealtimePaths(order);
     await logAudit(
@@ -329,6 +334,42 @@ export async function verifyRazorpayPaymentAuthoritative(params: {
     return {
       status: 409,
       error: 'This Razorpay payment ID has already been used for another order',
+    };
+  }
+
+  // Step 2b: If customer already switched this order to COD, never mark it PAID; flag payment for admin review
+  if (order.paymentMethod === 'COD') {
+    payment.razorpayPaymentId = razorpayPaymentId;
+    payment.razorpaySignature = razorpaySignature;
+    payment.serverHmacVerified = true;
+    payment.status = 'FLAGGED';
+    payment.flagReason = 'Online payment received after customer switched to COD - refund or adjust';
+    payment.updatedAt = new Date().toISOString();
+    upsertPaymentInMemory(payment);
+    await getRtdb().ref(`payments/${payment.id}`).set(payment);
+    await logAudit(
+      'system@khanapina.in',
+      'owner',
+      'PAYMENT_RECEIVED_AFTER_COD_SWITCH',
+      `Online payment ${razorpayPaymentId} verified on order ${order.orderNumber} after customer switched to COD. Flagged for refund/adjust.`,
+      clientIp
+    );
+    const siteUrl = (process.env.SITE_URL || '').trim().replace(/\/+$/, '');
+    const adminLine = `🔗 Admin: ${siteUrl ? `${siteUrl}/admin` : '/admin'}`;
+    await sendTelegram(
+      [
+        `⚠ Payment Alert #${order.orderNumber} (Khana Pina)`,
+        `Online payment received after customer switched to Cash on Delivery.`,
+        `Payment ID: ${razorpayPaymentId}`,
+        `Amount: Rs ${order.grandTotal}`,
+        `👤 ${order.customerName} (${order.customerPhone})`,
+        `Action: Refund or adjust in Admin Payments (order stays COD).`,
+        adminLine,
+      ].join('\n')
+    );
+    return {
+      status: 409,
+      error: 'This order was switched to Cash on Delivery.',
     };
   }
 
@@ -635,6 +676,40 @@ export async function processRazorpayWebhookAuthoritative(params: {
       payment.razorpayPaymentId = rzpPaymentId;
     }
 
+    // Switched to COD: never silently mark PAID or change order status; flag payment + audit + Telegram admin alert
+    if (order.paymentMethod === 'COD') {
+      payment.status = 'FLAGGED';
+      payment.webhookVerified = true;
+      payment.flagReason = 'Online payment received after customer switched to COD - refund or adjust';
+      upsertPaymentInMemory(payment);
+      await rtdb.ref(`payments/${payment.id}`).set(payment);
+      await logAudit(
+        'webhook@razorpay.com',
+        'owner',
+        'WEBHOOK_PAYMENT_FOR_COD_FLAGGED',
+        `Online ${event} (${rzpPaymentId || rzpOrderId || payment.id}) received for COD order ${order.orderNumber}. Flagged for refund/adjust.`,
+        clientIp
+      );
+      const siteUrl = (process.env.SITE_URL || '').trim().replace(/\/+$/, '');
+      const adminLine = `🔗 Admin: ${siteUrl ? `${siteUrl}/admin` : '/admin'}`;
+      await sendTelegram(
+        [
+          `⚠ Payment Alert #${order.orderNumber} (Khana Pina)`,
+          `Online payment received after customer switched to Cash on Delivery.`,
+          `Payment ID: ${rzpPaymentId || payment.razorpayPaymentId || payment.id}`,
+          `Amount: Rs ${order.grandTotal}`,
+          `👤 ${order.customerName} (${order.customerPhone})`,
+          `Action: Refund or adjust in Admin Payments (order stays COD).`,
+          adminLine,
+        ].join('\n')
+      );
+      refreshHydrationCache();
+      return {
+        status: 200,
+        payload: { status: 'flagged_cod_switched', order, payment },
+      };
+    }
+
     // Requirement 8: Late capture on CANCELLED order must NOT mark order PAID; flag 'LATE_CAPTURE' + audit log
     if (order.status === 'CANCELLED' || order.status === 'REJECTED') {
       payment.status = 'LATE_CAPTURE';
@@ -702,6 +777,26 @@ export async function processRazorpayWebhookAuthoritative(params: {
       invalidateHomeHydration();
     }
   } else if (event === 'payment.failed') {
+    if (order.paymentMethod === 'COD') {
+      payment.status = 'FAILED';
+      if (!payment.flagReason) {
+        payment.flagReason = 'Customer switched to Cash on Delivery';
+      }
+      upsertPaymentInMemory(payment);
+      await rtdb.ref(`payments/${payment.id}`).set(payment);
+      await logAudit(
+        'webhook@razorpay.com',
+        'owner',
+        'WEBHOOK_PAYMENT_FAILED_IGNORED_COD',
+        `Ignored payment.failed for COD order ${order.orderNumber} (${rzpPaymentId || rzpOrderId || payment.id})`,
+        clientIp
+      );
+      refreshHydrationCache();
+      return {
+        status: 200,
+        payload: { status: 'ignored_failed_for_cod', order, payment },
+      };
+    }
     if (order.paymentStatus !== 'PAID') {
       cancelledByFailedPayment = order.status !== 'CANCELLED' && order.status !== 'REJECTED';
       payment.status = 'FAILED';

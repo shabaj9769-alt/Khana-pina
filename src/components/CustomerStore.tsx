@@ -288,6 +288,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
   const [verifyingPayment, setVerifyingPayment] = useState(false);
   const [retryingPayment, setRetryingPayment] = useState(false);
   const [switchingToCod, setSwitchingToCod] = useState(false);
+  const [switchCodOtpStepOpen, setSwitchCodOtpStepOpen] = useState(false);
   const [pendingPaymentFailure, setPendingPaymentFailure] = useState<{
     order: OrderRecord;
     razorpayOrderId: string;
@@ -1091,7 +1092,9 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
 
   const handleRequestCodOtp = async () => {
     setCheckoutError(null);
-    const digits = guestPhone.replace(/\D/g, '').slice(-10);
+    const digits = (guestPhone || pendingPaymentFailure?.order.customerPhone || '')
+      .replace(/\D/g, '')
+      .slice(-10);
     if (!/^[6-9]\d{9}$/.test(digits)) {
       setCheckoutError('Enter a valid 10-digit Indian mobile number before requesting COD OTP.');
       return;
@@ -1131,6 +1134,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
 
   const triggerOrderSuccessScreen = (order: OrderRecord) => {
     setCart([]);
+    setSwitchCodOtpStepOpen(false);
     setPendingPaymentFailure(null);
     setPendingRazorpayModal(null);
     setConfirmedSuccessOrder(null);
@@ -1397,19 +1401,33 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
 
   const handleSwitchToCod = async (order: OrderRecord) => {
     if (switchingToCod || retryingPayment || verifyingPayment) return;
+    if (billPreview?.requirePhoneOtpForCod && !codOtpVerified) {
+      setPaymentMethod('COD');
+      setSwitchCodOtpStepOpen(true);
+      setCheckoutError('Please verify your mobile number via OTP for Cash on Delivery.');
+      return;
+    }
     setSwitchingToCod(true);
     setCheckoutError(null);
     try {
       const res = await fetch('/api/orders/switch-to-cod', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ trackingToken: order.trackingToken }),
+        body: JSON.stringify({
+          trackingToken: order.trackingToken,
+          codOtpToken: codOtpVerifiedToken || undefined,
+        }),
       });
       const data = await res.json();
       if (!res.ok) {
+        if (data.requirePhoneOtpForCod) {
+          setPaymentMethod('COD');
+          setSwitchCodOtpStepOpen(true);
+        }
         setCheckoutError(data.error || 'Failed to switch to Cash on Delivery.');
         return;
       }
+      setSwitchCodOtpStepOpen(false);
       setPendingPaymentFailure(null);
       triggerOrderSuccessScreen(data.order);
     } catch {
@@ -2205,6 +2223,67 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                         <span>{switchingToCod ? 'Switching...' : 'Order with Cash on Delivery'}</span>
                       </button>
                     </div>
+                    {switchCodOtpStepOpen && (
+                      <div className="rounded-xl border border-primary/30 bg-surface p-3.5 space-y-2.5 text-[14px]">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-bold text-text">
+                            Verify mobile OTP for Cash on Delivery
+                          </span>
+                          {codOtpVerified && (
+                            <span className="text-accent font-bold text-[13px]">
+                              ✓ Verified
+                            </span>
+                          )}
+                        </div>
+                        {!codOtpVerified && (
+                          <div className="flex flex-wrap items-center gap-2">
+                            <button
+                              type="button"
+                              disabled={codOtpBusy}
+                              onClick={handleRequestCodOtp}
+                              className="min-h-[48px] px-4 rounded-xl bg-primary text-primary-contrast font-bold text-[14px] cursor-pointer disabled:opacity-50"
+                            >
+                              {codOtpRequested ? 'Resend OTP' : 'Send OTP'}
+                            </button>
+                            {codOtpRequested && (
+                              <>
+                                <input
+                                  type="text"
+                                  inputMode="numeric"
+                                  maxLength={4}
+                                  value={codOtpCode}
+                                  onFocus={handleCheckoutInputFocus}
+                                  onBlur={handleCheckoutInputBlur}
+                                  onChange={(e) =>
+                                    setCodOtpCode(e.target.value.replace(/\D/g, '').slice(0, 4))
+                                  }
+                                  placeholder="4-digit OTP"
+                                  className="w-36 min-h-[48px] px-3.5 py-2 rounded-xl border border-border bg-bg text-[16px] tabular-nums text-text"
+                                />
+                                <button
+                                  type="button"
+                                  disabled={codOtpBusy}
+                                  onClick={handleVerifyCodOtp}
+                                  className="min-h-[48px] px-4 rounded-xl bg-accent text-white font-bold text-[14px] cursor-pointer disabled:opacity-50"
+                                >
+                                  Verify OTP
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        )}
+                        {codOtpDemoHint && !codOtpVerified && (
+                          <p className="text-[13px] tabular-nums text-primary">
+                            Demo OTP: <strong>{codOtpDemoHint}</strong>
+                          </p>
+                        )}
+                      </div>
+                    )}
+                    {checkoutError && (
+                      <p className="text-[13px] font-semibold text-primary break-words">
+                        {checkoutError}
+                      </p>
+                    )}
                   </div>
                 )}
 
@@ -2411,6 +2490,67 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                       <span>{switchingToCod ? 'Switching...' : 'Order with Cash on Delivery'}</span>
                     </button>
                   </div>
+                  {switchCodOtpStepOpen && (
+                    <div className="rounded-xl border border-primary/30 bg-surface p-3.5 space-y-2.5 text-[14px]">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-bold text-text">
+                          Verify mobile OTP for Cash on Delivery
+                        </span>
+                        {codOtpVerified && (
+                          <span className="text-accent font-bold text-[13px]">
+                            ✓ Verified
+                          </span>
+                        )}
+                      </div>
+                      {!codOtpVerified && (
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            disabled={codOtpBusy}
+                            onClick={handleRequestCodOtp}
+                            className="min-h-[48px] px-4 rounded-xl bg-primary text-primary-contrast font-bold text-[14px] cursor-pointer disabled:opacity-50"
+                          >
+                            {codOtpRequested ? 'Resend OTP' : 'Send OTP'}
+                          </button>
+                          {codOtpRequested && (
+                            <>
+                              <input
+                                type="text"
+                                inputMode="numeric"
+                                maxLength={4}
+                                value={codOtpCode}
+                                onFocus={handleCheckoutInputFocus}
+                                onBlur={handleCheckoutInputBlur}
+                                onChange={(e) =>
+                                  setCodOtpCode(e.target.value.replace(/\D/g, '').slice(0, 4))
+                                }
+                                placeholder="4-digit OTP"
+                                className="w-36 min-h-[48px] px-3.5 py-2 rounded-xl border border-border bg-bg text-[16px] tabular-nums text-text"
+                              />
+                              <button
+                                type="button"
+                                disabled={codOtpBusy}
+                                onClick={handleVerifyCodOtp}
+                                className="min-h-[48px] px-4 rounded-xl bg-accent text-white font-bold text-[14px] cursor-pointer disabled:opacity-50"
+                              >
+                                Verify OTP
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      )}
+                      {codOtpDemoHint && !codOtpVerified && (
+                        <p className="text-[13px] tabular-nums text-primary">
+                          Demo OTP: <strong>{codOtpDemoHint}</strong>
+                        </p>
+                      )}
+                    </div>
+                  )}
+                  {checkoutError && (
+                    <p className="text-[13px] font-semibold text-primary break-words">
+                      {checkoutError}
+                    </p>
+                  )}
                 </div>
               )}
 

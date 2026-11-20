@@ -26,6 +26,7 @@ import {
   expireStaleOrdersLazy,
   findOrderFresh,
   findPaymentFresh,
+  findPaymentsForOrderFresh,
   findVerifiedCodOtpSession,
   formatTime24To12,
   getCodOtpSession,
@@ -338,7 +339,15 @@ export default async function handler(req: Request, res: Response) {
 
     // 4b. POST /api/orders/switch-to-cod
     if (req.method === 'POST' && path.endsWith('/orders/switch-to-cod')) {
-      const { trackingToken } = req.body || {};
+      const allowed = await checkFirebaseRateLimit('switch_to_cod', clientIp, 10, 15 * 60 * 1000);
+      if (!allowed) {
+        res.status(429).json({
+          error: 'Too many switch-to-COD requests from this IP. Please wait 15 minutes.',
+        });
+        return;
+      }
+
+      const { trackingToken, codOtpToken } = req.body || {};
       if (!trackingToken || typeof trackingToken !== 'string') {
         res.status(400).json({ error: 'Tracking token is required' });
         return;
@@ -361,10 +370,112 @@ export default async function handler(req: Request, res: Response) {
         return;
       }
 
+      const cleanPhone = String(order.customerPhone || '').replace(/\D/g, '');
+      await Promise.all([
+        refreshMenuItemsFresh(),
+        refreshCouponsAndUsagesFresh(),
+        cleanPhone ? getFreshCustomer(cleanPhone) : Promise.resolve(null),
+        refreshActiveOrdersFresh(),
+      ]);
+
+      // Blocklist check (Phone or IP)
+      const blockedPhone = db.blockedList.find(
+        (b) => b.targetType === 'PHONE' && b.targetValue === cleanPhone
+      );
+      const blockedIp = db.blockedList.find(
+        (b) => b.targetType === 'IP' && b.targetValue === clientIp
+      );
+      if (blockedPhone || blockedIp || db.customers[cleanPhone]?.isBlocked) {
+        res.status(403).json({
+          error: 'Orders from this phone number or network have been restricted by store administration.',
+        });
+        return;
+      }
+
+      const codOtpRequiredNow =
+        db.settings.requirePhoneOtpForCod &&
+        (isDemoModeEnabled() || isCodOtpProviderConfigured());
+      if (codOtpRequiredNow) {
+        const matchedOtp = await findVerifiedCodOtpSession(
+          cleanPhone,
+          typeof codOtpToken === 'string' ? codOtpToken : undefined
+        );
+        if (!matchedOtp) {
+          res.status(400).json({
+            error: 'Phone OTP verification is required for Cash on Delivery orders.',
+            requirePhoneOtpForCod: true,
+          });
+          return;
+        }
+      }
+
+      const billItems = (order.items || []).map((it) => {
+        const menuItem = db.menuItems.find((m) => m.id === it.menuItemId);
+        const matchedVariant =
+          it.variantName && menuItem
+            ? menuItem.variants.find((v) => v.name === it.variantName)
+            : undefined;
+        return {
+          menuItemId: it.menuItemId,
+          variantId: matchedVariant?.id,
+          addonIds: Array.isArray(it.addons) ? it.addons.map((a) => a.id) : [],
+          quantity: it.quantity,
+          itemNote: it.itemNote,
+        };
+      });
+      const bill = calculateAuthoritativeBill({
+        items: billItems,
+        lat: Number(order.deliveryLat),
+        lng: Number(order.deliveryLng),
+        couponCode: order.couponCode,
+        customerPhone: cleanPhone,
+        ignoreCouponOrderId: order.id,
+      });
+
+      if (!bill.codAllowed) {
+        res.status(400).json({
+          error: bill.codDisallowedReason || 'Cash on Delivery is not available for this order.',
+        });
+        return;
+      }
+      if (order.grandTotal > db.settings.codMaxAmount) {
+        res.status(400).json({
+          error: `COD is available only for orders up to ₹${db.settings.codMaxAmount}`,
+        });
+        return;
+      }
+
+      const nowIso = new Date().toISOString();
       order.paymentMethod = 'COD';
-      order.updatedAt = new Date().toISOString();
+      // Keep order.paymentStatus as it is for normal COD orders ('PENDING')
+      order.paymentStatus = 'PENDING';
+      order.updatedAt = nowIso;
+
+      const paymentsForOrder = await findPaymentsForOrderFresh(order.id);
+      const linkedPayment =
+        paymentsForOrder.find(
+          (p) =>
+            p.gateway === 'RAZORPAY' ||
+            (order.razorpayOrderId && p.razorpayOrderId === order.razorpayOrderId)
+        ) ||
+        (order.razorpayOrderId
+          ? await findPaymentFresh({ razorpayOrderId: order.razorpayOrderId })
+          : null) ||
+        db.payments.find(
+          (p) =>
+            p.orderId === order.id ||
+            (order.razorpayOrderId ? p.razorpayOrderId === order.razorpayOrderId : false)
+        );
 
       const rtdb = getRtdb();
+      if (linkedPayment) {
+        linkedPayment.status = 'FAILED';
+        linkedPayment.flagReason = 'Customer switched to Cash on Delivery';
+        linkedPayment.updatedAt = nowIso;
+        upsertPaymentInMemory(linkedPayment);
+        await rtdb.ref(`payments/${linkedPayment.id}`).set(linkedPayment);
+      }
+
       await rtdb.ref(`orders/${order.id}`).set(order);
       await syncOrderRealtimePaths(order);
       refreshHydrationCache();

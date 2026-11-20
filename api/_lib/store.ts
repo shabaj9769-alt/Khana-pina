@@ -2274,6 +2274,9 @@ export async function expireSingleOrderIfStale(
   order: OrderRecord,
   payment?: PaymentRecord
 ): Promise<boolean> {
+  if (order.paymentMethod !== 'RAZORPAY' || order.paymentStatus !== 'PENDING' || order.status !== 'PLACED') {
+    return false;
+  }
   const now = Date.now();
   const tenMinsMs = 10 * 60 * 1000;
   const placedTimeMs = new Date(order.placedAt).getTime();
@@ -2284,32 +2287,38 @@ export async function expireSingleOrderIfStale(
       : placedTimeMs;
 
   if (effectiveReferenceTime > now) return false;
-  if (
-    order.paymentMethod === 'RAZORPAY' &&
-    order.paymentStatus === 'PENDING' &&
-    order.status === 'PLACED' &&
-    now - placedTimeMs > tenMinsMs
-  ) {
+  if (now - placedTimeMs > tenMinsMs) {
+    const freshOrder = await getFreshOrderById(order.id);
+    if (
+      !freshOrder ||
+      freshOrder.paymentMethod !== 'RAZORPAY' ||
+      freshOrder.paymentStatus !== 'PENDING' ||
+      freshOrder.status !== 'PLACED'
+    ) {
+      return false;
+    }
+
     const nowIso = new Date().toISOString();
-    order.status = 'CANCELLED';
-    order.paymentStatus = 'FAILED';
-    order.cancelReason = 'Order expired: Online payment was not completed within 10 minutes';
-    order.cancelledAt = nowIso;
-    order.cancelledBy = 'auto_expired';
-    order.updatedAt = nowIso;
+    freshOrder.status = 'CANCELLED';
+    freshOrder.paymentStatus = 'FAILED';
+    freshOrder.cancelReason = 'Order expired: Online payment was not completed within 10 minutes';
+    freshOrder.cancelledAt = nowIso;
+    freshOrder.cancelledBy = 'auto_expired';
+    freshOrder.updatedAt = nowIso;
+    Object.assign(order, freshOrder);
 
     const pay =
       payment ||
-      (await findPaymentFresh({ orderId: order.id })) ||
-      db.payments.find((p) => p.orderId === order.id);
+      (await findPaymentFresh({ orderId: freshOrder.id })) ||
+      db.payments.find((p) => p.orderId === freshOrder.id);
     if (pay) {
       pay.status = 'FAILED';
       pay.updatedAt = nowIso;
       await getRtdb().ref(`payments/${pay.id}`).set(pay);
       upsertPaymentInMemory(pay);
     }
-    await syncOrderRealtimePaths(order);
-    await notifyTelegramCancelledOrder(order, 'Auto-expired');
+    await syncOrderRealtimePaths(freshOrder);
+    await notifyTelegramCancelledOrder(freshOrder, 'Auto-expired');
     return true;
   }
   return false;
@@ -2766,24 +2775,34 @@ export async function expireStaleOrdersLazy(options?: {
       continue;
     }
 
-    // 10-minute lazy expiry for unpaid Razorpay orders
+    // 10-minute lazy expiry ONLY for unpaid RAZORPAY orders (never expire/cancel COD orders)
     if (
       order.paymentMethod === 'RAZORPAY' &&
       order.paymentStatus === 'PENDING' &&
       order.status === 'PLACED' &&
       now - placedTimeMs > tenMinsMs
     ) {
+      const freshOrder = await getFreshOrderById(order.id);
+      if (
+        !freshOrder ||
+        freshOrder.paymentMethod !== 'RAZORPAY' ||
+        freshOrder.paymentStatus !== 'PENDING' ||
+        freshOrder.status !== 'PLACED'
+      ) {
+        continue;
+      }
+
       const nowIso = new Date().toISOString();
-      order.status = 'CANCELLED';
-      order.paymentStatus = 'FAILED';
-      order.cancelReason = 'Order expired: Online payment was not completed within 10 minutes';
-      order.cancelledAt = nowIso;
-      order.cancelledBy = 'auto_expired';
-      order.updatedAt = nowIso;
+      freshOrder.status = 'CANCELLED';
+      freshOrder.paymentStatus = 'FAILED';
+      freshOrder.cancelReason = 'Order expired: Online payment was not completed within 10 minutes';
+      freshOrder.cancelledAt = nowIso;
+      freshOrder.cancelledBy = 'auto_expired';
+      freshOrder.updatedAt = nowIso;
 
       const pay =
-        (await findPaymentFresh({ orderId: order.id })) ||
-        db.payments.find((p) => p.orderId === order.id);
+        (await findPaymentFresh({ orderId: freshOrder.id })) ||
+        db.payments.find((p) => p.orderId === freshOrder.id);
       if (pay) {
         pay.status = 'FAILED';
         pay.updatedAt = nowIso;
@@ -2791,9 +2810,9 @@ export async function expireStaleOrdersLazy(options?: {
         upsertPaymentInMemory(pay);
       }
 
-      await syncOrderRealtimePaths(order);
-      await notifyTelegramCancelledOrder(order, 'Auto-expired');
-      expiredOrders.push(order);
+      await syncOrderRealtimePaths(freshOrder);
+      await notifyTelegramCancelledOrder(freshOrder, 'Auto-expired');
+      expiredOrders.push(freshOrder);
     }
   }
 
@@ -3122,8 +3141,9 @@ export function calculateAuthoritativeBill(params: {
   lng: number;
   couponCode?: string | null;
   customerPhone?: string;
+  ignoreCouponOrderId?: string;
 }): CheckoutPreviewResponse & { resolvedItems: OrderItemRecord[] } {
-  const { items, lat, lng, couponCode, customerPhone } = params;
+  const { items, lat, lng, couponCode, customerPhone, ignoreCouponOrderId } = params;
 
   const distanceKm = calculateHaversineKm(
     db.deliveryZone.shopLat,
@@ -3218,7 +3238,10 @@ export function calculateAuthoritativeBill(params: {
     } else {
       if (cleanPhone) {
         const usages = db.couponUsages.filter(
-          (u) => u.couponCode === code && u.customerPhone === cleanPhone
+          (u) =>
+            u.couponCode === code &&
+            u.customerPhone === cleanPhone &&
+            (!ignoreCouponOrderId || u.orderId !== ignoreCouponOrderId)
         ).length;
         if (usages >= coupon.usageLimitPerPhone) {
           couponMessage = `Usage limit (${coupon.usageLimitPerPhone}) reached for this phone number`;

@@ -28,6 +28,8 @@ import {
   buildPublicTrackingProjection,
   cleanupGrowingDataHourly,
   computeEffectiveShopOpen,
+  expireSingleOrderIfStale,
+  expireStaleOrdersLazy,
   formatTime24To12,
   getInitialDatabaseState,
   getKolkataDateKey,
@@ -2225,7 +2227,495 @@ describe('Khana Pina Core & Bypass-Proof Razorpay Suite', () => {
       }
     }
   });
+
+  it('37. Online order -> switch to COD -> payment.failed webhook keeps order PLACED/COD, marks payment FAILED, writes audit log, and sends NO cancel alert', async () => {
+    await ensureFirebaseSeeded();
+    const prevTgToken = process.env.TELEGRAM_BOT_TOKEN;
+    const prevTgChat = process.env.TELEGRAM_CHAT_ID;
+    process.env.TELEGRAM_BOT_TOKEN = 'test_bot_token_123';
+    process.env.TELEGRAM_CHAT_ID = 'test_chat_456';
+
+    const telegramMessages: string[] = [];
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: any, init?: any) => {
+      const url = typeof input === 'string' ? input : input?.url || '';
+      if (url.includes('api.telegram.org')) {
+        const body = init?.body ? JSON.parse(String(init.body)) : {};
+        telegramMessages.push(String(body.text || ''));
+        return { ok: true, json: async () => ({ ok: true, result: { message_id: 1 } }) } as any;
+      }
+      return origFetch(input, init);
+    }) as any;
+
+    const orderId = `ord_sw_fail_${Date.now()}`;
+    const rzpOrderId = `order_rzp_sw_fail_${Date.now()}`;
+    const { order, payment } = await seedTestOrderAndPayment({
+      orderId,
+      orderNumber: 'AAN-9801',
+      razorpayOrderId: rzpOrderId,
+      grandTotal: 470,
+      status: 'PLACED',
+      paymentStatus: 'PENDING',
+    });
+
+    try {
+      // 1) Switch to COD
+      let swCode = 200;
+      let swBody: any = null;
+      await ordersHandler(
+        {
+          method: 'POST',
+          originalUrl: '/api/orders/switch-to-cod',
+          url: '/api/orders/switch-to-cod',
+          headers: { 'content-type': 'application/json', 'x-forwarded-for': '127.0.20.1' },
+          body: { trackingToken: order.trackingToken },
+          socket: { remoteAddress: '127.0.20.1' },
+        } as any,
+        {
+          setHeader: () => ({}),
+          status: (c: number) => {
+            swCode = c;
+            return { json: (b: any) => (swBody = b) };
+          },
+          json: (b: any) => {
+            swBody = b;
+          },
+          end: () => {},
+        } as any
+      );
+
+      expect(swCode).toBe(200);
+      expect(swBody.ok).toBe(true);
+      expect(swBody.order.paymentMethod).toBe('COD');
+      expect(swBody.order.paymentStatus).toBe('PENDING');
+      expect(telegramMessages.some((m) => m.includes('New Order') && m.includes('AAN-9801'))).toBe(true);
+
+      const payAfterSwitch = (await getRtdb().ref(`payments/${payment.id}`).get()).val() as PaymentRecord;
+      expect(payAfterSwitch.status).toBe('FAILED');
+      expect(payAfterSwitch.flagReason).toBe('Customer switched to Cash on Delivery');
+
+      // 2) Delayed payment.failed webhook arrives for old Razorpay attempt
+      const whPayload = JSON.stringify({
+        event: 'payment.failed',
+        payload: {
+          payment: {
+            entity: {
+              id: `pay_fail_late_${Date.now()}`,
+              order_id: rzpOrderId,
+              amount: 47000,
+              currency: 'INR',
+              status: 'failed',
+            },
+          },
+        },
+      });
+      const whSig = crypto
+        .createHmac('sha256', process.env.RAZORPAY_WEBHOOK_SECRET!)
+        .update(whPayload)
+        .digest('hex');
+
+      const whRes = await processRazorpayWebhookAuthoritative({
+        rawBody: whPayload,
+        signatureHeader: whSig,
+        eventIdHeader: `evt_fail_cod_${Date.now()}`,
+        clientIp: '127.0.20.1',
+      });
+
+      expect(whRes.status).toBe(200);
+      const freshOrd = (await getRtdb().ref(`orders/${orderId}`).get()).val() as OrderRecord;
+      const freshAdminOrd = (await getRtdb().ref(`adminOrders/${orderId}`).get()).val() as OrderRecord;
+      expect(freshOrd.status).toBe('PLACED');
+      expect(freshOrd.paymentMethod).toBe('COD');
+      expect(freshOrd.paymentStatus).toBe('PENDING');
+      expect(freshAdminOrd?.id).toBe(orderId);
+      expect(telegramMessages.some((m) => m.includes('Order Cancelled') && m.includes('AAN-9801'))).toBe(false);
+      expect(
+        db.auditLogs.some(
+          (a) => a.details.includes('Ignored payment.failed for COD order') && a.details.includes('AAN-9801')
+        )
+      ).toBe(true);
+    } finally {
+      globalThis.fetch = origFetch;
+      if (prevTgToken === undefined) delete process.env.TELEGRAM_BOT_TOKEN;
+      else process.env.TELEGRAM_BOT_TOKEN = prevTgToken;
+      if (prevTgChat === undefined) delete process.env.TELEGRAM_CHAT_ID;
+      else process.env.TELEGRAM_CHAT_ID = prevTgChat;
+      db.orders = db.orders.filter((o) => o.id !== orderId);
+      db.payments = db.payments.filter((p) => p.id !== payment.id);
+      await getRtdb().ref(`orders/${orderId}`).remove();
+      await getRtdb().ref(`adminOrders/${orderId}`).remove();
+      await getRtdb().ref(`tracking/${order.trackingToken}`).remove();
+      await getRtdb().ref(`payments/${payment.id}`).remove();
+    }
+  });
+
+  it('38. COD order (even switched from Razorpay >10m ago) is NEVER auto-expired, while normal unpaid RAZORPAY order >10m IS expired', async () => {
+    await ensureFirebaseSeeded();
+    const oldPlacedAt = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+
+    const codOrderId = `ord_cod_old_${Date.now()}`;
+    const { order: codOrder, payment: codPay } = await seedTestOrderAndPayment({
+      orderId: codOrderId,
+      orderNumber: 'AAN-9802',
+      razorpayOrderId: `order_rzp_old_cod_${Date.now()}`,
+      grandTotal: 470,
+      status: 'PLACED',
+      paymentStatus: 'PENDING',
+    });
+    codOrder.paymentMethod = 'COD';
+    codOrder.placedAt = oldPlacedAt;
+    await syncOrderRealtimePaths(codOrder);
+
+    const rzpOrderId = `ord_rzp_old_${Date.now()}`;
+    const { order: rzpOrder, payment: rzpPay } = await seedTestOrderAndPayment({
+      orderId: rzpOrderId,
+      orderNumber: 'AAN-9803',
+      razorpayOrderId: rzpOrderId,
+      grandTotal: 470,
+      status: 'PLACED',
+      paymentStatus: 'PENDING',
+    });
+    rzpOrder.placedAt = oldPlacedAt;
+    await syncOrderRealtimePaths(rzpOrder);
+
+    try {
+      const singleExpiredCod = await expireSingleOrderIfStale(codOrder, codPay);
+      expect(singleExpiredCod).toBe(false);
+
+      const expiredList = await expireStaleOrdersLazy({ minIntervalMs: 0 });
+      expect(expiredList.some((o) => o.id === codOrderId)).toBe(false);
+      expect(expiredList.some((o) => o.id === rzpOrderId)).toBe(true);
+
+      const codFresh = (await getRtdb().ref(`orders/${codOrderId}`).get()).val() as OrderRecord;
+      const rzpFresh = (await getRtdb().ref(`orders/${rzpOrderId}`).get()).val() as OrderRecord;
+      expect(codFresh.status).toBe('PLACED');
+      expect(codFresh.paymentMethod).toBe('COD');
+      expect(codFresh.paymentStatus).toBe('PENDING');
+      expect(rzpFresh.status).toBe('CANCELLED');
+      expect(rzpFresh.paymentStatus).toBe('FAILED');
+      expect(rzpFresh.cancelledBy).toBe('auto_expired');
+    } finally {
+      db.orders = db.orders.filter((o) => o.id !== codOrderId && o.id !== rzpOrderId);
+      db.payments = db.payments.filter((p) => p.id !== codPay.id && p.id !== rzpPay.id);
+      await getRtdb().ref(`orders/${codOrderId}`).remove();
+      await getRtdb().ref(`orders/${rzpOrderId}`).remove();
+      await getRtdb().ref(`adminOrders/${codOrderId}`).remove();
+      await getRtdb().ref(`adminOrders/${rzpOrderId}`).remove();
+      await getRtdb().ref(`tracking/${codOrder.trackingToken}`).remove();
+      await getRtdb().ref(`tracking/${rzpOrder.trackingToken}`).remove();
+      await getRtdb().ref(`payments/${codPay.id}`).remove();
+      await getRtdb().ref(`payments/${rzpPay.id}`).remove();
+    }
+  });
+
+  it('39. Online order switched to COD receiving payment.captured webhook or /api/payments/verify: order stays COD/unpaid, payment FLAGGED, admin alerted, verify returns 409', async () => {
+    await ensureFirebaseSeeded();
+    const prevTgToken = process.env.TELEGRAM_BOT_TOKEN;
+    const prevTgChat = process.env.TELEGRAM_CHAT_ID;
+    process.env.TELEGRAM_BOT_TOKEN = 'test_bot_token_123';
+    process.env.TELEGRAM_CHAT_ID = 'test_chat_456';
+
+    const telegramMessages: string[] = [];
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: any, init?: any) => {
+      const url = typeof input === 'string' ? input : input?.url || '';
+      if (url.includes('api.telegram.org')) {
+        const body = init?.body ? JSON.parse(String(init.body)) : {};
+        telegramMessages.push(String(body.text || ''));
+        return { ok: true, json: async () => ({ ok: true, result: { message_id: 1 } }) } as any;
+      }
+      return origFetch(input, init);
+    }) as any;
+
+    const orderId = `ord_cod_cap_${Date.now()}`;
+    const rzpOrderId = `order_rzp_cod_cap_${Date.now()}`;
+    const { order, payment } = await seedTestOrderAndPayment({
+      orderId,
+      orderNumber: 'AAN-9804',
+      razorpayOrderId: rzpOrderId,
+      grandTotal: 470,
+      status: 'PLACED',
+      paymentStatus: 'PENDING',
+    });
+    order.paymentMethod = 'COD';
+    await syncOrderRealtimePaths(order);
+
+    const rzpPayWebhookId = `pay_cap_cod_wh_${Date.now()}`;
+    const rzpPayVerifyId = `pay_cap_cod_ver_${Date.now()}`;
+
+    try {
+      // 1) payment.captured webhook arrives after switching to COD
+      const whPayload = JSON.stringify({
+        event: 'payment.captured',
+        payload: {
+          payment: {
+            entity: {
+              id: rzpPayWebhookId,
+              order_id: rzpOrderId,
+              amount: 47000,
+              currency: 'INR',
+              status: 'captured',
+            },
+          },
+        },
+      });
+      const whSig = crypto
+        .createHmac('sha256', process.env.RAZORPAY_WEBHOOK_SECRET!)
+        .update(whPayload)
+        .digest('hex');
+
+      const whRes = await processRazorpayWebhookAuthoritative({
+        rawBody: whPayload,
+        signatureHeader: whSig,
+        eventIdHeader: `evt_cap_cod_${Date.now()}`,
+        clientIp: '127.0.20.2',
+      });
+      expect(whRes.status).toBe(200);
+
+      const ordAfterWh = (await getRtdb().ref(`orders/${orderId}`).get()).val() as OrderRecord;
+      const payAfterWh = (await getRtdb().ref(`payments/${payment.id}`).get()).val() as PaymentRecord;
+      expect(ordAfterWh.paymentStatus).toBe('PENDING');
+      expect(ordAfterWh.status).toBe('PLACED');
+      expect(payAfterWh.status).toBe('FLAGGED');
+      expect(payAfterWh.flagReason).toBe(
+        'Online payment received after customer switched to COD - refund or adjust'
+      );
+      expect(telegramMessages.some((m) => m.includes('AAN-9804') && m.includes('switched to Cash on Delivery'))).toBe(true);
+
+      // 2) /api/payments/verify called on COD order returns 409 and does NOT mark order PAID
+      const cfg = getRazorpayConfig();
+      const verifySig = crypto
+        .createHmac('sha256', cfg.keySecret)
+        .update(`${rzpOrderId}|${rzpPayVerifyId}`)
+        .digest('hex');
+
+      let verifyStatus = 200;
+      let verifyBody: any = null;
+      await paymentsHandler(
+        {
+          method: 'POST',
+          originalUrl: '/api/payments/verify',
+          url: '/api/payments/verify',
+          headers: { 'content-type': 'application/json', 'x-forwarded-for': '127.0.20.2' },
+          body: {
+            razorpayOrderId: rzpOrderId,
+            razorpayPaymentId: rzpPayVerifyId,
+            razorpaySignature: verifySig,
+          },
+          socket: { remoteAddress: '127.0.20.2' },
+        } as any,
+        {
+          setHeader: () => ({}),
+          status: (c: number) => {
+            verifyStatus = c;
+            return { json: (b: any) => (verifyBody = b) };
+          },
+          json: (b: any) => {
+            verifyBody = b;
+          },
+          end: () => {},
+        } as any
+      );
+
+      expect(verifyStatus).toBe(409);
+      expect(verifyBody.error).toBe('This order was switched to Cash on Delivery.');
+
+      const ordAfterVerify = (await getRtdb().ref(`orders/${orderId}`).get()).val() as OrderRecord;
+      const payAfterVerify = (await getRtdb().ref(`payments/${payment.id}`).get()).val() as PaymentRecord;
+      expect(ordAfterVerify.paymentStatus).toBe('PENDING');
+      expect(payAfterVerify.status).toBe('FLAGGED');
+      expect(payAfterVerify.flagReason).toBe(
+        'Online payment received after customer switched to COD - refund or adjust'
+      );
+    } finally {
+      globalThis.fetch = origFetch;
+      if (prevTgToken === undefined) delete process.env.TELEGRAM_BOT_TOKEN;
+      else process.env.TELEGRAM_BOT_TOKEN = prevTgToken;
+      if (prevTgChat === undefined) delete process.env.TELEGRAM_CHAT_ID;
+      else process.env.TELEGRAM_CHAT_ID = prevTgChat;
+      db.orders = db.orders.filter((o) => o.id !== orderId);
+      db.payments = db.payments.filter((p) => p.id !== payment.id);
+      await getRtdb().ref(`orders/${orderId}`).remove();
+      await getRtdb().ref(`adminOrders/${orderId}`).remove();
+      await getRtdb().ref(`tracking/${order.trackingToken}`).remove();
+      await getRtdb().ref(`payments/${payment.id}`).remove();
+    }
+  });
+
+  it('40. Normal RAZORPAY order with payment.failed webhook still gets cancelled as before', async () => {
+    await ensureFirebaseSeeded();
+    const orderId = `ord_rzp_fail_${Date.now()}`;
+    const rzpOrderId = `order_rzp_fail_${Date.now()}`;
+    const { order, payment } = await seedTestOrderAndPayment({
+      orderId,
+      orderNumber: 'AAN-9805',
+      razorpayOrderId: rzpOrderId,
+      grandTotal: 470,
+      status: 'PLACED',
+      paymentStatus: 'PENDING',
+    });
+
+    try {
+      const whPayload = JSON.stringify({
+        event: 'payment.failed',
+        payload: {
+          payment: {
+            entity: {
+              id: `pay_fail_norm_${Date.now()}`,
+              order_id: rzpOrderId,
+              amount: 47000,
+              currency: 'INR',
+              status: 'failed',
+            },
+          },
+        },
+      });
+      const whSig = crypto
+        .createHmac('sha256', process.env.RAZORPAY_WEBHOOK_SECRET!)
+        .update(whPayload)
+        .digest('hex');
+
+      const whRes = await processRazorpayWebhookAuthoritative({
+        rawBody: whPayload,
+        signatureHeader: whSig,
+        eventIdHeader: `evt_fail_norm_${Date.now()}`,
+        clientIp: '127.0.20.3',
+      });
+      expect(whRes.status).toBe(200);
+
+      const ordFresh = (await getRtdb().ref(`orders/${orderId}`).get()).val() as OrderRecord;
+      const payFresh = (await getRtdb().ref(`payments/${payment.id}`).get()).val() as PaymentRecord;
+      expect(ordFresh.status).toBe('CANCELLED');
+      expect(ordFresh.paymentStatus).toBe('FAILED');
+      expect(ordFresh.cancelReason).toBe('Payment failed at gateway webhook');
+      expect(payFresh.status).toBe('FAILED');
+    } finally {
+      db.orders = db.orders.filter((o) => o.id !== orderId);
+      db.payments = db.payments.filter((p) => p.id !== payment.id);
+      await getRtdb().ref(`orders/${orderId}`).remove();
+      await getRtdb().ref(`adminOrders/${orderId}`).remove();
+      await getRtdb().ref(`tracking/${order.trackingToken}`).remove();
+      await getRtdb().ref(`payments/${payment.id}`).remove();
+    }
+  });
+
+  it('41. switch-to-cod enforces max COD amount, blocked phone/IP, COD OTP, and rate limits', async () => {
+    await ensureFirebaseSeeded();
+    const prevMaxCod = db.settings.codMaxAmount;
+    const prevOtpReq = db.settings.requirePhoneOtpForCod;
+    const prevDemoMode = process.env.DEMO_MODE;
+    process.env.DEMO_MODE = 'true';
+
+    const orderId = `ord_cod_rules_${Date.now()}`;
+    const rzpOrderId = `order_rzp_rules_${Date.now()}`;
+    const { order, payment } = await seedTestOrderAndPayment({
+      orderId,
+      orderNumber: 'AAN-9806',
+      razorpayOrderId: rzpOrderId,
+      grandTotal: 2500,
+      status: 'PLACED',
+      paymentStatus: 'PENDING',
+    });
+
+    const callOrders = async (urlPath: string, body: any, ip = '127.0.20.4') => {
+      let statusCode = 200;
+      let jsonBody: any = null;
+      await ordersHandler(
+        {
+          method: 'POST',
+          originalUrl: urlPath,
+          url: urlPath,
+          headers: { 'content-type': 'application/json', 'x-forwarded-for': ip },
+          body,
+          socket: { remoteAddress: ip },
+        } as any,
+        {
+          setHeader: () => ({}),
+          status: (c: number) => {
+            statusCode = c;
+            return { json: (b: any) => (jsonBody = b) };
+          },
+          json: (b: any) => {
+            jsonBody = b;
+          },
+          end: () => {},
+        } as any
+      );
+      return { statusCode, jsonBody };
+    };
+
+    try {
+      // 1) Blocked phone rejected with 403
+      db.blockedList.push({
+        id: 'blk_test_sw',
+        targetType: 'PHONE',
+        targetValue: order.customerPhone,
+        reason: 'Abuse',
+        blockedBy: 'owner',
+        createdAt: new Date().toISOString(),
+      });
+      const blockedRes = await callOrders('/api/orders/switch-to-cod', {
+        trackingToken: order.trackingToken,
+      });
+      expect(blockedRes.statusCode).toBe(403);
+      db.blockedList = db.blockedList.filter((b) => b.id !== 'blk_test_sw');
+
+      // 2) Max COD amount exceeded rejected with 400
+      db.settings.codMaxAmount = 1800;
+      const maxRes = await callOrders('/api/orders/switch-to-cod', {
+        trackingToken: order.trackingToken,
+      });
+      expect(maxRes.statusCode).toBe(400);
+      expect(maxRes.jsonBody.error).toContain('1800');
+
+      // 3) Require Phone OTP for COD rejected without valid token, succeeds once OTP verified
+      db.settings.codMaxAmount = 5000;
+      db.settings.requirePhoneOtpForCod = true;
+      const noOtpRes = await callOrders('/api/orders/switch-to-cod', {
+        trackingToken: order.trackingToken,
+      });
+      expect(noOtpRes.statusCode).toBe(400);
+      expect(noOtpRes.jsonBody.requirePhoneOtpForCod).toBe(true);
+
+      const sendRes = await callOrders('/api/guest/cod-otp/send', { phone: order.customerPhone });
+      expect(sendRes.statusCode).toBe(200);
+      const verifyOtpRes = await callOrders('/api/guest/cod-otp/verify', {
+        sessionId: sendRes.jsonBody.sessionId,
+        otp: sendRes.jsonBody.demoOtp,
+      });
+      expect(verifyOtpRes.statusCode).toBe(200);
+
+      const withOtpRes = await callOrders('/api/orders/switch-to-cod', {
+        trackingToken: order.trackingToken,
+        codOtpToken: verifyOtpRes.jsonBody.verifiedToken,
+      });
+      expect(withOtpRes.statusCode).toBe(200);
+      expect(withOtpRes.jsonBody.order.paymentMethod).toBe('COD');
+
+      // 4) Rate limit (10 requests / 15 mins per IP) blocks the 11th request
+      db.settings.requirePhoneOtpForCod = false;
+      const rlIp = '127.0.99.55';
+      for (let i = 0; i < 10; i++) {
+        await callOrders('/api/orders/switch-to-cod', { trackingToken: 'trk_missing' }, rlIp);
+      }
+      const rlBlocked = await callOrders('/api/orders/switch-to-cod', { trackingToken: 'trk_missing' }, rlIp);
+      expect(rlBlocked.statusCode).toBe(429);
+    } finally {
+      db.settings.codMaxAmount = prevMaxCod;
+      db.settings.requirePhoneOtpForCod = prevOtpReq;
+      db.blockedList = db.blockedList.filter((b) => b.id !== 'blk_test_sw');
+      if (prevDemoMode === undefined) delete process.env.DEMO_MODE;
+      else process.env.DEMO_MODE = prevDemoMode;
+      db.orders = db.orders.filter((o) => o.id !== orderId);
+      db.payments = db.payments.filter((p) => p.id !== payment.id);
+      await getRtdb().ref(`orders/${orderId}`).remove();
+      await getRtdb().ref(`adminOrders/${orderId}`).remove();
+      await getRtdb().ref(`tracking/${order.trackingToken}`).remove();
+      await getRtdb().ref(`payments/${payment.id}`).remove();
+    }
+  });
 });
+
 
 
 
