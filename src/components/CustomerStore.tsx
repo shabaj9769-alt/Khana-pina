@@ -2826,7 +2826,6 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   >
                     <div>
                       <p className="text-[15px] font-bold text-text">Deliver now</p>
-                      <p className="text-[13px] text-muted">Freshly cooked in ~30 mins</p>
                     </div>
                     <span
                       className={`w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 ${

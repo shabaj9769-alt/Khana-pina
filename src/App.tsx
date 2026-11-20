@@ -942,14 +942,6 @@ export default function App() {
                         <Home className="w-4 h-4 shrink-0" />
                         <span>Home</span>
                       </button>
-                      <button
-                        type="button"
-                        onClick={() => goToStoreSubTab('menu')}
-                        className="min-h-[44px] px-3.5 rounded-xl border border-border bg-surface text-[13px] font-semibold text-text whitespace-nowrap inline-flex items-center gap-1.5 cursor-pointer"
-                      >
-                        <UtensilsCrossed className="w-4 h-4 shrink-0" />
-                        <span>Menu</span>
-                      </button>
                       {matchingOrder?.orderNumber && (
                         <button
                           type="button"
