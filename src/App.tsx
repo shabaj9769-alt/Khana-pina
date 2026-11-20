@@ -44,6 +44,7 @@ import {
 } from './utils/themeTokens.ts';
 import { SafeImage } from './components/SafeImage.tsx';
 import { installServerTimeFetchSync } from './utils/formatOrderTime.ts';
+import { enableCustomerCopyProtection } from './utils/copyProtection.ts';
 
 type AppView = 'customer' | 'tracking' | 'rider' | 'admin';
 
@@ -161,6 +162,11 @@ export default function App() {
   useEffect(() => {
     return installServerTimeFetchSync();
   }, []);
+
+  useEffect(() => {
+    if (activeView !== 'customer') return;
+    return enableCustomerCopyProtection();
+  }, [activeView]);
 
   const copyTrackingText = async (text: string, field: 'orderId' | 'link') => {
     let copied = false;
@@ -435,6 +441,8 @@ export default function App() {
   return (
     <div
       className={`min-h-dvh w-full max-w-full overflow-x-clip flex flex-col bg-bg text-text transition-colors duration-150 ${
+        import.meta.env.PROD && activeView === 'customer' ? 'customer-copy-protect ' : ''
+      }${
         hasStickyCartBar
           ? 'pb-[calc(100px+env(safe-area-inset-bottom))] md:pb-8'
           : 'pb-8'
@@ -486,6 +494,7 @@ export default function App() {
                     alt={trimmedShopName || 'Store logo'}
                     width={40}
                     height={40}
+                    draggable={import.meta.env.PROD ? false : undefined}
                     onImageError={() => setLogoLoadError(true)}
                     className="w-10 h-10 object-cover object-center shrink-0"
                     containerClassName="w-10 h-10 object-cover object-center shrink-0"
@@ -645,6 +654,7 @@ export default function App() {
                             alt={trimmedShopName || 'Store logo'}
                             width={40}
                             height={40}
+                            draggable={import.meta.env.PROD ? false : undefined}
                             onImageError={() => setLogoLoadError(true)}
                             className="w-10 h-10 object-cover object-center shrink-0"
                             containerClassName="w-10 h-10 object-cover object-center shrink-0"

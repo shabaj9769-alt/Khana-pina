@@ -1943,6 +1943,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
             <SafeImage
               src={item.imageUrl}
               alt={item.name}
+              draggable={import.meta.env.PROD ? false : undefined}
               className="w-full h-full object-cover object-center transition-transform duration-300 hover:scale-[1.03]"
               containerClassName="w-full h-full"
             />
@@ -3330,6 +3331,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                           <SafeImage
                             src={item.imageUrl}
                             alt={item.name}
+                            draggable={import.meta.env.PROD ? false : undefined}
                             className="w-12 h-12 rounded-lg object-cover shrink-0"
                             containerClassName="w-12 h-12 rounded-lg object-cover shrink-0"
                           />
@@ -3460,6 +3462,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                 <SafeImage
                   src={coverSrc}
                   alt={settings.shopName}
+                  draggable={import.meta.env.PROD ? false : undefined}
                   className="w-full h-44 sm:h-56 object-cover object-center"
                   containerClassName="w-full h-44 sm:h-56 bg-bg overflow-hidden"
                 />
@@ -3716,6 +3719,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                       >
                         <SafeImage
                           src={banner.imageUrl || '/assets/images/hero_artisanal_feast_1793975537331.webp'}
+                          draggable={import.meta.env.PROD ? false : undefined}
                           alt={
                             banner.title ||
                             'Slow-Cooked Awadhi Handis, Delivered Seal-Intact'
@@ -3955,6 +3959,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                     <SafeImage
                       src="/assets/images/hero_artisanal_feast_1793975537331.webp"
                       alt=""
+                      draggable={import.meta.env.PROD ? false : undefined}
                       className="w-8 h-8 rounded-full object-cover shrink-0"
                       containerClassName="w-8 h-8 rounded-full object-cover shrink-0"
                     />
@@ -4008,6 +4013,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                           <SafeImage
                             src={thumb}
                             alt=""
+                            draggable={import.meta.env.PROD ? false : undefined}
                             className="w-8 h-8 rounded-full object-cover shrink-0"
                             containerClassName="w-8 h-8 rounded-full object-cover shrink-0"
                           />
@@ -4717,6 +4723,11 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
               </>
             )}
           </div>
+          <p className="text-[12px] text-muted pt-1">
+            {settings.shopName?.trim()
+              ? `© ${new Date().getFullYear()} ${settings.shopName.trim()}. All rights reserved.`
+              : `© ${new Date().getFullYear()} All rights reserved.`}
+          </p>
         </footer>
       )}
 
@@ -4946,6 +4957,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                 <SafeImage
                   src={customizingItem.imageUrl}
                   alt={customizingItem.name}
+                  draggable={import.meta.env.PROD ? false : undefined}
                   className="w-full h-full object-cover object-center"
                   containerClassName="w-full h-full"
                 />

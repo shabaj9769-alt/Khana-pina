@@ -222,3 +222,24 @@
     animation: none !important;
   }
 }
+
+.customer-copy-protect {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.customer-copy-protect input,
+.customer-copy-protect textarea,
+.customer-copy-protect select,
+.customer-copy-protect [contenteditable="true"],
+.customer-copy-protect [contenteditable=""] {
+  -webkit-user-select: text;
+  user-select: text;
+  -webkit-touch-callout: default;
+}
+
+.customer-copy-protect img {
+  -webkit-user-drag: none;
+}
+

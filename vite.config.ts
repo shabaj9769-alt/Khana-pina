@@ -4,7 +4,9 @@ import path from 'path';
 import {defineConfig} from 'vite';
 import {VitePWA} from 'vite-plugin-pwa';
 
-export default defineConfig(() => {
+export default defineConfig(({ command }) => {
+  const isBuild = command === 'build';
+
   return {
     plugins: [
       react(),
@@ -57,6 +59,24 @@ export default defineConfig(() => {
         '@': path.resolve(import.meta.dirname || '.'),
       },
     },
+    ...(isBuild
+      ? {
+          esbuild: {
+            drop: ['console', 'debugger'] as ('console' | 'debugger')[],
+          },
+          build: {
+            sourcemap: false,
+            minify: 'esbuild' as const,
+            rolldownOptions: {
+              output: {
+                entryFileNames: 'assets/[hash].js',
+                chunkFileNames: 'assets/[hash].js',
+                assetFileNames: 'assets/[hash][extname]',
+              },
+            },
+          },
+        }
+      : {}),
     server: {
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
       // Do not modify—file watching is disabled to prevent flickering during agent edits.
