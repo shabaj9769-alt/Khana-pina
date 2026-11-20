@@ -451,14 +451,16 @@ export function applyShopBrandingToDocument(
   options?: { title?: string }
 ): void {
   const clean = (shopName || '').trim();
-  if (!clean) return;
-  setCachedShopName(clean);
+  if (clean) {
+    setCachedShopName(clean);
+  }
   if (typeof document === 'undefined') return;
 
-  document.title = options?.title ? options.title : clean;
-  upsertMetaTag('name', 'apple-mobile-web-app-title', clean);
-  upsertMetaTag('property', 'og:title', clean);
-  upsertMetaTag('name', 'application-name', clean);
+  const brandTitle = clean || 'Food Ordering';
+  document.title = options?.title ? options.title : brandTitle;
+  upsertMetaTag('name', 'apple-mobile-web-app-title', brandTitle);
+  upsertMetaTag('property', 'og:title', brandTitle);
+  upsertMetaTag('name', 'application-name', brandTitle);
 }
 
 export function applyAdminOrRiderThemeToDocument(

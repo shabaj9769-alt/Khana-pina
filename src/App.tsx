@@ -10,7 +10,6 @@ import {
   Clock,
   Copy,
   CreditCard,
-  Flame,
   Home,
   Info,
   Languages,
@@ -42,6 +41,7 @@ import {
   applyStorefrontThemeToDocument,
   DEFAULT_STOREFRONT_THEME,
   getCachedShopName,
+  isValidPhotoUrl,
   normalizeImageUrl,
   optimizeAssetUrl,
 } from './utils/themeTokens.ts';
@@ -75,13 +75,18 @@ export default function App() {
   const lang: 'en' | 'hi' = 'en';
 
   const [headerMeta, setHeaderMeta] = useState(() => ({
-    shopName: getCachedShopName() || 'Khana Pina',
+    shopName: getCachedShopName() || '',
     isOpen: true,
     busyMode: false,
     opensAtText: '11:00 AM',
     logoUrl: '',
     cityArea: '',
   }));
+  const [logoLoadError, setLogoLoadError] = useState(false);
+
+  useEffect(() => {
+    setLogoLoadError(false);
+  }, [headerMeta.logoUrl]);
 
   const [headerAddressLabel, setHeaderAddressLabel] = useState<string>(() => {
     const p = guestAuthLayer.getGuestProfile();
@@ -150,8 +155,9 @@ export default function App() {
     if (activeView === 'customer') {
       applyShopBrandingToDocument(headerMeta.shopName);
     } else if (activeView === 'tracking') {
+      const brand = headerMeta.shopName.trim() || 'Food Ordering';
       applyShopBrandingToDocument(headerMeta.shopName, {
-        title: `${headerMeta.shopName} — Order Tracking`,
+        title: `${brand} — Order Tracking`,
       });
     }
   }, [activeView, headerMeta.shopName]);
@@ -223,7 +229,7 @@ export default function App() {
         key: keyId,
         amount: amountPaise,
         currency: 'INR',
-        name: headerMeta.shopName,
+        name: headerMeta.shopName || getCachedShopName() || 'Food Ordering',
         description: `Order ${targetOrder.orderNumber}`,
         order_id: rzpOrderId,
         prefill: {
@@ -428,6 +434,18 @@ export default function App() {
   const showStorefrontHeader = activeView === 'customer' && !cartDrawerOpen;
   const hasStickyCartBar = activeView === 'customer' && totalCartItems > 0 && window.location.hash !== '#/checkout' && !cartDrawerOpen;
 
+  const trimmedShopName = (headerMeta.shopName || '').trim();
+  const shopInitial = trimmedShopName ? trimmedShopName.charAt(0).toUpperCase() : '';
+  const hasHeaderLogo = Boolean(
+    headerMeta.logoUrl &&
+      headerMeta.logoUrl.trim() &&
+      !logoLoadError &&
+      isValidPhotoUrl(headerMeta.logoUrl)
+  );
+  const isEffectiveDark =
+    guestThemeMode === 'dark' ||
+    (guestThemeMode === null && storefrontTheme.mode === 'dark');
+
   // ===========================================================================
   // CUSTOMER STOREFRONT & ORDER TRACKING LAYOUT (Light, Airy, Zero Overflow)
   // ===========================================================================
@@ -456,11 +474,11 @@ export default function App() {
         </div>
       )}
 
-      {/* STICKY STOREFRONT HEADER (Auto height, safe area top padding, no status clipping) */}
+      {/* IN-FLOW STOREFRONT BRAND HEADER */}
       {showStorefrontHeader && (
-        <header className="sticky top-0 z-30 w-full max-w-full box-border bg-surface border-b border-border pt-[calc(10px+env(safe-area-inset-top,0px))] pb-2.5 min-h-[56px] shadow-2xs">
-          <div className="w-full max-w-[1200px] mx-auto px-4 flex items-center justify-between gap-3">
-            {/* Left: Desktop-only Brand Icon + Column with Shop Name & Live Status */}
+        <header className="relative w-full max-w-full box-border bg-primary text-primary-contrast rounded-b-3xl shadow-md pt-[calc(10px+env(safe-area-inset-top,0px))] pb-3">
+          <div className="w-full max-w-[1200px] mx-auto px-4 flex items-center justify-between gap-2.5 sm:gap-3">
+            {/* Left: Logo / First-Letter Badge + Shop Name & Live Status */}
             <div className="flex items-center gap-2.5 flex-1 min-w-0">
               <a
                 href="/#/"
@@ -470,59 +488,75 @@ export default function App() {
                   setCustomerSubTab('home');
                   navigateView('customer', '/#/');
                 }}
-                className="hidden md:flex w-9 h-9 rounded-xl bg-primary/12 text-primary items-center justify-center shrink-0 overflow-hidden"
-                aria-label={headerMeta.shopName}
+                className={`flex w-10 h-10 rounded-full ring-1 ring-white/30 items-center justify-center shrink-0 overflow-hidden ${
+                  hasHeaderLogo
+                    ? 'bg-primary-contrast'
+                    : shopInitial
+                    ? 'bg-primary-contrast text-primary'
+                    : 'bg-white/25 animate-pulse'
+                }`}
+                aria-label={trimmedShopName || 'Home'}
               >
-                {headerMeta.logoUrl ? (
+                {hasHeaderLogo ? (
                   <SafeImage
                     src={headerMeta.logoUrl}
-                    alt={headerMeta.shopName}
-                    width={36}
-                    height={36}
-                    className="w-9 h-9 object-cover object-center shrink-0"
-                    containerClassName="w-9 h-9 object-cover object-center shrink-0"
+                    alt={trimmedShopName || 'Store logo'}
+                    width={40}
+                    height={40}
+                    onImageError={() => setLogoLoadError(true)}
+                    className="w-10 h-10 object-cover object-center shrink-0"
+                    containerClassName="w-10 h-10 object-cover object-center shrink-0"
                   />
-                ) : (
-                  <Flame className="w-4 h-4 shrink-0" />
-                )}
+                ) : shopInitial ? (
+                  <span className="font-display text-[17px] font-bold leading-none select-none">
+                    {shopInitial}
+                  </span>
+                ) : null}
               </a>
 
               <div className="flex-1 min-w-0 flex flex-col justify-center">
-                <a
-                  href="/#/"
-                  onClick={(e) => {
-                    e.preventDefault();
-                    setCartDrawerOpen(false);
-                    setCustomerSubTab('home');
-                    navigateView('customer', '/#/');
-                  }}
-                  className="block font-display text-[17px] font-bold leading-[1.25] text-text break-words overflow-wrap-anywhere"
-                >
-                  {headerMeta.shopName}
-                </a>
+                {trimmedShopName ? (
+                  <a
+                    href="/#/"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      setCartDrawerOpen(false);
+                      setCustomerSubTab('home');
+                      navigateView('customer', '/#/');
+                    }}
+                    className="block font-display text-[17px] font-bold leading-[1.2] text-primary-contrast line-clamp-2 break-words"
+                  >
+                    {trimmedShopName}
+                  </a>
+                ) : (
+                  <div
+                    aria-hidden="true"
+                    className="h-5 w-32 max-w-full rounded-md bg-white/25 animate-pulse"
+                  />
+                )}
 
-                <div className="flex items-center gap-1.5 text-[13px] leading-[1.3] text-muted mt-0.5">
+                <div className="flex items-center gap-1.5 text-[13px] leading-[1.3] text-primary-contrast/90 mt-0.5 min-w-0">
                   <span
                     className={`w-2 h-2 rounded-full shrink-0 ${
                       headerMeta.isOpen && !headerMeta.busyMode
-                        ? 'bg-accent'
+                        ? 'bg-green-400'
                         : headerMeta.isOpen && headerMeta.busyMode
-                        ? 'bg-amber-500'
-                        : 'bg-primary'
+                        ? 'bg-amber-300'
+                        : 'bg-white/60'
                     }`}
                   />
-                  <span className="font-semibold text-text">
+                  <span className="font-semibold truncate">
                     {headerMeta.isOpen
                       ? headerMeta.busyMode
                         ? 'Busy'
                         : 'Open'
                       : `Closed · Opens at ${headerMeta.opensAtText || '11:00 AM'}`}
+                    {headerMeta.cityArea?.trim() ? (
+                      <span className="text-primary-contrast/80 font-normal hidden sm:inline">
+                        {' '}· {headerMeta.cityArea.trim()}
+                      </span>
+                    ) : null}
                   </span>
-                  {headerMeta.cityArea?.trim() ? (
-                    <span className="text-muted hidden sm:inline">
-                      · {headerMeta.cityArea.trim()}
-                    </span>
-                  ) : null}
                 </div>
               </div>
             </div>
@@ -530,7 +564,7 @@ export default function App() {
             {/* Desktop Navigation Links */}
             <nav
               aria-label="Storefront navigation"
-              className="hidden lg:flex items-center gap-5 text-[14px] font-semibold text-muted shrink-0"
+              className="hidden lg:flex items-center gap-5 text-[14px] shrink-0"
             >
               <button
                 type="button"
@@ -539,10 +573,10 @@ export default function App() {
                   setCustomerSubTab('home');
                   navigateView('customer', '/#/');
                 }}
-                className={`hover:text-text whitespace-nowrap cursor-pointer ${
+                className={`whitespace-nowrap cursor-pointer transition-colors ${
                   activeView === 'customer' && !cartDrawerOpen && customerSubTab === 'home'
-                    ? 'text-primary font-bold'
-                    : ''
+                    ? 'text-primary-contrast font-bold'
+                    : 'text-primary-contrast/80 hover:text-primary-contrast font-medium'
                 }`}
               >
                 Home
@@ -554,10 +588,10 @@ export default function App() {
                   setCustomerSubTab('menu');
                   navigateView('customer', '/#/');
                 }}
-                className={`hover:text-text whitespace-nowrap cursor-pointer ${
+                className={`whitespace-nowrap cursor-pointer transition-colors ${
                   activeView === 'customer' && !cartDrawerOpen && customerSubTab === 'menu'
-                    ? 'text-primary font-bold'
-                    : ''
+                    ? 'text-primary-contrast font-bold'
+                    : 'text-primary-contrast/80 hover:text-primary-contrast font-medium'
                 }`}
               >
                 Menu
@@ -569,37 +603,23 @@ export default function App() {
                   setCustomerSubTab('orders');
                   navigateView('customer', '/#/');
                 }}
-                className="hover:text-text whitespace-nowrap cursor-pointer"
+                className={`whitespace-nowrap cursor-pointer transition-colors ${
+                  activeView === 'customer' && !cartDrawerOpen && (customerSubTab as string) === 'orders'
+                    ? 'text-primary-contrast font-bold'
+                    : 'text-primary-contrast/80 hover:text-primary-contrast font-medium'
+                }`}
               >
                 Orders
               </button>
             </nav>
 
-            {/* Right: Controls (Dark mode toggle, Cart button, Navigation menu) */}
-            <div className="flex items-center gap-1 shrink-0">
-              <button
-                type="button"
-                onClick={toggleGuestDarkLight}
-                aria-label="Toggle light or dark mode"
-                title="Toggle light or dark mode"
-                className="w-10 h-10 rounded-full hover:bg-border/50 text-muted hover:text-text flex items-center justify-center cursor-pointer shrink-0 transition-colors"
-              >
-                {guestThemeMode === 'dark' ? (
-                  <Sun className="w-4 h-4 text-accent shrink-0" />
-                ) : (
-                  <Moon className="w-4 h-4 shrink-0" />
-                )}
-              </button>
-
+            {/* Right: Controls (Cart button, Navigation menu) */}
+            <div className="flex items-center gap-1.5 shrink-0">
               <button
                 type="button"
                 onClick={openCartPage}
                 aria-label="Open cart"
-                className={`flex relative h-10 px-3.5 rounded-full items-center justify-center gap-1.5 shrink-0 transition-all cursor-pointer whitespace-nowrap ${
-                  totalCartItems > 0
-                    ? 'bg-primary text-primary-contrast shadow-2xs'
-                    : 'bg-primary/10 text-primary'
-                }`}
+                className="flex relative h-10 px-3 sm:px-3.5 rounded-full bg-primary-contrast text-primary items-center justify-center gap-1.5 shrink-0 shadow-xs transition-all active:scale-[0.98] cursor-pointer whitespace-nowrap"
               >
                 <ShoppingBag className="w-4 h-4 shrink-0" />
                 <span className="text-[13px] font-extrabold tabular-nums">
@@ -611,7 +631,7 @@ export default function App() {
                 type="button"
                 onClick={() => setMobileMenuOpen(true)}
                 aria-label="Open navigation menu"
-                className="w-10 h-10 rounded-full hover:bg-border/50 text-muted hover:text-text flex items-center justify-center cursor-pointer shrink-0 transition-colors"
+                className="w-10 h-10 rounded-full bg-white/15 hover:bg-white/25 text-primary-contrast flex items-center justify-center cursor-pointer shrink-0 transition-colors"
               >
                 <MenuIcon className="w-5 h-5 shrink-0" />
               </button>
@@ -625,14 +645,43 @@ export default function App() {
                   onClick={() => setMobileMenuOpen(false)}
                 />
                 <div className="relative w-[280px] max-w-[80vw] h-full bg-surface text-text shadow-2xl z-10 flex flex-col overflow-y-auto">
-                  <div className="p-4 border-b border-border flex items-center justify-between">
+                  <div className="p-4 border-b border-border flex items-center justify-between gap-2">
                     <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                      <div className="w-9 h-9 rounded-xl bg-primary/12 text-primary flex items-center justify-center shrink-0">
-                        <Flame className="w-4 h-4" />
+                      <div
+                        className={`w-10 h-10 rounded-full ring-1 ring-border flex items-center justify-center shrink-0 overflow-hidden ${
+                          hasHeaderLogo
+                            ? 'bg-surface'
+                            : shopInitial
+                            ? 'bg-primary text-primary-contrast'
+                            : 'bg-border/60 animate-pulse'
+                        }`}
+                      >
+                        {hasHeaderLogo ? (
+                          <SafeImage
+                            src={headerMeta.logoUrl}
+                            alt={trimmedShopName || 'Store logo'}
+                            width={40}
+                            height={40}
+                            onImageError={() => setLogoLoadError(true)}
+                            className="w-10 h-10 object-cover object-center shrink-0"
+                            containerClassName="w-10 h-10 object-cover object-center shrink-0"
+                          />
+                        ) : shopInitial ? (
+                          <span className="font-display text-[17px] font-bold leading-none select-none">
+                            {shopInitial}
+                          </span>
+                        ) : null}
                       </div>
-                      <span className="font-display font-bold text-[16px] leading-[1.25] text-text break-words overflow-wrap-anywhere flex-1 min-w-0">
-                        {headerMeta.shopName}
-                      </span>
+                      {trimmedShopName ? (
+                        <span className="font-display font-bold text-[16px] leading-[1.25] text-text line-clamp-2 break-words flex-1 min-w-0">
+                          {trimmedShopName}
+                        </span>
+                      ) : (
+                        <div
+                          aria-hidden="true"
+                          className="h-4 w-28 max-w-full rounded-md bg-border/60 animate-pulse"
+                        />
+                      )}
                     </div>
                     <button
                       type="button"
@@ -777,6 +826,24 @@ export default function App() {
                     >
                       <Info className="w-5 h-5 shrink-0" />
                       <span>About Us</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={toggleGuestDarkLight}
+                      className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-left font-bold text-sm transition-colors cursor-pointer hover:bg-border/40 text-text"
+                    >
+                      {isEffectiveDark ? (
+                        <>
+                          <Sun className="w-5 h-5 shrink-0 text-accent" />
+                          <span>Light mode</span>
+                        </>
+                      ) : (
+                        <>
+                          <Moon className="w-5 h-5 shrink-0" />
+                          <span>Dark mode</span>
+                        </>
+                      )}
                     </button>
                   </div>
 

@@ -3637,7 +3637,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
           STOREFRONT VIEW (HOME, MENU & ORDERS TABS — Shown when checkoutStep === 'store')
          ===================================================================== */}
       {checkoutStep === 'store' && (activeSubTab === 'home' || activeSubTab === 'menu') && (
-        <div className="w-full max-w-full overflow-x-hidden min-w-0">
+        <div className="w-full max-w-full overflow-x-clip min-w-0">
           <div className="w-full max-w-[1200px] mx-auto px-4 pt-3 space-y-3 min-w-0 max-w-full">
             {/* PART 3: COMPACT HERO BANNER WITH AUTO-SLIDE (h-[200px] sm:h-[240px] md:h-[280px], rounded-2xl, p-4, clamp(20px,5.5vw,28px) line-clamp-2 heading, text-sm line-clamp-1 subline, 40px CTA button) */}
             {activeSubTab === 'home' && !searchQuery && (
