@@ -373,6 +373,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
   const [pincodeTouched, setPincodeTouched] = useState(false);
   const [gpsLoading, setGpsLoading] = useState(false);
   const [gpsError, setGpsError] = useState<string | null>(null);
+  const [pincodeNotice, setPincodeNotice] = useState<string | null>(null);
   const [gpsHelpOpen, setGpsHelpOpen] = useState(false);
   const [gpsHelpReason, setGpsHelpReason] = useState<'denied' | 'off' | 'timeout'>('off');
   const [profileSavedToast, setProfileSavedToast] = useState(false);
@@ -1208,6 +1209,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
   const gpsLoadingRef = useRef(gpsLoading);
   gpsLoadingRef.current = gpsLoading;
   const gpsAutoRetriedRef = useRef(false);
+  const pincodeEditedDuringGpsRef = useRef(false);
 
   const fetchLocationToken = async (
     lat: number,
@@ -1250,8 +1252,50 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
     return null;
   };
 
+  const fetchReverseGeocodePincode = async (
+    lat: number,
+    lng: number
+  ): Promise<string | null> => {
+    const MAX_ATTEMPTS = 2;
+    const TIMEOUT_MS = 8_000;
+    const RETRY_DELAY_MS = 400;
+
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
+      const ctrl = new AbortController();
+      const tid = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+      try {
+        const res = await fetch('/api/guest/reverse-geocode', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ lat, lng }),
+          signal: ctrl.signal,
+        });
+        const data = await res.json().catch(() => null);
+        if (res.ok) {
+          const raw = typeof data?.pincode === 'string' ? data.pincode.replace(/\D/g, '') : '';
+          return /^\d{6}$/.test(raw) ? raw : null;
+        }
+        if (res.status >= 400 && res.status < 500) {
+          return null;
+        }
+      } catch {
+        // Silent retry on timeout or network failure
+      } finally {
+        clearTimeout(tid);
+      }
+
+      if (attempt < MAX_ATTEMPTS) {
+        await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+      }
+    }
+
+    return null;
+  };
+
   const handleUseCurrentGps = async () => {
     setGpsError(null);
+    setPincodeNotice(null);
+    pincodeEditedDuringGpsRef.current = false;
     if (!navigator.geolocation) {
       if (!hasValidFreshPinRef.current) {
         setLocationPinned(false);
@@ -1308,23 +1352,19 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
         setGpsHelpOpen(false);
 
         try {
-          const ctrl = new AbortController();
-          const tid = setTimeout(() => ctrl.abort(), 4000);
-          const res = await fetch(
-            `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}`,
-            {
-              headers: { 'Accept-Language': 'en' },
-              signal: ctrl.signal,
+          const detectedPincode = await fetchReverseGeocodePincode(lat, lng);
+          if (detectedPincode && /^\d{6}$/.test(detectedPincode)) {
+            if (!pincodeEditedDuringGpsRef.current) {
+              setGuestPincode(detectedPincode);
             }
-          );
-          clearTimeout(tid);
-          const data = await res.json().catch(() => null);
-          const rawPostcode = String(data?.address?.postcode || '').replace(/\D/g, '');
-          if (/^\d{6}$/.test(rawPostcode)) {
-            setGuestPincode(rawPostcode);
+            setPincodeNotice(null);
+          } else if (!pincodeEditedDuringGpsRef.current) {
+            setPincodeNotice('Could not detect pincode, please enter it manually.');
           }
         } catch {
-          // Ignore reverse-geocoding errors; customer enters/edits pincode manually
+          if (!pincodeEditedDuringGpsRef.current) {
+            setPincodeNotice('Could not detect pincode, please enter it manually.');
+          }
         } finally {
           setGpsLoading(false);
         }
@@ -3069,6 +3109,11 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                     {gpsError}
                   </p>
                 )}
+                {!gpsError && pincodeNotice && (
+                  <p role="status" className="text-[12px] font-medium text-muted break-words">
+                    {pincodeNotice}
+                  </p>
+                )}
 
                 {/* Saved Last Address indicator if available */}
                 {initialProfile.address && guestAddress !== initialProfile.address && (
@@ -3172,7 +3217,14 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                         setPincodeTouched(true);
                         handleCheckoutInputBlur();
                       }}
-                      onChange={(e) => setGuestPincode(e.target.value.replace(/\D/g, ''))}
+                      onChange={(e) => {
+                        const next = e.target.value.replace(/\D/g, '');
+                        pincodeEditedDuringGpsRef.current = true;
+                        setGuestPincode(next);
+                        if (next.length > 0) {
+                          setPincodeNotice(null);
+                        }
+                      }}
                       placeholder="e.g. 400050"
                       className="w-full max-w-full min-h-[48px] px-3.5 py-2.5 rounded-xl border border-border bg-bg text-[16px] tabular-nums text-text box-border focus:outline-none focus:border-primary"
                     />
@@ -5290,6 +5342,15 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
             {settings.shopName?.trim()
               ? `© ${new Date().getFullYear()} ${settings.shopName.trim()}. All rights reserved.`
               : `© ${new Date().getFullYear()} All rights reserved.`}
+            {' · '}
+            <a
+              href="https://www.geoapify.com"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline hover:text-text"
+            >
+              Powered by Geoapify
+            </a>
           </p>
         </footer>
       )}
@@ -5423,6 +5484,11 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   {gpsError}
                 </p>
               )}
+              {!gpsError && pincodeNotice && (
+                <p role="status" className="text-[12px] font-medium text-muted break-words">
+                  {pincodeNotice}
+                </p>
+              )}
 
               <div>
                 <label className="block font-bold text-text text-[14px] mb-1.5">
@@ -5459,7 +5525,14 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                     inputMode="numeric"
                     maxLength={6}
                     value={guestPincode}
-                    onChange={(e) => setGuestPincode(e.target.value.replace(/\D/g, ''))}
+                    onChange={(e) => {
+                      const next = e.target.value.replace(/\D/g, '');
+                      pincodeEditedDuringGpsRef.current = true;
+                      setGuestPincode(next);
+                      if (next.length > 0) {
+                        setPincodeNotice(null);
+                      }
+                    }}
                     placeholder="e.g. 400050"
                     className="w-full min-h-[46px] px-3 rounded-2xl border border-border bg-bg text-[16px] tabular-nums text-text focus:outline-none focus:border-primary"
                   />

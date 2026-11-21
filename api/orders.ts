@@ -129,6 +129,169 @@ function checkInMemoryLocationTokenRateLimit(ip: string): boolean {
   return true;
 }
 
+const REVERSE_GEOCODE_RATE_WINDOW_MS = 15 * 60 * 1000;
+const REVERSE_GEOCODE_RATE_MAX = 60;
+const REVERSE_GEOCODE_CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
+const REVERSE_GEOCODE_CACHE_HIT_TTL_MS = 24 * 60 * 60 * 1000;
+const REVERSE_GEOCODE_CACHE_NULL_TTL_MS = 10 * 60 * 1000;
+const REVERSE_GEOCODE_CACHE_MAX_SIZE = 2000;
+const REVERSE_GEOCODE_PROVIDER_TIMEOUT_MS = 5_000;
+
+const reverseGeocodeRateBuckets = new Map<string, { count: number; resetAt: number }>();
+let lastReverseGeocodeRateCleanupAt = 0;
+
+const reverseGeocodeCache = new Map<string, { pincode: string | null; expiresAt: number }>();
+
+function checkInMemoryReverseGeocodeRateLimit(ip: string): boolean {
+  const now = Date.now();
+  if (
+    now - lastReverseGeocodeRateCleanupAt >= REVERSE_GEOCODE_CLEANUP_INTERVAL_MS ||
+    reverseGeocodeRateBuckets.size > 1000
+  ) {
+    for (const [key, entry] of reverseGeocodeRateBuckets.entries()) {
+      if (entry.resetAt <= now) {
+        reverseGeocodeRateBuckets.delete(key);
+      }
+    }
+    lastReverseGeocodeRateCleanupAt = now;
+  }
+
+  const existing = reverseGeocodeRateBuckets.get(ip);
+  if (!existing || existing.resetAt <= now) {
+    reverseGeocodeRateBuckets.set(ip, {
+      count: 1,
+      resetAt: now + REVERSE_GEOCODE_RATE_WINDOW_MS,
+    });
+    return true;
+  }
+
+  if (existing.count >= REVERSE_GEOCODE_RATE_MAX) {
+    return false;
+  }
+
+  existing.count += 1;
+  return true;
+}
+
+function normalizeSixDigitPincode(raw: unknown): string | null {
+  if (raw === null || raw === undefined) return null;
+  const digits = String(raw).replace(/\D/g, '');
+  return /^\d{6}$/.test(digits) ? digits : null;
+}
+
+function getReverseGeocodeCacheKey(lat: number, lng: number): string {
+  return `${lat.toFixed(3)},${lng.toFixed(3)}`;
+}
+
+function readReverseGeocodeCache(key: string): { hit: true; pincode: string | null } | { hit: false } {
+  const entry = reverseGeocodeCache.get(key);
+  if (!entry) return { hit: false };
+  if (entry.expiresAt <= Date.now()) {
+    reverseGeocodeCache.delete(key);
+    return { hit: false };
+  }
+  return { hit: true, pincode: entry.pincode };
+}
+
+function writeReverseGeocodeCache(key: string, pincode: string | null): void {
+  const now = Date.now();
+  if (reverseGeocodeCache.has(key)) {
+    reverseGeocodeCache.delete(key);
+  }
+  if (reverseGeocodeCache.size >= REVERSE_GEOCODE_CACHE_MAX_SIZE) {
+    for (const [k, v] of reverseGeocodeCache.entries()) {
+      if (v.expiresAt <= now) {
+        reverseGeocodeCache.delete(k);
+      }
+    }
+    while (reverseGeocodeCache.size >= REVERSE_GEOCODE_CACHE_MAX_SIZE) {
+      const oldestKey = reverseGeocodeCache.keys().next().value;
+      if (oldestKey === undefined) break;
+      reverseGeocodeCache.delete(oldestKey);
+    }
+  }
+  const ttlMs = pincode ? REVERSE_GEOCODE_CACHE_HIT_TTL_MS : REVERSE_GEOCODE_CACHE_NULL_TTL_MS;
+  reverseGeocodeCache.set(key, {
+    pincode,
+    expiresAt: now + ttlMs,
+  });
+}
+
+async function lookupPincodeViaGeoapify(lat: number, lng: number): Promise<string | null> {
+  const apiKey = (process.env.GEOAPIFY_API_KEY || '').trim();
+  if (!apiKey) return null;
+
+  const ctrl = new AbortController();
+  const tid = setTimeout(() => ctrl.abort(), REVERSE_GEOCODE_PROVIDER_TIMEOUT_MS);
+  try {
+    const url = `https://api.geoapify.com/v1/geocode/reverse?lat=${encodeURIComponent(String(lat))}&lon=${encodeURIComponent(String(lng))}&format=json&apiKey=${encodeURIComponent(apiKey)}`;
+    const resp = await fetch(url, { signal: ctrl.signal });
+    if (!resp.ok) {
+      console.warn(`[reverse-geocode] Geoapify returned HTTP ${resp.status}`);
+      return null;
+    }
+    const data = (await resp.json().catch(() => null)) as {
+      results?: Array<{ postcode?: unknown }>;
+    } | null;
+    return normalizeSixDigitPincode(data?.results?.[0]?.postcode);
+  } catch (err) {
+    console.warn(
+      '[reverse-geocode] Geoapify lookup failed:',
+      err instanceof Error ? err.name : 'unknown_error'
+    );
+    return null;
+  } finally {
+    clearTimeout(tid);
+  }
+}
+
+async function lookupPincodeViaNominatim(lat: number, lng: number): Promise<string | null> {
+  const ctrl = new AbortController();
+  const tid = setTimeout(() => ctrl.abort(), REVERSE_GEOCODE_PROVIDER_TIMEOUT_MS);
+  try {
+    const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&addressdetails=1&lat=${encodeURIComponent(String(lat))}&lon=${encodeURIComponent(String(lng))}`;
+    const resp = await fetch(url, {
+      headers: {
+        'User-Agent': 'KhanaPinaDirectOrdering/1.0 (server reverse-geocode)',
+        'Accept-Language': 'en',
+      },
+      signal: ctrl.signal,
+    });
+    if (!resp.ok) {
+      console.warn(`[reverse-geocode] Nominatim returned HTTP ${resp.status}`);
+      return null;
+    }
+    const data = (await resp.json().catch(() => null)) as {
+      address?: { postcode?: unknown };
+    } | null;
+    return normalizeSixDigitPincode(data?.address?.postcode);
+  } catch (err) {
+    console.warn(
+      '[reverse-geocode] Nominatim lookup failed:',
+      err instanceof Error ? err.name : 'unknown_error'
+    );
+    return null;
+  } finally {
+    clearTimeout(tid);
+  }
+}
+
+async function resolveReverseGeocodePincode(lat: number, lng: number): Promise<string | null> {
+  const cacheKey = getReverseGeocodeCacheKey(lat, lng);
+  const cached = readReverseGeocodeCache(cacheKey);
+  if (cached.hit) {
+    return cached.pincode;
+  }
+
+  let pincode = await lookupPincodeViaGeoapify(lat, lng);
+  if (!pincode) {
+    pincode = await lookupPincodeViaNominatim(lat, lng);
+  }
+
+  writeReverseGeocodeCache(cacheKey, pincode);
+  return pincode;
+}
+
 async function sendCodOtpViaProvider(
   cleanPhone: string,
   otp: string
@@ -243,6 +406,33 @@ export default async function handler(req: Request, res: Response) {
 
       const signed = signGuestLocationToken(lat, lng);
       res.json(signed);
+      return;
+    }
+
+    // POST /api/guest/reverse-geocode (Geoapify primary + Nominatim fallback, no Firebase DB dependency)
+    if (req.method === 'POST' && path.endsWith('/guest/reverse-geocode')) {
+      const allowed = checkInMemoryReverseGeocodeRateLimit(clientIp);
+      if (!allowed) {
+        res.status(429).json({
+          error: 'Too many reverse geocoding requests from this IP, please wait 15 minutes.',
+        });
+        return;
+      }
+
+      const rawLat = req.body?.lat;
+      const rawLng = req.body?.lng;
+      const lat = typeof rawLat === 'number' ? rawLat : Number.NaN;
+      const lng = typeof rawLng === 'number' ? rawLng : Number.NaN;
+
+      if (!isValidDeliveryCoordinate(lat, lng)) {
+        res.status(400).json({
+          error: 'Valid GPS coordinates are required.',
+        });
+        return;
+      }
+
+      const pincode = await resolveReverseGeocodePincode(lat, lng);
+      res.json({ pincode });
       return;
     }
 

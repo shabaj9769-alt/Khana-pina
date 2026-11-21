@@ -43,6 +43,7 @@ Configure the following in Vercel Project Settings (or `.env` for local developm
 | `RAZORPAY_KEY_SECRET` | Razorpay API Key Secret |
 | `RAZORPAY_WEBHOOK_SECRET` | Razorpay Webhook Secret configured for `https://<site>/api/payments/webhook` |
 | `ALLOWED_ORIGIN` | Allowed frontend origin for CORS (e.g. `https://your-domain.vercel.app`) |
+| `GEOAPIFY_API_KEY` | Optional server-only Geoapify API key for GPS pincode auto-fill (a free key requires no credit card; if unset, the app automatically falls back to Nominatim) |
 
 ### Razorpay Webhook Configuration
 - **Webhook URL**: `https://<site>/api/payments/webhook`
