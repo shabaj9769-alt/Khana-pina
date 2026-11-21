@@ -143,6 +143,7 @@ export interface ShopSettings {
   opensAtText?: string;
   autoScheduleEnabled?: boolean;
   openTime?: string;
+  deliveryStartTime?: string;
   closeTime?: string;
   closedDays?: number[];
   lastArchivedDate?: string;
@@ -516,6 +517,7 @@ export interface PublicShopStatus {
   allowPreOrdersWhenClosed: boolean;
   autoScheduleEnabled?: boolean;
   openTime?: string;
+  deliveryStartTime?: string;
   closeTime?: string;
   scheduleMode?: 'AUTO' | 'MANUAL';
   cityArea?: string;

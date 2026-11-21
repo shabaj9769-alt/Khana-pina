@@ -580,14 +580,17 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const [scheduleDraft, setScheduleDraft] = useState<{
     autoScheduleEnabled: boolean;
     openTime: string;
+    deliveryStartTime: string;
     closeTime: string;
     closedDays: number[];
   }>({
     autoScheduleEnabled: false,
     openTime: '11:00',
+    deliveryStartTime: '11:00',
     closeTime: '23:30',
     closedDays: [],
   });
+  const [scheduleError, setScheduleError] = useState<string | null>(null);
 
   // Account Settings State (Name, Email, Password)
   const [nameFormOpen, setNameFormOpen] = useState(false);
@@ -886,6 +889,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         setScheduleDraft({
           autoScheduleEnabled: Boolean(data.settings.autoScheduleEnabled),
           openTime: data.settings.openTime || '11:00',
+          deliveryStartTime: data.settings.deliveryStartTime || '11:00',
           closeTime: data.settings.closeTime || '23:30',
           closedDays: Array.isArray(data.settings.closedDays) ? data.settings.closedDays : [],
         });
@@ -1456,6 +1460,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         setScheduleDraft({
           autoScheduleEnabled: Boolean(data.settings.autoScheduleEnabled),
           openTime: data.settings.openTime || '11:00',
+          deliveryStartTime: data.settings.deliveryStartTime || '11:00',
           closeTime: data.settings.closeTime || '23:30',
           closedDays: Array.isArray(data.settings.closedDays) ? data.settings.closedDays : [],
         });
@@ -7596,7 +7601,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       </label>
                     </div>
 
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                       <div>
                         <label
                           htmlFor="shop-open-time-input"
@@ -7608,16 +7613,42 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                           id="shop-open-time-input"
                           type="time"
                           value={scheduleDraft.openTime}
-                          onChange={(e) =>
+                          onChange={(e) => {
+                            setScheduleError(null);
                             setScheduleDraft((prev) => ({
                               ...prev,
                               openTime: e.target.value,
-                            }))
-                          }
+                            }));
+                          }}
                           className="w-full min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs text-text"
                         />
                         <p className="text-[11px] text-muted mt-1">
                           Opens at {formatTime24To12Admin(scheduleDraft.openTime)}
+                        </p>
+                      </div>
+
+                      <div>
+                        <label
+                          htmlFor="shop-delivery-start-time-input"
+                          className="block text-xs font-semibold text-muted mb-1"
+                        >
+                          Delivery starts at (IST)
+                        </label>
+                        <input
+                          id="shop-delivery-start-time-input"
+                          type="time"
+                          value={scheduleDraft.deliveryStartTime}
+                          onChange={(e) => {
+                            setScheduleError(null);
+                            setScheduleDraft((prev) => ({
+                              ...prev,
+                              deliveryStartTime: e.target.value,
+                            }));
+                          }}
+                          className="w-full min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs text-text"
+                        />
+                        <p className="text-[11px] text-muted mt-1">
+                          Delivery starts at {formatTime24To12Admin(scheduleDraft.deliveryStartTime)}
                         </p>
                       </div>
 
@@ -7632,12 +7663,13 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                           id="shop-close-time-input"
                           type="time"
                           value={scheduleDraft.closeTime}
-                          onChange={(e) =>
+                          onChange={(e) => {
+                            setScheduleError(null);
                             setScheduleDraft((prev) => ({
                               ...prev,
                               closeTime: e.target.value,
-                            }))
-                          }
+                            }));
+                          }}
                           className="w-full min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs text-text"
                         />
                         <p className="text-[11px] text-muted mt-1">
@@ -7681,17 +7713,73 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       </p>
                     </div>
 
+                    {scheduleError && (
+                      <p role="alert" className="text-xs font-semibold text-red-600 dark:text-red-400">
+                        {scheduleError}
+                      </p>
+                    )}
+
                     <div className="flex flex-wrap items-center gap-2 pt-1">
                       <button
                         type="button"
-                        onClick={() =>
+                        onClick={() => {
+                          const toMins = (t: string): number | null => {
+                            const m = /^(\d{2}):(\d{2})$/.exec((t || '').trim());
+                            if (!m) return null;
+                            const h = Number(m[1]);
+                            const min = Number(m[2]);
+                            if (h < 0 || h > 23 || min < 0 || min > 59) return null;
+                            return h * 60 + min;
+                          };
+                          const openMins = toMins(scheduleDraft.openTime);
+                          const startMins = toMins(scheduleDraft.deliveryStartTime);
+                          const closeMins = toMins(scheduleDraft.closeTime);
+                          if (openMins === null || startMins === null || closeMins === null) {
+                            const msg = 'Schedule times must be in valid HH:MM format.';
+                            setScheduleError(msg);
+                            showToast(msg);
+                            return;
+                          }
+                          if (openMins < closeMins) {
+                            if (startMins < openMins) {
+                              const msg =
+                                'Delivery start time cannot be earlier than shop opening time.';
+                              setScheduleError(msg);
+                              showToast(msg);
+                              return;
+                            }
+                            if (startMins >= closeMins) {
+                              const msg =
+                                'Delivery start time must be earlier than shop closing time.';
+                              setScheduleError(msg);
+                              showToast(msg);
+                              return;
+                            }
+                          } else if (closeMins < openMins) {
+                            if (startMins === closeMins) {
+                              const msg =
+                                'Delivery start time must be earlier than shop closing time.';
+                              setScheduleError(msg);
+                              showToast(msg);
+                              return;
+                            }
+                            if (startMins > closeMins && startMins < openMins) {
+                              const msg =
+                                'Delivery start time cannot be earlier than shop opening time.';
+                              setScheduleError(msg);
+                              showToast(msg);
+                              return;
+                            }
+                          }
+                          setScheduleError(null);
                           handleUpdateShopSettings({
                             autoScheduleEnabled: scheduleDraft.autoScheduleEnabled,
                             openTime: scheduleDraft.openTime,
+                            deliveryStartTime: scheduleDraft.deliveryStartTime,
                             closeTime: scheduleDraft.closeTime,
                             closedDays: scheduleDraft.closedDays,
-                          })
-                        }
+                          });
+                        }}
                         className="min-h-[40px] px-4 rounded-xl bg-primary text-primary-contrast text-xs font-bold cursor-pointer"
                       >
                         Save Shop Schedule

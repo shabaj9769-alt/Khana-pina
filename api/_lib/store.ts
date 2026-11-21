@@ -240,6 +240,7 @@ export function getInitialDatabaseState(options?: { forSeeding?: boolean }): Dat
       holidaysNote: '',
       autoScheduleEnabled: false,
       openTime: '11:00',
+      deliveryStartTime: '11:00',
       closeTime: '23:30',
       closedDays: [],
       lastArchivedDate: '',
@@ -986,13 +987,111 @@ export function getKolkataClockInfo(now: Date = new Date()): {
   };
 }
 
-function parseHhmmToMinutes(hhmm?: string): number | null {
+export function parseHhmmToMinutes(hhmm?: string): number | null {
   const match = /^(\d{2}):(\d{2})$/.exec((hhmm || '').trim());
   if (!match) return null;
   const h = Number(match[1]);
   const m = Number(match[2]);
   if (h < 0 || h > 23 || m < 0 || m > 59) return null;
   return h * 60 + m;
+}
+
+export function validateShopScheduleWindow(
+  openTime?: string,
+  deliveryStartTime?: string,
+  closeTime?: string
+): { valid: true } | { valid: false; error: string } {
+  const openMins = parseHhmmToMinutes(openTime || '11:00');
+  const startMins = parseHhmmToMinutes(deliveryStartTime || '11:00');
+  const closeMins = parseHhmmToMinutes(closeTime || '23:30');
+  if (openMins === null || startMins === null || closeMins === null) {
+    return { valid: false, error: 'Schedule times must be in valid 24-hour HH:MM format.' };
+  }
+  if (openMins < closeMins) {
+    if (startMins < openMins) {
+      return {
+        valid: false,
+        error: 'Delivery start time cannot be earlier than shop opening time.',
+      };
+    }
+    if (startMins >= closeMins) {
+      return {
+        valid: false,
+        error: 'Delivery start time must be earlier than shop closing time.',
+      };
+    }
+    return { valid: true };
+  }
+  if (closeMins < openMins) {
+    // Overnight window: valid shift spans [openMins..1439] and [0..closeMins)
+    if (startMins === closeMins) {
+      return {
+        valid: false,
+        error: 'Delivery start time must be earlier than shop closing time.',
+      };
+    }
+    if (startMins > closeMins && startMins < openMins) {
+      return {
+        valid: false,
+        error: 'Delivery start time cannot be earlier than shop opening time.',
+      };
+    }
+    return { valid: true };
+  }
+  return { valid: true };
+}
+
+export function getNextIstDateKey(todayKeyIST: string): string {
+  const [y, m, d] = todayKeyIST.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10);
+}
+
+export function validateScheduledDeliveryFor(
+  scheduledFor: string,
+  settings: ShopSettings,
+  now: Date = new Date()
+): { valid: true; parsedDate: Date } | { valid: false; code: 'INVALID_DELIVERY_TIME'; error: string } {
+  const deliveryStartTime = settings.deliveryStartTime || '11:00';
+  const closeTime = settings.closeTime || '23:30';
+  const startLabel = formatTime24To12(deliveryStartTime);
+  const closeLabel = formatTime24To12(closeTime);
+  const errorMsg = `Please choose a delivery time between ${startLabel} and ${closeLabel}.`;
+
+  if (typeof scheduledFor !== 'string' || !scheduledFor.trim()) {
+    return { valid: false, code: 'INVALID_DELIVERY_TIME', error: errorMsg };
+  }
+  const parsed = new Date(scheduledFor.trim());
+  if (Number.isNaN(parsed.getTime())) {
+    return { valid: false, code: 'INVALID_DELIVERY_TIME', error: errorMsg };
+  }
+  if (parsed.getTime() < now.getTime() + 30 * 60 * 1000) {
+    return { valid: false, code: 'INVALID_DELIVERY_TIME', error: errorMsg };
+  }
+
+  const todayKeyIST = getKolkataDateKey(now);
+  const tomorrowKeyIST = getNextIstDateKey(todayKeyIST);
+  const schedInfo = getKolkataClockInfo(parsed);
+  if (schedInfo.dateKeyIST !== todayKeyIST && schedInfo.dateKeyIST !== tomorrowKeyIST) {
+    return { valid: false, code: 'INVALID_DELIVERY_TIME', error: errorMsg };
+  }
+
+  const startMins = parseHhmmToMinutes(deliveryStartTime);
+  const closeMins = parseHhmmToMinutes(closeTime);
+  if (startMins === null || closeMins === null) {
+    return { valid: false, code: 'INVALID_DELIVERY_TIME', error: errorMsg };
+  }
+
+  if (startMins <= closeMins) {
+    if (schedInfo.minutesOfDay < startMins || schedInfo.minutesOfDay > closeMins) {
+      return { valid: false, code: 'INVALID_DELIVERY_TIME', error: errorMsg };
+    }
+  } else {
+    if (schedInfo.minutesOfDay < startMins && schedInfo.minutesOfDay > closeMins) {
+      return { valid: false, code: 'INVALID_DELIVERY_TIME', error: errorMsg };
+    }
+  }
+
+  return { valid: true, parsedDate: parsed };
 }
 
 export function computeEffectiveShopOpen(
@@ -1052,6 +1151,7 @@ export function buildPublicShopStatus(
     settings.manualOverrideDate === todayKeyIST;
   const effectiveOpen = computeEffectiveShopOpen(settings, now);
   const openTime = settings.openTime || '11:00';
+  const deliveryStartTime = settings.deliveryStartTime || '11:00';
   const closeTime = settings.closeTime || '23:30';
   const opensAtText = settings.autoScheduleEnabled
     ? formatTime24To12(openTime)
@@ -1066,6 +1166,7 @@ export function buildPublicShopStatus(
     allowPreOrdersWhenClosed: settings.allowPreOrdersWhenClosed !== false,
     autoScheduleEnabled: Boolean(settings.autoScheduleEnabled),
     openTime,
+    deliveryStartTime,
     closeTime,
     scheduleMode: settings.autoScheduleEnabled && !hasManualOverrideToday ? 'AUTO' : 'MANUAL',
     ...(settings.cityArea ? { cityArea: settings.cityArea } : {}),
@@ -1623,6 +1724,8 @@ function applySettingsAndZoneToDb(rawSettings: any, rawDeliveryZone: any): void 
       gstEnabled: normalizedGstEnabled,
       autoScheduleEnabled: Boolean(rawSettings.autoScheduleEnabled),
       openTime: rawSettings.openTime || db.settings.openTime || '11:00',
+      deliveryStartTime:
+        rawSettings.deliveryStartTime || db.settings.deliveryStartTime || '11:00',
       closeTime: rawSettings.closeTime || db.settings.closeTime || '23:30',
       closedDays: recordToArray<number>(rawSettings.closedDays)
         .map((d) => Number(d))

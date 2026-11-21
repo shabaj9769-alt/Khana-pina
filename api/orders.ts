@@ -46,6 +46,7 @@ import {
   syncCancelledPendingRefundToHistory,
   syncOrderRealtimePaths,
   upsertPaymentInMemory,
+  validateScheduledDeliveryFor,
   verifyAndIncrementMenuStockSalesTx,
   verifyGuestLocationToken,
 } from './_lib/store.ts';
@@ -761,6 +762,11 @@ export default async function handler(req: Request, res: Response) {
         }
       }
 
+      const cleanScheduledFor =
+        typeof scheduledFor === 'string' && scheduledFor.trim().length > 0
+          ? scheduledFor.trim()
+          : null;
+
       await runScheduledShopAndArchiveCheck({ minIntervalMs: 45_000 });
       const effectiveShopOpen = computeEffectiveShopOpen(db.settings);
       const effectiveOpensAtText = db.settings.autoScheduleEnabled
@@ -768,7 +774,7 @@ export default async function handler(req: Request, res: Response) {
         : db.settings.opensAtText || '11:00 AM';
 
       if (!effectiveShopOpen) {
-        if (!(db.settings.allowPreOrdersWhenClosed && scheduledFor)) {
+        if (!(db.settings.allowPreOrdersWhenClosed && cleanScheduledFor)) {
           res.status(400).json({
             error: db.settings.allowPreOrdersWhenClosed
               ? `Kitchen is currently closed (opens at ${effectiveOpensAtText}). Please pick a scheduled pre-order slot.`
@@ -782,6 +788,16 @@ export default async function handler(req: Request, res: Response) {
           error: 'Kitchen is in high-demand busy mode and temporarily paused new orders.',
         });
         return;
+      }
+      if (cleanScheduledFor) {
+        const schedCheck = validateScheduledDeliveryFor(cleanScheduledFor, db.settings);
+        if (!schedCheck.valid) {
+          res.status(400).json({
+            error: schedCheck.error,
+            code: schedCheck.code,
+          });
+          return;
+        }
       }
 
       const cleanName = customerName.replace(/[<>]/g, '');
@@ -968,7 +984,7 @@ export default async function handler(req: Request, res: Response) {
         deliveryLng: Number(deliveryLng),
         distanceKm: bill.distanceKm,
         orderNotes: String(orderNotes || '').trim().slice(0, 300),
-        scheduledFor: scheduledFor || null,
+        scheduledFor: cleanScheduledFor,
         status: 'PLACED',
         paymentMethod: method,
         paymentStatus: 'PENDING',

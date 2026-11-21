@@ -63,6 +63,7 @@ import {
   getRefundsForPaymentFresh,
   IMG_HERO,
   invalidateHomeHydration,
+  validateShopScheduleWindow,
   isClosedOrderStatus,
   isLoginLockedFirebase,
   isOrderVisibleToKitchen,
@@ -182,6 +183,10 @@ const ShopSettingsUpdateSchema = z
     holidaysNote: z.string().trim().max(250).optional(),
     autoScheduleEnabled: z.boolean().optional(),
     openTime: z.string().regex(/^\d{2}:\d{2}$/, 'Open time must be in HH:MM format').optional(),
+    deliveryStartTime: z
+      .string()
+      .regex(/^\d{2}:\d{2}$/, 'Delivery start time must be in HH:MM format')
+      .optional(),
     closeTime: z.string().regex(/^\d{2}:\d{2}$/, 'Close time must be in HH:MM format').optional(),
     closedDays: z.array(z.number().int().min(0).max(6)).max(7).optional(),
     manualOverrideOpen: z.boolean().nullable().optional(),
@@ -1991,10 +1996,26 @@ export default async function handler(req: Request, res: Response) {
           return;
         }
         const patch = parsedSettings.data;
+        if (
+          patch.openTime !== undefined ||
+          patch.deliveryStartTime !== undefined ||
+          patch.closeTime !== undefined
+        ) {
+          const nextOpen = patch.openTime ?? db.settings.openTime ?? '11:00';
+          const nextDeliveryStart =
+            patch.deliveryStartTime ?? db.settings.deliveryStartTime ?? '11:00';
+          const nextClose = patch.closeTime ?? db.settings.closeTime ?? '23:30';
+          const scheduleCheck = validateShopScheduleWindow(nextOpen, nextDeliveryStart, nextClose);
+          if (!scheduleCheck.valid) {
+            res.status(400).json({ error: scheduleCheck.error });
+            return;
+          }
+        }
         const isPureManualOpenToggle =
           patch.isOpen !== undefined &&
           patch.autoScheduleEnabled === undefined &&
           patch.openTime === undefined &&
+          patch.deliveryStartTime === undefined &&
           patch.closeTime === undefined &&
           patch.closedDays === undefined &&
           patch.manualOverrideOpen === undefined;

@@ -49,7 +49,11 @@ import { guestAuthLayer } from '../auth/guestAuthLayer.ts';
 import { calculateHaversineKm } from '../utils/haversine.ts';
 import { getCachedShopName, optimizeAssetUrl, normalizeImageUrl } from '../utils/themeTokens.ts';
 import { SafeImage } from './SafeImage.tsx';
-import { formatOrderPlacedAt, syncServerTimeFromResponse } from '../utils/formatOrderTime.ts';
+import {
+  formatOrderPlacedAt,
+  getServerNow,
+  syncServerTimeFromResponse,
+} from '../utils/formatOrderTime.ts';
 import { FirebaseClientConfig, subscribeToCustomerTracking } from '../utils/firebaseClient.ts';
 
 interface ResolvedHomeSection extends HomeSection {
@@ -102,30 +106,147 @@ const CATEGORY_THUMBS: Record<string, string> = {
   cat_desserts: '/assets/images/dish_gulab_jamun_dessert_1793975541767.webp',
 };
 
-function generateShopHourSlots(): { label: string; iso: string }[] {
-  const slots: { label: string; iso: string }[] = [];
-  const now = new Date();
-  const baseDate = new Date(now);
-  const hours = [12, 13, 14, 18, 19, 20, 21, 22];
+const IST_OFFSET_MS = 330 * 60 * 1000;
 
-  for (let dayOffset = 0; dayOffset <= 1; dayOffset++) {
-    const d = new Date(baseDate);
-    d.setDate(d.getDate() + dayOffset);
-    const dayLabel = dayOffset === 0 ? 'Today' : 'Tomorrow';
+function parseHhmmToMins(hhmm?: string): number | null {
+  const match = /^(\d{2}):(\d{2})$/.exec((hhmm || '').trim());
+  if (!match) return null;
+  const h = Number(match[1]);
+  const m = Number(match[2]);
+  if (h < 0 || h > 23 || m < 0 || m > 59) return null;
+  return h * 60 + m;
+}
 
-    for (const hr of hours) {
-      const slotDate = new Date(d);
-      slotDate.setHours(hr, 0, 0, 0);
-      if (slotDate.getTime() > now.getTime() + 30 * 60 * 1000) {
-        const displayHr = hr > 12 ? `${hr - 12}:00 PM` : hr === 12 ? '12:00 PM' : `${hr}:00 AM`;
-        slots.push({
-          label: `${dayLabel} · ${displayHr}`,
-          iso: slotDate.toISOString(),
-        });
-      }
+function minsToHhmm(totalMins: number): string {
+  const clamped = Math.max(0, Math.min(23 * 60 + 59, Math.floor(totalMins)));
+  const h = String(Math.floor(clamped / 60)).padStart(2, '0');
+  const m = String(clamped % 60).padStart(2, '0');
+  return `${h}:${m}`;
+}
+
+function formatHhmmTo12(hhmm: string): string {
+  const mins = parseHhmmToMins(hhmm);
+  if (mins === null) return hhmm;
+  const h24 = Math.floor(mins / 60);
+  const m = String(mins % 60).padStart(2, '0');
+  const suffix = h24 >= 12 ? 'PM' : 'AM';
+  const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
+  return `${h12}:${m} ${suffix}`;
+}
+
+function getIstDateParts(epochMs: number): {
+  dateKey: string;
+  tomorrowKey: string;
+  minutesOfDay: number;
+} {
+  const ist = new Date(epochMs + IST_OFFSET_MS);
+  const y = ist.getUTCFullYear();
+  const m = ist.getUTCMonth() + 1;
+  const d = ist.getUTCDate();
+  const dateKey = `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+  const tomorrow = new Date(Date.UTC(y, m - 1, d + 1));
+  const tomorrowKey = tomorrow.toISOString().slice(0, 10);
+  const minutesOfDay = ist.getUTCHours() * 60 + ist.getUTCMinutes();
+  return { dateKey, tomorrowKey, minutesOfDay };
+}
+
+function istDateTimeToIso(dateKey: string, hhmm: string): string {
+  const dateMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateKey);
+  const mins = parseHhmmToMins(hhmm);
+  if (!dateMatch || mins === null) return '';
+  const y = Number(dateMatch[1]);
+  const m = Number(dateMatch[2]);
+  const d = Number(dateMatch[3]);
+  const hh = Math.floor(mins / 60);
+  const mm = mins % 60;
+  const utcMs = Date.UTC(y, m - 1, d, hh, mm, 0, 0) - IST_OFFSET_MS;
+  return new Date(utcMs).toISOString();
+}
+
+function isIstMinsInDeliveryWindow(mins: number, startMins: number, closeMins: number): boolean {
+  if (startMins <= closeMins) {
+    return mins >= startMins && mins <= closeMins;
+  }
+  return mins >= startMins || mins <= closeMins;
+}
+
+function computeDeliveryScheduleWindow(
+  rawDeliveryStart?: string,
+  rawCloseTime?: string,
+  nowMs = Date.now()
+) {
+  const parsedStart = parseHhmmToMins(rawDeliveryStart);
+  const parsedClose = parseHhmmToMins(rawCloseTime);
+  const startTime = parsedStart !== null ? minsToHhmm(parsedStart) : '11:00';
+  const closeTime = parsedClose !== null ? minsToHhmm(parsedClose) : '23:30';
+  const startMins = parseHhmmToMins(startTime)!;
+  const closeMins = parseHhmmToMins(closeTime)!;
+  const isOvernight = closeMins < startMins;
+
+  const earliestMinuteMs = Math.ceil((nowMs + 30 * 60 * 1000) / 60000) * 60000;
+  const todayParts = getIstDateParts(nowMs);
+  const earliestParts = getIstDateParts(earliestMinuteMs);
+
+  let hasTodayOption = false;
+  let todayMinMins = startMins;
+  let todayMaxMins = closeMins;
+
+  if (!isOvernight) {
+    hasTodayOption =
+      earliestParts.dateKey === todayParts.dateKey && earliestParts.minutesOfDay <= closeMins;
+    todayMinMins = hasTodayOption ? Math.max(startMins, earliestParts.minutesOfDay) : startMins;
+    todayMaxMins = closeMins;
+  } else if (earliestParts.dateKey === todayParts.dateKey) {
+    hasTodayOption = true;
+    if (earliestParts.minutesOfDay <= closeMins) {
+      todayMinMins = earliestParts.minutesOfDay;
+      todayMaxMins = closeMins;
+    } else {
+      todayMinMins = Math.max(startMins, earliestParts.minutesOfDay);
+      todayMaxMins = 23 * 60 + 59;
     }
   }
-  return slots.slice(0, 8);
+
+  let tomorrowMinMins = startMins;
+  const tomorrowMaxMins = isOvernight ? 23 * 60 + 59 : closeMins;
+  if (!isOvernight && earliestParts.dateKey === todayParts.tomorrowKey) {
+    tomorrowMinMins = Math.max(startMins, earliestParts.minutesOfDay);
+  }
+
+  const defaultDay: 'today' | 'tomorrow' = hasTodayOption ? 'today' : 'tomorrow';
+  let defaultMins = startMins;
+  if (defaultDay === 'today') {
+    if (!isOvernight) {
+      defaultMins =
+        todayMinMins > startMins ? Math.min(todayMaxMins, todayMinMins + 5) : todayMinMins;
+    } else if (earliestParts.minutesOfDay <= closeMins) {
+      defaultMins = Math.min(closeMins, earliestParts.minutesOfDay + 5);
+    } else {
+      defaultMins =
+        todayMinMins > startMins ? Math.min(todayMaxMins, todayMinMins + 5) : todayMinMins;
+    }
+  } else if (!isOvernight) {
+    defaultMins = tomorrowMinMins;
+  } else {
+    defaultMins = startMins;
+  }
+
+  return {
+    startTime,
+    closeTime,
+    startMins,
+    closeMins,
+    isOvernight,
+    todayKey: todayParts.dateKey,
+    tomorrowKey: todayParts.tomorrowKey,
+    hasTodayOption,
+    todayMinHhmm: minsToHhmm(todayMinMins),
+    todayMaxHhmm: minsToHhmm(todayMaxMins),
+    tomorrowMinHhmm: minsToHhmm(tomorrowMinMins),
+    tomorrowMaxHhmm: minsToHhmm(tomorrowMaxMins),
+    defaultDay,
+    defaultTime: minsToHhmm(defaultMins),
+  };
 }
 
 /**
@@ -279,6 +400,8 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
   }, [customizingItem, addressSheetOpen, cartDrawerOpen, gpsHelpOpen]);
   const [orderNotes, setOrderNotes] = useState('');
   const [isScheduled, setIsScheduled] = useState(false);
+  const [scheduleDay, setScheduleDay] = useState<'today' | 'tomorrow'>('today');
+  const [scheduleTime, setScheduleTime] = useState('');
   const [scheduledFor, setScheduledFor] = useState('');
   const [couponInput, setCouponInput] = useState('');
   const [appliedCouponCode, setAppliedCouponCode] = useState<string | null>(null);
@@ -351,7 +474,6 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
   });
 
   const menuSectionRef = useRef<HTMLElement | null>(null);
-  const timeSlots = useMemo(() => generateShopHourSlots(), []);
 
   // Navigate between 'store', 'cart', 'checkout', 'profile', and 'about' and sync with browser history
   const navigateFlowStep = (nextStep: 'store' | 'cart' | 'checkout' | 'profile' | 'about', pushHistory = true) => {
@@ -626,8 +748,20 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
         }
         if (!data.settings.isOpen && data.settings.allowPreOrdersWhenClosed) {
           setIsScheduled(true);
-          if (!scheduledFor && timeSlots[0]) {
-            setScheduledFor(timeSlots[0].iso);
+          if (!scheduledFor) {
+            const win = computeDeliveryScheduleWindow(
+              data.settings.deliveryStartTime,
+              data.settings.closeTime,
+              getServerNow()
+            );
+            setScheduleDay(win.defaultDay);
+            setScheduleTime(win.defaultTime);
+            setScheduledFor(
+              istDateTimeToIso(
+                win.defaultDay === 'today' ? win.todayKey : win.tomorrowKey,
+                win.defaultTime
+              )
+            );
           }
         }
         if (onHeaderMetaUpdate && data.settings) {
@@ -654,6 +788,27 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
   useEffect(() => {
     fetchHomeData();
   }, []);
+
+  useEffect(() => {
+    if (!isScheduled || scheduleDay !== 'today') return;
+    const win = computeDeliveryScheduleWindow(
+      homeData?.settings.deliveryStartTime,
+      homeData?.settings.closeTime,
+      getServerNow()
+    );
+    if (!win.hasTodayOption) {
+      setScheduleDay('tomorrow');
+      const nextTime = scheduleTime || win.defaultTime;
+      setScheduleTime(nextTime);
+      setScheduledFor(istDateTimeToIso(win.tomorrowKey, nextTime));
+    }
+  }, [
+    isScheduled,
+    scheduleDay,
+    scheduleTime,
+    homeData?.settings.deliveryStartTime,
+    homeData?.settings.closeTime,
+  ]);
 
   // Save guest profile to localStorage whenever modified & sync header address chip
   useEffect(() => {
@@ -1656,15 +1811,37 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
         setCheckoutError('The kitchen is currently closed.');
         return;
       }
-      if (!isScheduled || !scheduledFor) {
-        setCheckoutError('Kitchen is currently closed. Please select a scheduled delivery time slot.');
+      if (!isScheduled || !scheduledFor || scheduleFieldError) {
+        setCheckoutError(
+          scheduleFieldError ||
+            'Kitchen is currently closed. Please select a valid scheduled delivery time.'
+        );
         return;
       }
     }
 
-    if (isScheduled && !scheduledFor) {
-      setCheckoutError('Please select a delivery time slot for your scheduled order.');
+    if (isScheduled && (!scheduledFor || scheduleFieldError)) {
+      setCheckoutError(scheduleFieldError || 'Please choose a delivery time.');
       return;
+    }
+
+    if (isScheduled && scheduledFor) {
+      const submitNowMs = getServerNow();
+      const schedMs = new Date(scheduledFor).getTime();
+      if (Number.isNaN(schedMs) || schedMs < submitNowMs + 30 * 60 * 1000) {
+        const minLabel = formatHhmmTo12(
+          activeScheduleDay === 'today'
+            ? scheduleWindow.todayMinHhmm
+            : scheduleWindow.tomorrowMinHhmm
+        );
+        const maxLabel = formatHhmmTo12(
+          activeScheduleDay === 'today'
+            ? scheduleWindow.todayMaxHhmm
+            : scheduleWindow.tomorrowMaxHhmm
+        );
+        setCheckoutError(`Please choose a time between ${minLabel} and ${maxLabel}.`);
+        return;
+      }
     }
 
     if (homeData?.turnstileSiteKey && !turnstileToken) {
@@ -1701,7 +1878,12 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
           deliveryLat: guestLat,
           deliveryLng: guestLng,
           orderNotes,
-          scheduledFor: isScheduled && scheduledFor ? scheduledFor : null,
+          scheduledFor:
+            isScheduled && scheduledFor
+              ? (scheduleTime && parseHhmmToMins(scheduleTime) !== null
+                  ? istDateTimeToIso(activeScheduleDateKey, scheduleTime)
+                  : scheduledFor)
+              : null,
           paymentMethod,
           couponCode: appliedCouponCode,
           captchaToken: turnstileToken || 'demo_bypass_turnstile',
@@ -2248,8 +2430,50 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
   const pincodeFieldError = !/^\d{6}$/.test(cleanPincodeDigits)
     ? 'Please enter a valid 6-digit pincode.'
     : null;
-  const scheduleFieldError =
-    isScheduled && !scheduledFor ? 'Please choose a delivery time slot.' : null;
+  const scheduleWindow = computeDeliveryScheduleWindow(
+    settings.deliveryStartTime,
+    settings.closeTime,
+    getServerNow()
+  );
+  const activeScheduleDay: 'today' | 'tomorrow' =
+    scheduleDay === 'today' && scheduleWindow.hasTodayOption ? 'today' : 'tomorrow';
+  const activeScheduleDateKey =
+    activeScheduleDay === 'today' ? scheduleWindow.todayKey : scheduleWindow.tomorrowKey;
+  const activeScheduleMinHhmm =
+    activeScheduleDay === 'today' ? scheduleWindow.todayMinHhmm : scheduleWindow.tomorrowMinHhmm;
+  const activeScheduleMaxHhmm =
+    activeScheduleDay === 'today' ? scheduleWindow.todayMaxHhmm : scheduleWindow.tomorrowMaxHhmm;
+
+  const scheduleFieldError: string | null = (() => {
+    if (!isScheduled) return null;
+    if (!scheduleTime || !scheduledFor) {
+      return 'Please choose a delivery time.';
+    }
+    const pickedMins = parseHhmmToMins(scheduleTime);
+    if (pickedMins === null) {
+      return 'Please choose a delivery time.';
+    }
+    const pickedIso = istDateTimeToIso(activeScheduleDateKey, scheduleTime);
+    const pickedMs = pickedIso ? new Date(pickedIso).getTime() : Number.NaN;
+    if (Number.isNaN(pickedMs) || pickedMs < getServerNow() + 30 * 60 * 1000) {
+      if (!scheduleWindow.isOvernight) {
+        return `Please choose a time between ${formatHhmmTo12(activeScheduleMinHhmm)} and ${formatHhmmTo12(activeScheduleMaxHhmm)}`;
+      }
+      return `Please choose a time between ${formatHhmmTo12(scheduleWindow.startTime)} and ${formatHhmmTo12(scheduleWindow.closeTime)}`;
+    }
+    if (!scheduleWindow.isOvernight) {
+      const minMins = parseHhmmToMins(activeScheduleMinHhmm)!;
+      const maxMins = parseHhmmToMins(activeScheduleMaxHhmm)!;
+      if (pickedMins < minMins || pickedMins > maxMins) {
+        return `Please choose a time between ${formatHhmmTo12(activeScheduleMinHhmm)} and ${formatHhmmTo12(activeScheduleMaxHhmm)}`;
+      }
+    } else if (
+      !isIstMinsInDeliveryWindow(pickedMins, scheduleWindow.startMins, scheduleWindow.closeMins)
+    ) {
+      return `Please choose a time between ${formatHhmmTo12(scheduleWindow.startTime)} and ${formatHhmmTo12(scheduleWindow.closeTime)}`;
+    }
+    return null;
+  })();
 
   const gstEnabled = billPreview?.gstEnabled ?? settings.gstEnabled ?? (settings.gstPercent > 0);
   const estimatedGst =
@@ -2262,12 +2486,15 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
     verifyingPayment ||
     !locationPinned ||
     isOutsideDeliveryZone ||
+    Boolean(scheduleFieldError) ||
     (billPreview !== null && !billPreview.minOrderMet);
 
   const placeOrderDisabledReason = !locationPinned
     ? 'Tap "Use my current GPS location" to check delivery availability. If GPS is off, turn on Location on your phone.'
     : isOutsideDeliveryZone
     ? 'Delivery is not available at this location.'
+    : scheduleFieldError
+    ? scheduleFieldError
     : billPreview && !billPreview.minOrderMet
     ? `Minimum order amount for delivery is ₹${billPreview.minOrderAmount}.`
     : null;
@@ -3037,8 +3264,17 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                     type="button"
                     onClick={() => {
                       setIsScheduled(true);
-                      if (!scheduledFor && timeSlots[0]) {
-                        setScheduledFor(timeSlots[0].iso);
+                      if (!scheduledFor) {
+                        setScheduleDay(scheduleWindow.defaultDay);
+                        setScheduleTime(scheduleWindow.defaultTime);
+                        setScheduledFor(
+                          istDateTimeToIso(
+                            scheduleWindow.defaultDay === 'today'
+                              ? scheduleWindow.todayKey
+                              : scheduleWindow.tomorrowKey,
+                            scheduleWindow.defaultTime
+                          )
+                        );
                       }
                     }}
                     className={`min-h-[48px] p-3.5 rounded-xl border text-left flex items-center justify-between gap-2 cursor-pointer ${
@@ -3062,33 +3298,105 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                 </div>
 
                 {isScheduled && (
-                  <div className="space-y-1.5">
-                    <label
-                      htmlFor="checkout-schedule-slot"
-                      className="block text-[14px] font-bold text-text"
-                    >
-                      Choose delivery time slot *
-                    </label>
-                    <select
-                      id="checkout-schedule-slot"
-                      value={scheduledFor}
-                      onFocus={handleCheckoutInputFocus}
-                      onBlur={handleCheckoutInputBlur}
-                      onChange={(e) => setScheduledFor(e.target.value)}
-                      className="w-full max-w-full min-h-[48px] px-3.5 py-2.5 rounded-xl border border-border bg-bg text-[16px] font-bold text-text box-border"
-                    >
-                      <option value="">Select a delivery time slot...</option>
-                      {timeSlots.map((slot) => (
-                        <option key={slot.iso} value={slot.iso}>
-                          {slot.label}
-                        </option>
-                      ))}
-                    </select>
-                    {checkoutTouched && scheduleFieldError && (
-                      <p className="text-[13px] font-semibold text-primary">
-                        {scheduleFieldError}
+                  <div className="space-y-3">
+                    <div className="space-y-1.5">
+                      <span className="block text-[14px] font-bold text-text">Day</span>
+                      <div className="flex flex-wrap gap-2">
+                        {scheduleWindow.hasTodayOption && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setScheduleDay('today');
+                              const nextTime =
+                                scheduleTime &&
+                                parseHhmmToMins(scheduleTime) !== null &&
+                                (scheduleWindow.isOvernight ||
+                                  (parseHhmmToMins(scheduleTime)! >=
+                                    parseHhmmToMins(scheduleWindow.todayMinHhmm)! &&
+                                    parseHhmmToMins(scheduleTime)! <=
+                                      parseHhmmToMins(scheduleWindow.todayMaxHhmm)!))
+                                  ? scheduleTime
+                                  : scheduleWindow.todayMinHhmm;
+                              setScheduleTime(nextTime);
+                              setScheduledFor(
+                                istDateTimeToIso(scheduleWindow.todayKey, nextTime)
+                              );
+                            }}
+                            className={`min-h-[42px] px-4 rounded-2xl border text-[14px] font-bold cursor-pointer transition-colors ${
+                              activeScheduleDay === 'today'
+                                ? 'border-primary bg-soft-tint text-primary'
+                                : 'border-border bg-bg text-text hover:border-primary/50'
+                            }`}
+                          >
+                            Today
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setScheduleDay('tomorrow');
+                            const nextTime =
+                              scheduleTime &&
+                              parseHhmmToMins(scheduleTime) !== null &&
+                              (scheduleWindow.isOvernight ||
+                                (parseHhmmToMins(scheduleTime)! >=
+                                  parseHhmmToMins(scheduleWindow.tomorrowMinHhmm)! &&
+                                  parseHhmmToMins(scheduleTime)! <=
+                                    parseHhmmToMins(scheduleWindow.tomorrowMaxHhmm)!))
+                                ? scheduleTime
+                                : scheduleWindow.tomorrowMinHhmm;
+                            setScheduleTime(nextTime);
+                            setScheduledFor(
+                              istDateTimeToIso(scheduleWindow.tomorrowKey, nextTime)
+                            );
+                          }}
+                          className={`min-h-[42px] px-4 rounded-2xl border text-[14px] font-bold cursor-pointer transition-colors ${
+                            activeScheduleDay === 'tomorrow'
+                              ? 'border-primary bg-soft-tint text-primary'
+                              : 'border-border bg-bg text-text hover:border-primary/50'
+                          }`}
+                        >
+                          Tomorrow
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <label
+                        htmlFor="checkout-schedule-time"
+                        className="block text-[14px] font-bold text-text"
+                      >
+                        Choose delivery time *
+                      </label>
+                      <input
+                        id="checkout-schedule-time"
+                        type="time"
+                        min={!scheduleWindow.isOvernight ? activeScheduleMinHhmm : undefined}
+                        max={!scheduleWindow.isOvernight ? activeScheduleMaxHhmm : undefined}
+                        value={scheduleTime}
+                        onFocus={handleCheckoutInputFocus}
+                        onBlur={handleCheckoutInputBlur}
+                        onChange={(e) => {
+                          const nextTime = e.target.value;
+                          setScheduleTime(nextTime);
+                          if (nextTime && parseHhmmToMins(nextTime) !== null) {
+                            setScheduledFor(istDateTimeToIso(activeScheduleDateKey, nextTime));
+                          } else {
+                            setScheduledFor('');
+                          }
+                        }}
+                        className="w-full max-w-full min-h-[48px] px-3.5 py-2.5 rounded-xl border border-border bg-bg text-[16px] font-bold text-text box-border focus:outline-none focus:border-primary"
+                      />
+                      <p className="text-[12px] text-muted">
+                        Delivery available from {formatHhmmTo12(scheduleWindow.startTime)} to{' '}
+                        {formatHhmmTo12(scheduleWindow.closeTime)}
                       </p>
-                    )}
+                      {scheduleFieldError && (
+                        <p role="alert" className="text-[13px] font-semibold text-primary">
+                          {scheduleFieldError}
+                        </p>
+                      )}
+                    </div>
                   </div>
                 )}
 
@@ -4423,8 +4731,17 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                       onClick={() => {
                         setIsScheduled((prev) => {
                           const next = !prev;
-                          if (next && !scheduledFor && timeSlots[0]) {
-                            setScheduledFor(timeSlots[0].iso);
+                          if (next && !scheduledFor) {
+                            setScheduleDay(scheduleWindow.defaultDay);
+                            setScheduleTime(scheduleWindow.defaultTime);
+                            setScheduledFor(
+                              istDateTimeToIso(
+                                scheduleWindow.defaultDay === 'today'
+                                  ? scheduleWindow.todayKey
+                                  : scheduleWindow.tomorrowKey,
+                                scheduleWindow.defaultTime
+                              )
+                            );
                           }
                           return next;
                         });

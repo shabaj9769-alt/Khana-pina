@@ -25,20 +25,24 @@ import { ACCESS_TTL_SEC, hashPasswordScrypt, signJwt } from '../../api/_lib/secu
 import { getRtdb } from '../../api/_lib/firebaseAdmin';
 import {
   archiveAndClearClosedOrders,
+  buildPublicShopStatus,
   buildPublicTrackingProjection,
   cleanupGrowingDataHourly,
+  clearHomeCache,
   computeEffectiveShopOpen,
   expireSingleOrderIfStale,
   expireStaleOrdersLazy,
   formatTime24To12,
   getInitialDatabaseState,
   getKolkataDateKey,
+  getNextIstDateKey,
   isOrderVisibleToKitchen,
   queryPaginatedOrderHistory,
   signGuestLocationToken,
   syncCancelledPendingRefundToHistory,
 } from '../../api/_lib/store';
 import adminHandler from '../../api/admin';
+import homeHandler from '../../api/home';
 import ordersHandler from '../../api/orders';
 import paymentsHandler from '../../api/payments';
 import riderHandler from '../../api/rider';
@@ -2921,7 +2925,263 @@ describe('Khana Pina Core & Bypass-Proof Razorpay Suite', () => {
       await rtdb.ref(`customers/${testPhone}`).remove();
     }
   });
+
+  it('44. POST /api/orders validates scheduledFor against deliveryStartTime, closeTime, 30m lead time, and today/tomorrow IST bounds', async () => {
+    await ensureFirebaseSeeded();
+    const firstItem = db.menuItems.find((m) => m.inStock && !m.isDeleted)!;
+    const prevOpen = db.settings.isOpen;
+    const prevAuto = db.settings.autoScheduleEnabled;
+    const prevBusy = db.settings.busyMode;
+    const prevCodEnabled = db.settings.codEnabled;
+    const prevOtpReq = db.settings.requirePhoneOtpForCod;
+    const prevOpenTime = db.settings.openTime;
+    const prevDeliveryStart = db.settings.deliveryStartTime;
+    const prevCloseTime = db.settings.closeTime;
+    const prevZone = db.deliveryZone.zoneEnabled;
+    const prevRzpMode = process.env.RAZORPAY_MODE;
+    const prevTurnstile = process.env.TURNSTILE_SECRET_KEY;
+
+    db.settings.isOpen = true;
+    db.settings.autoScheduleEnabled = false;
+    db.settings.busyMode = false;
+    db.settings.codEnabled = true;
+    db.settings.requirePhoneOtpForCod = false;
+    db.settings.openTime = '11:00';
+    db.settings.deliveryStartTime = '12:00';
+    db.settings.closeTime = '23:30';
+    db.deliveryZone.zoneEnabled = false;
+    process.env.RAZORPAY_MODE = 'demo';
+    delete process.env.TURNSTILE_SECRET_KEY;
+
+    const testPhone = '9844444444';
+    const testIp = '127.0.40.10';
+    const lat = Number((db.deliveryZone.shopLat + 0.005).toFixed(4));
+    const lng = Number((db.deliveryZone.shopLng + 0.005).toFixed(4));
+    const createdOrderIds: string[] = [];
+
+    const istDateAtToIso = (dateKey: string, hh: number, mm: number) => {
+      const [y, m, d] = dateKey.split('-').map(Number);
+      return new Date(Date.UTC(y, m - 1, d, hh, mm, 0, 0) - 330 * 60 * 1000).toISOString();
+    };
+    const todayKey = getKolkataDateKey(new Date());
+    const tomorrowKey = getNextIstDateKey(todayKey);
+    const dayAfterTomorrowKey = getNextIstDateKey(tomorrowKey);
+
+    const placeScheduled = async (scheduledFor: string | null) => {
+      let statusCode = 200;
+      let jsonBody: any = null;
+      await ordersHandler(
+        {
+          method: 'POST',
+          originalUrl: '/api/orders',
+          url: '/api/orders',
+          headers: { 'content-type': 'application/json', 'x-forwarded-for': testIp },
+          body: {
+            customerName: 'Schedule Tester',
+            customerPhone: testPhone,
+            deliveryAddress: '101 Schedule Plaza, Bandra West',
+            deliveryPincode: '400050',
+            deliveryLat: lat,
+            deliveryLng: lng,
+            paymentMethod: 'COD',
+            scheduledFor,
+            items: [{ menuItemId: firstItem.id, quantity: 1 }],
+          },
+          socket: { remoteAddress: testIp },
+        } as any,
+        {
+          setHeader: () => ({}),
+          status: (c: number) => {
+            statusCode = c;
+            return { json: (b: any) => (jsonBody = b) };
+          },
+          json: (b: any) => {
+            jsonBody = b;
+          },
+          end: () => {},
+        } as any
+      );
+      return { statusCode, jsonBody };
+    };
+
+    try {
+      // 1) Inside window and 30+ mins ahead (Tomorrow 15:00 IST) -> 201
+      const validIso = istDateAtToIso(tomorrowKey, 15, 0);
+      const okRes = await placeScheduled(validIso);
+      expect(okRes.statusCode).toBe(201);
+      expect(okRes.jsonBody.order.scheduledFor).toBe(validIso);
+      createdOrderIds.push(okRes.jsonBody.order.id);
+
+      // 2) Before deliveryStartTime (Tomorrow 11:30 IST when deliveryStartTime=12:00) -> 400 INVALID_DELIVERY_TIME
+      const beforeStartRes = await placeScheduled(istDateAtToIso(tomorrowKey, 11, 30));
+      expect(beforeStartRes.statusCode).toBe(400);
+      expect(beforeStartRes.jsonBody.code).toBe('INVALID_DELIVERY_TIME');
+      expect(beforeStartRes.jsonBody.error).toContain('12:00 PM');
+      expect(beforeStartRes.jsonBody.error).toContain('11:30 PM');
+
+      // 3) After closeTime (Tomorrow 23:45 IST when closeTime=23:30) -> 400 INVALID_DELIVERY_TIME
+      const afterCloseRes = await placeScheduled(istDateAtToIso(tomorrowKey, 23, 45));
+      expect(afterCloseRes.statusCode).toBe(400);
+      expect(afterCloseRes.jsonBody.code).toBe('INVALID_DELIVERY_TIME');
+
+      // 4) Less than 30 minutes ahead (even with 00:00..23:59 open window) -> 400 INVALID_DELIVERY_TIME
+      db.settings.deliveryStartTime = '00:00';
+      db.settings.closeTime = '23:59';
+      const tooSoonRes = await placeScheduled(new Date(Date.now() + 15 * 60 * 1000).toISOString());
+      expect(tooSoonRes.statusCode).toBe(400);
+      expect(tooSoonRes.jsonBody.code).toBe('INVALID_DELIVERY_TIME');
+
+      // 5) More than 1 day ahead (day after tomorrow at 15:00 IST) -> 400 INVALID_DELIVERY_TIME
+      db.settings.deliveryStartTime = '12:00';
+      db.settings.closeTime = '23:30';
+      const tooFarRes = await placeScheduled(istDateAtToIso(dayAfterTomorrowKey, 15, 0));
+      expect(tooFarRes.statusCode).toBe(400);
+      expect(tooFarRes.jsonBody.code).toBe('INVALID_DELIVERY_TIME');
+    } finally {
+      db.settings.isOpen = prevOpen;
+      db.settings.autoScheduleEnabled = prevAuto;
+      db.settings.busyMode = prevBusy;
+      db.settings.codEnabled = prevCodEnabled;
+      db.settings.requirePhoneOtpForCod = prevOtpReq;
+      db.settings.openTime = prevOpenTime;
+      db.settings.deliveryStartTime = prevDeliveryStart;
+      db.settings.closeTime = prevCloseTime;
+      db.deliveryZone.zoneEnabled = prevZone;
+      if (prevRzpMode === undefined) delete process.env.RAZORPAY_MODE;
+      else process.env.RAZORPAY_MODE = prevRzpMode;
+      if (prevTurnstile === undefined) delete process.env.TURNSTILE_SECRET_KEY;
+      else process.env.TURNSTILE_SECRET_KEY = prevTurnstile;
+
+      const rtdb = getRtdb();
+      for (const id of createdOrderIds) {
+        const ord = db.orders.find((o) => o.id === id);
+        db.orders = db.orders.filter((o) => o.id !== id);
+        await rtdb.ref(`orders/${id}`).remove();
+        await rtdb.ref(`adminOrders/${id}`).remove();
+        if (ord?.trackingToken) await rtdb.ref(`tracking/${ord.trackingToken}`).remove();
+      }
+      delete db.customers[testPhone];
+      await rtdb.ref(`customers/${testPhone}`).remove();
+    }
+  });
+
+  it('45. Admin settings validates deliveryStartTime against openTime/closeTime and exposes saved deliveryStartTime in public settings', async () => {
+    await ensureFirebaseSeeded();
+    const prevSettings = { ...db.settings };
+    const owner = db.adminUsers.find((u) => u.role === 'owner')!;
+    const accessToken = signJwt(
+      {
+        sub: owner.id,
+        email: owner.email,
+        role: owner.role,
+        name: owner.name,
+        tv: owner.tokenVersion,
+        sid: db.adminSessions[0]?.id || 'sess_seed',
+        type: 'access',
+      },
+      ACCESS_TTL_SEC
+    );
+
+    const putSettings = async (settingsPatch: Record<string, unknown>) => {
+      let statusCode = 200;
+      let jsonBody: any = null;
+      await adminHandler(
+        {
+          method: 'PUT',
+          originalUrl: '/api/admin/settings',
+          url: '/api/admin/settings',
+          query: {},
+          headers: {
+            'content-type': 'application/json',
+            authorization: `Bearer ${accessToken}`,
+            'x-forwarded-for': '127.0.40.20',
+          },
+          body: { settings: settingsPatch },
+          socket: { remoteAddress: '127.0.40.20' },
+        } as any,
+        {
+          setHeader: () => ({}),
+          status: (c: number) => {
+            statusCode = c;
+            return { json: (b: any) => (jsonBody = b) };
+          },
+          json: (b: any) => {
+            jsonBody = b;
+          },
+          end: () => {},
+        } as any
+      );
+      return { statusCode, jsonBody };
+    };
+
+    const getHome = async () => {
+      let statusCode = 200;
+      let jsonBody: any = null;
+      await homeHandler(
+        {
+          method: 'GET',
+          originalUrl: '/api/home',
+          url: '/api/home',
+          headers: { 'x-forwarded-for': '127.0.40.21' },
+          socket: { remoteAddress: '127.0.40.21' },
+        } as any,
+        {
+          setHeader: () => ({}),
+          status: (c: number) => {
+            statusCode = c;
+            return { json: (b: any) => (jsonBody = b) };
+          },
+          json: (b: any) => {
+            jsonBody = b;
+          },
+          end: () => {},
+        } as any
+      );
+      return { statusCode, jsonBody };
+    };
+
+    try {
+      // 1) deliveryStartTime earlier than openTime -> 400
+      const earlierRes = await putSettings({
+        openTime: '11:00',
+        deliveryStartTime: '10:30',
+        closeTime: '23:30',
+      });
+      expect(earlierRes.statusCode).toBe(400);
+      expect(earlierRes.jsonBody.error).toMatch(/earlier than shop opening time/i);
+
+      // 2) deliveryStartTime later than closeTime -> 400
+      const laterRes = await putSettings({
+        openTime: '11:00',
+        deliveryStartTime: '23:45',
+        closeTime: '23:30',
+      });
+      expect(laterRes.statusCode).toBe(400);
+      expect(laterRes.jsonBody.error).toMatch(/earlier than shop closing time/i);
+
+      // 3) Valid deliveryStartTime -> 200 and exposed in public status + /api/home
+      const okRes = await putSettings({
+        openTime: '11:00',
+        deliveryStartTime: '12:00',
+        closeTime: '23:30',
+      });
+      expect(okRes.statusCode).toBe(200);
+      expect(okRes.jsonBody.settings.deliveryStartTime).toBe('12:00');
+      expect(buildPublicShopStatus(db.settings).deliveryStartTime).toBe('12:00');
+
+      const homeRes = await getHome();
+      expect(homeRes.statusCode).toBe(200);
+      expect(homeRes.jsonBody.settings.deliveryStartTime).toBe('12:00');
+      expect(homeRes.jsonBody.settings.closeTime).toBe('23:30');
+    } finally {
+      db.settings = prevSettings;
+      clearHomeCache();
+      await getRtdb().ref('settings').set(db.settings);
+      await getRtdb().ref('publicStatus').set(buildPublicShopStatus(db.settings));
+    }
+  });
 });
+
 
 
 
