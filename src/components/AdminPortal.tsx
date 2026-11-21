@@ -581,6 +581,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const [historySearch, setHistorySearch] = useState('');
   const [historyDeleteConfirm, setHistoryDeleteConfirm] = useState<OrderHistoryRecord | null>(null);
   const [isDeletingHistory, setIsDeletingHistory] = useState(false);
+  const [expandedHistoryDays, setExpandedHistoryDays] = useState<Record<string, boolean>>({});
 
   // Auto Shop Timing Draft State
   const [scheduleDraft, setScheduleDraft] = useState<{
@@ -7258,158 +7259,192 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 </div>
               ) : (
                 <div className="space-y-4">
-                  {historyViewData.dayGroups.map((group) => (
-                    <div
-                      key={group.dateKey}
-                      className="bg-surface rounded-2xl border border-border overflow-hidden"
-                    >
-                      {/* Day Header */}
-                      <div className="p-3.5 sm:p-4 border-b border-border bg-bg/40 space-y-2">
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <h3 className="text-sm font-bold text-text">
-                              {group.formattedDate}
-                            </h3>
-                            {group.relativeLabel && (
-                              <span className="px-2 py-0.5 rounded-full bg-primary/15 text-primary text-[10px] font-bold">
-                                {group.relativeLabel}
+                  {historyViewData.dayGroups.map((group, groupIndex) => {
+                    const isExpanded =
+                      Boolean(historySearch.trim()) || historyRange === 'DATE'
+                        ? true
+                        : expandedHistoryDays[group.dateKey] ?? groupIndex === 0;
+                    const toggleHistoryDay = () =>
+                      setExpandedHistoryDays((prev) => ({
+                        ...prev,
+                        [group.dateKey]: !isExpanded,
+                      }));
+                    return (
+                      <div
+                        key={group.dateKey}
+                        className="bg-surface rounded-2xl border border-border overflow-hidden min-w-0"
+                      >
+                        {/* Day Header */}
+                        <div
+                          role="button"
+                          tabIndex={0}
+                          aria-expanded={isExpanded}
+                          onClick={toggleHistoryDay}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              toggleHistoryDay();
+                            }
+                          }}
+                          className={`min-h-[44px] p-3.5 sm:p-4 bg-bg/40 hover:bg-bg/60 transition-colors cursor-pointer select-none space-y-2 min-w-0 ${
+                            isExpanded ? 'border-b border-border' : ''
+                          }`}
+                        >
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="flex flex-wrap items-center gap-2 min-w-0">
+                              <span className="inline-flex items-center gap-2 min-w-0">
+                                {isExpanded ? (
+                                  <ChevronDown className="w-4 h-4 text-muted shrink-0" />
+                                ) : (
+                                  <ChevronRight className="w-4 h-4 text-muted shrink-0" />
+                                )}
+                                <h3 className="text-sm font-bold text-text">
+                                  {group.formattedDate}
+                                </h3>
+                              </span>
+                              {group.relativeLabel && (
+                                <span className="px-2 py-0.5 rounded-full bg-primary/15 text-primary text-[10px] font-bold">
+                                  {group.relativeLabel}
+                                </span>
+                              )}
+                              <span className="px-2 py-0.5 rounded-full bg-surface border border-border text-[10px] font-semibold text-muted">
+                                Shop closed: {group.shopCloseTime}
+                              </span>
+                            </div>
+                            <div className="text-xs font-bold text-text">
+                              {group.deliveredCount} Delivered • ₹{group.deliveredRevenue}
+                            </div>
+                          </div>
+
+                          <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted">
+                            <span className="font-semibold text-text">
+                              COD ₹{group.codRevenue} • Online ₹{group.onlineRevenue}
+                            </span>
+                            {group.riderSummary.length > 0 && (
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <span>• Riders:</span>
+                                {group.riderSummary.map((r) => (
+                                  <span
+                                    key={r.name}
+                                    className="px-2 py-0.5 rounded-md bg-surface border border-border text-text font-medium"
+                                  >
+                                    {r.name}: {r.count}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                            {group.cancelledRefundOrders.length > 0 && (
+                              <span className="px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-700 dark:text-amber-300 font-bold">
+                                Cancelled with refund: {group.cancelledRefundOrders.length}
                               </span>
                             )}
-                            <span className="px-2 py-0.5 rounded-full bg-surface border border-border text-[10px] font-semibold text-muted">
-                              Shop closed: {group.shopCloseTime}
-                            </span>
-                          </div>
-                          <div className="text-xs font-bold text-text">
-                            {group.deliveredCount} Delivered • ₹{group.deliveredRevenue}
                           </div>
                         </div>
 
-                        <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted">
-                          <span className="font-semibold text-text">
-                            COD ₹{group.codRevenue} • Online ₹{group.onlineRevenue}
-                          </span>
-                          {group.riderSummary.length > 0 && (
-                            <div className="flex flex-wrap items-center gap-1.5">
-                              <span>• Riders:</span>
-                              {group.riderSummary.map((r) => (
-                                <span
-                                  key={r.name}
-                                  className="px-2 py-0.5 rounded-md bg-surface border border-border text-text font-medium"
+                        {/* Orders for Date */}
+                        {isExpanded && (
+                          <div className="divide-y divide-border">
+                            {group.items.map((h) => {
+                              const isDelivered = h.status === 'DELIVERED';
+                              const isRefundPending = h.status === 'CANCELLED_REFUND_PENDING';
+                              const statusBadge = isDelivered
+                                ? {
+                                    text: 'Delivered',
+                                    cls: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400',
+                                  }
+                                : isRefundPending
+                                ? {
+                                    text: 'Cancelled • Refund Pending',
+                                    cls: 'bg-amber-500/15 text-amber-700 dark:text-amber-300',
+                                  }
+                                : {
+                                    text: 'Cancelled • Refunded',
+                                    cls: 'bg-sky-500/15 text-sky-700 dark:text-sky-300',
+                                  };
+                              const completedAt =
+                                h.refundedAt || h.deliveredAt || h.cancelledAt || h.archivedAt;
+                              return (
+                                <div
+                                  key={h.id}
+                                  className="p-3.5 sm:p-4 flex flex-col sm:flex-row sm:items-start justify-between gap-3 text-xs min-w-0"
                                 >
-                                  {r.name}: {r.count}
-                                </span>
-                              ))}
-                            </div>
-                          )}
-                          {group.cancelledRefundOrders.length > 0 && (
-                            <span className="px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-700 dark:text-amber-300 font-bold">
-                              Cancelled with refund: {group.cancelledRefundOrders.length}
-                            </span>
-                          )}
-                        </div>
-                      </div>
+                                  <div className="min-w-0 flex-1 space-y-1.5">
+                                    <div className="flex flex-wrap items-center gap-1.5">
+                                      <span className="font-bold text-text">{h.orderNumber}</span>
+                                      <span
+                                        className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${statusBadge.cls}`}
+                                      >
+                                        {statusBadge.text}
+                                      </span>
+                                      <span className="px-2 py-0.5 rounded-full bg-bg border border-border text-[10px] font-semibold text-muted">
+                                        {h.paymentMethod === 'COD' ? 'COD' : 'Online'} • {h.paymentStatus}
+                                      </span>
+                                    </div>
 
-                      {/* Orders for Date */}
-                      <div className="divide-y divide-border">
-                        {group.items.map((h) => {
-                          const isDelivered = h.status === 'DELIVERED';
-                          const isRefundPending = h.status === 'CANCELLED_REFUND_PENDING';
-                          const statusBadge = isDelivered
-                            ? {
-                                text: 'Delivered',
-                                cls: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400',
-                              }
-                            : isRefundPending
-                            ? {
-                                text: 'Cancelled • Refund Pending',
-                                cls: 'bg-amber-500/15 text-amber-700 dark:text-amber-300',
-                              }
-                            : {
-                                text: 'Cancelled • Refunded',
-                                cls: 'bg-sky-500/15 text-sky-700 dark:text-sky-300',
-                              };
-                          const completedAt =
-                            h.refundedAt || h.deliveredAt || h.cancelledAt || h.archivedAt;
-                          return (
-                            <div
-                              key={h.id}
-                              className="p-3.5 sm:p-4 flex flex-col sm:flex-row sm:items-start justify-between gap-3 text-xs min-w-0"
-                            >
-                              <div className="min-w-0 flex-1 space-y-1.5">
-                                <div className="flex flex-wrap items-center gap-1.5">
-                                  <span className="font-bold text-text">{h.orderNumber}</span>
-                                  <span
-                                    className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${statusBadge.cls}`}
-                                  >
-                                    {statusBadge.text}
-                                  </span>
-                                  <span className="px-2 py-0.5 rounded-full bg-bg border border-border text-[10px] font-semibold text-muted">
-                                    {h.paymentMethod === 'COD' ? 'COD' : 'Online'} • {h.paymentStatus}
-                                  </span>
-                                </div>
-
-                                <p className="text-text font-medium break-words">
-                                  {h.customerName} • {h.customerPhone}
-                                </p>
-                                <p className="text-muted break-words">
-                                  {h.deliveryAddress}
-                                  {h.deliveryPincode ? ` - ${h.deliveryPincode}` : ''}
-                                </p>
-                                <p className="text-muted break-words">
-                                  {(h.items || [])
-                                    .map(
-                                      (it) =>
-                                        `${it.quantity}x ${it.itemName}${
-                                          it.variantName ? ` (${it.variantName})` : ''
-                                        }`
-                                    )
-                                    .join(', ')}
-                                </p>
-                                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted">
-                                  <span>Placed: {formatOrderPlacedAt(h.placedAt)}</span>
-                                  {completedAt && (
-                                    <span>
-                                      {isDelivered
-                                        ? 'Delivered'
-                                        : isRefundPending
-                                        ? 'Cancelled'
-                                        : 'Refunded'}
-                                      : {formatOrderPlacedAt(completedAt)}
-                                    </span>
-                                  )}
-                                  {h.deliveryBoyName && <span>Rider: {h.deliveryBoyName}</span>}
-                                  {h.cancelReason && (
-                                    <span className="text-amber-700 dark:text-amber-300">
-                                      Reason: {h.cancelReason}
-                                    </span>
-                                  )}
-                                </div>
-                              </div>
-
-                              <div className="flex sm:flex-col items-center sm:items-end justify-between gap-2 shrink-0">
-                                <div className="text-right">
-                                  <p className="text-sm font-bold text-text">₹{h.grandTotal}</p>
-                                  {h.refundAmount ? (
-                                    <p className="text-[11px] text-sky-600 font-semibold">
-                                      Refunded ₹{h.refundAmount}
+                                    <p className="text-text font-medium break-words">
+                                      {h.customerName} • {h.customerPhone}
                                     </p>
-                                  ) : null}
+                                    <p className="text-muted break-words">
+                                      {h.deliveryAddress}
+                                      {h.deliveryPincode ? ` - ${h.deliveryPincode}` : ''}
+                                    </p>
+                                    <p className="text-muted break-words">
+                                      {(h.items || [])
+                                        .map(
+                                          (it) =>
+                                            `${it.quantity}x ${it.itemName}${
+                                              it.variantName ? ` (${it.variantName})` : ''
+                                            }`
+                                        )
+                                        .join(', ')}
+                                    </p>
+                                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted">
+                                      <span>Placed: {formatOrderPlacedAt(h.placedAt)}</span>
+                                      {completedAt && (
+                                        <span>
+                                          {isDelivered
+                                            ? 'Delivered'
+                                            : isRefundPending
+                                            ? 'Cancelled'
+                                            : 'Refunded'}
+                                          : {formatOrderPlacedAt(completedAt)}
+                                        </span>
+                                      )}
+                                      {h.deliveryBoyName && <span>Rider: {h.deliveryBoyName}</span>}
+                                      {h.cancelReason && (
+                                        <span className="text-amber-700 dark:text-amber-300">
+                                          Reason: {h.cancelReason}
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+
+                                  <div className="flex sm:flex-col items-center sm:items-end justify-between gap-2 shrink-0">
+                                    <div className="text-right">
+                                      <p className="text-sm font-bold text-text">₹{h.grandTotal}</p>
+                                      {h.refundAmount ? (
+                                        <p className="text-[11px] text-sky-600 font-semibold">
+                                          Refunded ₹{h.refundAmount}
+                                        </p>
+                                      ) : null}
+                                    </div>
+                                    <button
+                                      type="button"
+                                      onClick={() => setHistoryDeleteConfirm(h)}
+                                      className="px-2.5 py-1.5 rounded-lg border border-red-500/30 text-red-600 font-semibold hover:bg-red-500/10 flex items-center gap-1 cursor-pointer"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                      <span>Delete</span>
+                                    </button>
+                                  </div>
                                 </div>
-                                <button
-                                  type="button"
-                                  onClick={() => setHistoryDeleteConfirm(h)}
-                                  className="px-2.5 py-1.5 rounded-lg border border-red-500/30 text-red-600 font-semibold hover:bg-red-500/10 flex items-center gap-1 cursor-pointer"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                  <span>Delete</span>
-                                </button>
-                              </div>
-                            </div>
-                          );
-                        })}
+                              );
+                            })}
+                          </div>
+                        )}
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                   {historyPagination.hasMore && (
                     <div className="flex justify-center pt-1">
                       <button
