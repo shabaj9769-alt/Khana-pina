@@ -4485,8 +4485,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                               className="rounded-xl border border-border p-3.5 space-y-3 bg-bg min-w-0"
                             >
                               {editingSectionId === sec.id ? (
-                                <div className="space-y-2">
-                                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                <div className="space-y-2.5 min-w-0">
+                                  <div className="flex flex-col gap-2">
                                     <input
                                       type="text"
                                       value={editDraft.title}
@@ -4498,7 +4498,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                                       }
                                       placeholder="Section Title (e.g. Chef's Specials)"
                                       aria-label="Section Title"
-                                      className="min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs w-full"
+                                      className="w-full min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs"
                                       autoFocus
                                     />
                                     <input
@@ -4512,68 +4512,66 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                                       }
                                       placeholder="Subtitle"
                                       aria-label="Section Subtitle"
-                                      className="min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs w-full"
+                                      className="w-full min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs"
                                     />
                                   </div>
-                                  <div className="flex flex-wrap items-center justify-between gap-2">
-                                    <p className="text-xs text-muted">
-                                      {(sec.itemIds || []).length} / {sec.maxItems} dishes
-                                    </p>
-                                    <div className="flex items-center gap-2">
-                                      <button
-                                        type="button"
-                                        onClick={async () => {
-                                          const trimmedTitle = editDraft.title.trim();
-                                          if (!trimmedTitle) {
-                                            showToast('Section title is required');
-                                            return;
-                                          }
-                                          const trimmedSubtitle = editDraft.subtitle.trim();
-                                          const updated = homeSections.map((s) =>
-                                            s.id === sec.id
-                                              ? {
-                                                  ...s,
-                                                  title: trimmedTitle,
-                                                  subtitle: trimmedSubtitle,
-                                                }
-                                              : s
+                                  <p className="text-xs text-muted">
+                                    {(sec.itemIds || []).length} / {sec.maxItems} dishes
+                                  </p>
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <button
+                                      type="button"
+                                      onClick={async () => {
+                                        const trimmedTitle = editDraft.title.trim();
+                                        if (!trimmedTitle) {
+                                          showToast('Section title is required');
+                                          return;
+                                        }
+                                        const trimmedSubtitle = editDraft.subtitle.trim();
+                                        const updated = homeSections.map((s) =>
+                                          s.id === sec.id
+                                            ? {
+                                                ...s,
+                                                title: trimmedTitle,
+                                                subtitle: trimmedSubtitle,
+                                              }
+                                            : s
+                                        );
+                                        setIsSavingSectionEdit(true);
+                                        try {
+                                          const ok = await handleUpdateHomeManager(
+                                            updated,
+                                            undefined
                                           );
-                                          setIsSavingSectionEdit(true);
-                                          try {
-                                            const ok = await handleUpdateHomeManager(
-                                              updated,
-                                              undefined
-                                            );
-                                            if (ok) {
-                                              setEditingSectionId(null);
-                                              setEditDraft({ title: '', subtitle: '' });
-                                            }
-                                          } finally {
-                                            setIsSavingSectionEdit(false);
+                                          if (ok) {
+                                            setEditingSectionId(null);
+                                            setEditDraft({ title: '', subtitle: '' });
                                           }
-                                        }}
-                                        disabled={isSavingSectionEdit}
-                                        className="min-h-[44px] sm:min-h-[36px] px-4 rounded-xl bg-primary text-primary-contrast text-xs font-bold cursor-pointer disabled:opacity-60"
-                                      >
-                                        {isSavingSectionEdit ? 'Saving...' : 'Save'}
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={() => {
-                                          setEditingSectionId(null);
-                                          setEditDraft({ title: '', subtitle: '' });
-                                        }}
-                                        disabled={isSavingSectionEdit}
-                                        className="min-h-[44px] sm:min-h-[36px] px-4 rounded-xl border border-border bg-surface text-text text-xs font-bold cursor-pointer disabled:opacity-60"
-                                      >
-                                        Cancel
-                                      </button>
-                                    </div>
+                                        } finally {
+                                          setIsSavingSectionEdit(false);
+                                        }
+                                      }}
+                                      disabled={isSavingSectionEdit}
+                                      className="min-h-[44px] px-4 rounded-xl bg-primary text-primary-contrast text-xs font-bold cursor-pointer disabled:opacity-60"
+                                    >
+                                      {isSavingSectionEdit ? 'Saving...' : 'Save'}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setEditingSectionId(null);
+                                        setEditDraft({ title: '', subtitle: '' });
+                                      }}
+                                      disabled={isSavingSectionEdit}
+                                      className="min-h-[44px] px-4 rounded-xl border border-border bg-surface text-text text-xs font-bold cursor-pointer disabled:opacity-60"
+                                    >
+                                      Cancel
+                                    </button>
                                   </div>
                                 </div>
                               ) : (
-                                <div className="flex flex-wrap items-center justify-between gap-2 min-w-0">
-                                  <div className="min-w-0 flex-1">
+                                <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center sm:justify-between gap-2.5 min-w-0">
+                                  <div className="w-full sm:w-auto sm:flex-1 sm:min-w-[12rem] min-w-0">
                                     <h4 className="font-bold text-sm text-text break-words">
                                       {sec.title}
                                     </h4>
@@ -4582,7 +4580,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                                       {(sec.itemIds || []).length} / {sec.maxItems} dishes
                                     </p>
                                   </div>
-                                  <div className="flex items-center gap-2 shrink-0">
+                                  <div className="flex flex-wrap items-center gap-2 shrink-0">
                                     <button
                                       type="button"
                                       onClick={() => {
@@ -4594,7 +4592,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                                       }}
                                       aria-label={`Edit ${sec.title}`}
                                       title="Edit section"
-                                      className="min-h-[44px] min-w-[44px] sm:min-h-0 sm:min-w-0 px-3 py-1 rounded-lg border border-border bg-surface text-text hover:border-primary/40 text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer"
+                                      className="min-h-[44px] min-w-[44px] px-3 py-1.5 rounded-lg border border-border bg-surface text-text hover:border-primary/40 text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer"
                                     >
                                       <Edit3 className="w-3.5 h-3.5" />
                                       <span>Edit</span>
@@ -4606,7 +4604,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                                         );
                                         handleUpdateHomeManager(updated, undefined);
                                       }}
-                                      className={`px-3 py-1 rounded-lg text-xs font-bold cursor-pointer ${
+                                      className={`min-h-[44px] px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer ${
                                         sec.isVisible
                                           ? 'bg-emerald-500/15 text-emerald-600'
                                           : 'bg-surface text-muted'
@@ -4623,7 +4621,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                                         const updated = homeSections.filter((s) => s.id !== sec.id);
                                         handleUpdateHomeManager(updated, undefined);
                                       }}
-                                      className="p-1.5 rounded-lg text-red-600 hover:bg-red-500/10 cursor-pointer"
+                                      className="min-h-[44px] min-w-[44px] p-2 rounded-lg text-red-600 hover:bg-red-500/10 flex items-center justify-center cursor-pointer"
+                                      title="Delete section"
                                     >
                                       <Trash2 className="w-4 h-4" />
                                     </button>
