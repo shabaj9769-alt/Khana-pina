@@ -33,6 +33,7 @@ import {
   getFreshCustomer,
   getFreshOrderById,
   invalidateHomeHydration,
+  isOnlinePaymentAvailable,
   isRefundPendingCancelledOrder,
   isRefundSettledCancelledOrder,
   isValidDeliveryCoordinate,
@@ -957,7 +958,7 @@ export default async function handler(req: Request, res: Response) {
       let razorpayOrderId: string | undefined;
       const rzpCfg = getRazorpayConfig();
       if (method === 'RAZORPAY') {
-        if (!isRazorpayConfigured()) {
+        if (!isOnlinePaymentAvailable()) {
           res.status(400).json({
             error: 'Online payment is not available right now. Please choose Cash on Delivery.',
           });

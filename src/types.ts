@@ -157,6 +157,7 @@ export interface ShopSettings {
   gstEnabled: boolean;
   gstPercent: number;
   codEnabled: boolean;
+  onlinePaymentsEnabled?: boolean;
   codMaxAmount: number;
   codMaxActiveOrders: number;
   onlineOnlyFirstOrder: boolean;

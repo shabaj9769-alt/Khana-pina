@@ -14,6 +14,7 @@ import {
   ensureHomeDataLoaded,
   formatTime24To12,
   getHomeCache,
+  isOnlinePaymentAvailable,
   resolvePublicWeeklyTimings,
   runScheduledShopAndArchiveCheck,
   setHomeCache,
@@ -55,7 +56,11 @@ export default async function handler(req: Request, res: Response) {
           }
         : cachedObj?.settings;
       res.setHeader('Cache-Control', 'no-store, max-age=0, s-maxage=0');
-      res.json(cachedSettings ? { ...cachedObj, settings: cachedSettings } : cached.payload);
+      res.json(
+        cachedSettings
+          ? { ...cachedObj, onlinePaymentEnabled: isOnlinePaymentAvailable(), settings: cachedSettings }
+          : { ...cachedObj, onlinePaymentEnabled: isOnlinePaymentAvailable() }
+      );
       return;
     }
 
@@ -149,7 +154,7 @@ export default async function handler(req: Request, res: Response) {
       coupons: db.coupons.filter((c) => c.isActive),
       razorpayKeyId: rzpCfg.keyId,
       razorpayMode: rzpCfg.mode,
-      onlinePaymentEnabled: isRazorpayConfigured(),
+      onlinePaymentEnabled: isOnlinePaymentAvailable(),
       demoMode: isDemoModeEnabled(),
       turnstileSiteKey: process.env.TURNSTILE_SITE_KEY || null,
       firebaseClientConfig: process.env.FIREBASE_DB_URL

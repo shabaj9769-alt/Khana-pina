@@ -66,6 +66,7 @@ import {
   validateShopScheduleWindow,
   isClosedOrderStatus,
   isLoginLockedFirebase,
+  isOnlinePaymentAvailable,
   isOrderVisibleToKitchen,
   logAudit,
   purgeNonOwnerAdmins,
@@ -195,6 +196,7 @@ const ShopSettingsUpdateSchema = z
     freeDeliveryAbove: z.number().int().min(0).max(100000).optional(),
     gstPercent: z.number().min(0).max(28).optional(),
     codEnabled: z.boolean().optional(),
+    onlinePaymentsEnabled: z.boolean().optional(),
     codMaxAmount: z.number().min(0).max(50000).optional(),
     codMaxActiveOrders: z.number().int().min(1).max(10).optional(),
     onlineOnlyFirstOrder: z.boolean().optional(),
@@ -271,7 +273,7 @@ export default async function handler(req: Request, res: Response) {
         demoMode: isDemoModeEnabled(),
         razorpayMode: rzpCfg.mode,
         razorpayConfigured: isRazorpayConfigured(),
-        onlinePaymentEnabled: isRazorpayConfigured(),
+        onlinePaymentEnabled: isOnlinePaymentAvailable(),
         turnstileSiteKey: process.env.TURNSTILE_SITE_KEY || null,
         broadcastProviderConfigured,
       });
@@ -1029,7 +1031,7 @@ export default async function handler(req: Request, res: Response) {
         demoMode: isDemoModeEnabled(),
         razorpayMode: rzpCfg.mode,
         razorpayConfigured: isRazorpayConfigured(),
-        onlinePaymentEnabled: isRazorpayConfigured(),
+        onlinePaymentEnabled: isOnlinePaymentAvailable(),
       });
       return;
     }
@@ -1978,6 +1980,7 @@ export default async function handler(req: Request, res: Response) {
       const { settings, deliveryZone } = body;
 
       let zonePayload = deliveryZone && typeof deliveryZone === 'object' ? { ...deliveryZone } : undefined;
+      let onlinePaymentsChangedTo: boolean | undefined;
       if (settings && typeof settings === 'object') {
         const settingsCopy = { ...settings } as Record<string, unknown>;
         for (const k of ['shopLat', 'shopLng', 'radiusKm', 'shopAddress'] as const) {
@@ -1998,6 +2001,20 @@ export default async function handler(req: Request, res: Response) {
           return;
         }
         const patch = parsedSettings.data;
+        const prevOnlinePaymentsEnabled = db.settings.onlinePaymentsEnabled !== false;
+        const nextCodEnabled = patch.codEnabled ?? db.settings.codEnabled;
+        const nextOnlinePaymentsEnabled =
+          patch.onlinePaymentsEnabled ?? prevOnlinePaymentsEnabled;
+        if (!nextCodEnabled && !nextOnlinePaymentsEnabled) {
+          res.status(400).json({ error: 'At least one payment method must stay on.' });
+          return;
+        }
+        if (
+          patch.onlinePaymentsEnabled !== undefined &&
+          patch.onlinePaymentsEnabled !== prevOnlinePaymentsEnabled
+        ) {
+          onlinePaymentsChangedTo = patch.onlinePaymentsEnabled;
+        }
         if (
           patch.openTime !== undefined ||
           patch.deliveryStartTime !== undefined ||
@@ -2088,6 +2105,15 @@ export default async function handler(req: Request, res: Response) {
         `Updated shop settings and delivery zone (radius: ${db.deliveryZone.radiusKm} km, open: ${db.settings.isOpen})`,
         clientIp
       );
+      if (onlinePaymentsChangedTo !== undefined) {
+        await logAudit(
+          admin.email,
+          admin.role,
+          onlinePaymentsChangedTo ? 'ONLINE_PAYMENTS_ENABLED' : 'ONLINE_PAYMENTS_DISABLED',
+          onlinePaymentsChangedTo ? 'Online payments turned on' : 'Online payments turned off',
+          clientIp
+        );
+      }
       res.json({ settings: db.settings, deliveryZone: db.deliveryZone });
       return;
     }

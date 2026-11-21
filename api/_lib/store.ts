@@ -251,6 +251,7 @@ export function getInitialDatabaseState(options?: { forSeeding?: boolean }): Dat
       gstEnabled: false,
       gstPercent: 5,
       codEnabled: true,
+      onlinePaymentsEnabled: true,
       codMaxAmount: 1800,
       codMaxActiveOrders: 2,
       onlineOnlyFirstOrder: false,
@@ -1760,6 +1761,7 @@ function applySettingsAndZoneToDb(rawSettings: any, rawDeliveryZone: any): void 
       lastArchivedDate: rawSettings.lastArchivedDate || '',
       manualOverrideOpen: rawSettings.manualOverrideOpen ?? null,
       manualOverrideDate: rawSettings.manualOverrideDate ?? null,
+      onlinePaymentsEnabled: rawSettings.onlinePaymentsEnabled !== false,
       theme: normalizeThemeConfig(rawSettings?.theme),
       aboutPage: normalizedAboutPage,
     };
@@ -3354,6 +3356,10 @@ export async function authenticateAdminFromTokenOrCookieAsync(
 // AUTHORITATIVE SERVER-SIDE BILL CALCULATION
 // =============================================================================
 
+export function isOnlinePaymentAvailable(): boolean {
+  return isRazorpayConfigured() && db.settings.onlinePaymentsEnabled !== false;
+}
+
 export function calculateAuthoritativeBill(params: {
   items: {
     menuItemId: string;
@@ -3504,7 +3510,7 @@ export function calculateAuthoritativeBill(params: {
   if (!db.settings.codEnabled) {
     codAllowed = false;
     codDisallowedReason = 'Cash on Delivery is currently disabled by the kitchen';
-  } else if (db.settings.onlineOnlyFirstOrder && isFirstOrder && isRazorpayConfigured()) {
+  } else if (db.settings.onlineOnlyFirstOrder && isFirstOrder && isOnlinePaymentAvailable()) {
     codAllowed = false;
     codDisallowedReason = 'First-time guest orders require Online Payment (UPI/Card)';
   } else if (grandTotal > db.settings.codMaxAmount) {

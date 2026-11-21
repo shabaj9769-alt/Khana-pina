@@ -36,6 +36,7 @@ import {
   getInitialDatabaseState,
   getKolkataDateKey,
   getNextIstDateKey,
+  isOnlinePaymentAvailable,
   isOrderVisibleToKitchen,
   queryPaginatedOrderHistory,
   signGuestLocationToken,
@@ -3453,6 +3454,408 @@ describe('Khana Pina Core & Bypass-Proof Razorpay Suite', () => {
       clearHomeCache();
       await getRtdb().ref('settings').set(db.settings);
       await getRtdb().ref('publicStatus').set(buildPublicShopStatus(db.settings));
+    }
+  });
+
+  it('48. onlinePaymentsEnabled missing or true preserves existing online payment, home, and onlineOnlyFirstOrder behavior', async () => {
+    await ensureFirebaseSeeded();
+    const prevSettings = { ...db.settings };
+    const prevDemoMode = process.env.DEMO_MODE;
+    const prevRzpMode = process.env.RAZORPAY_MODE;
+    process.env.DEMO_MODE = 'true';
+    process.env.RAZORPAY_MODE = 'demo';
+
+    const getHome = async () => {
+      let statusCode = 200;
+      let jsonBody: any = null;
+      await homeHandler(
+        {
+          method: 'GET',
+          originalUrl: '/api/home',
+          url: '/api/home',
+          headers: { 'x-forwarded-for': '127.0.70.10' },
+          socket: { remoteAddress: '127.0.70.10' },
+        } as any,
+        {
+          setHeader: () => ({}),
+          status: (c: number) => {
+            statusCode = c;
+            return { json: (b: any) => (jsonBody = b) };
+          },
+          json: (b: any) => {
+            jsonBody = b;
+          },
+          end: () => {},
+        } as any
+      );
+      return { statusCode, jsonBody };
+    };
+
+    try {
+      const firstItem = db.menuItems.find((m) => m.inStock && !m.isDeleted)!;
+      const freshPhone = '9876501122';
+      delete db.customers[freshPhone];
+
+      // Missing field (legacy settings) -> treated as true
+      delete db.settings.onlinePaymentsEnabled;
+      db.settings.onlineOnlyFirstOrder = true;
+      db.settings.codEnabled = true;
+      clearHomeCache();
+
+      expect(isOnlinePaymentAvailable()).toBe(true);
+      const legacyBill = calculateAuthoritativeBill({
+        items: [{ menuItemId: firstItem.id, quantity: 2 }],
+        lat: db.deliveryZone.shopLat,
+        lng: db.deliveryZone.shopLng,
+        customerPhone: freshPhone,
+      });
+      expect(legacyBill.codAllowed).toBe(false);
+
+      const homeLegacy = await getHome();
+      expect(homeLegacy.statusCode).toBe(200);
+      expect(homeLegacy.jsonBody.onlinePaymentEnabled).toBe(true);
+
+      // Explicit true -> identical behavior
+      db.settings.onlinePaymentsEnabled = true;
+      clearHomeCache();
+      expect(isOnlinePaymentAvailable()).toBe(true);
+      const explicitBill = calculateAuthoritativeBill({
+        items: [{ menuItemId: firstItem.id, quantity: 2 }],
+        lat: db.deliveryZone.shopLat,
+        lng: db.deliveryZone.shopLng,
+        customerPhone: freshPhone,
+      });
+      expect(explicitBill.codAllowed).toBe(false);
+
+      const homeExplicit = await getHome();
+      expect(homeExplicit.statusCode).toBe(200);
+      expect(homeExplicit.jsonBody.onlinePaymentEnabled).toBe(true);
+    } finally {
+      db.settings = prevSettings;
+      if (prevDemoMode === undefined) delete process.env.DEMO_MODE;
+      else process.env.DEMO_MODE = prevDemoMode;
+      if (prevRzpMode === undefined) delete process.env.RAZORPAY_MODE;
+      else process.env.RAZORPAY_MODE = prevRzpMode;
+      clearHomeCache();
+      await getRtdb().ref('settings').set(db.settings);
+    }
+  });
+
+  it('49. onlinePaymentsEnabled false rejects new RAZORPAY orders (400), allows COD (even with onlineOnlyFirstOrder), and returns onlinePaymentEnabled false in /api/home', async () => {
+    await ensureFirebaseSeeded();
+    const prevSettings = { ...db.settings };
+    const prevZone = db.deliveryZone.zoneEnabled;
+    const prevDemoMode = process.env.DEMO_MODE;
+    const prevRzpMode = process.env.RAZORPAY_MODE;
+    process.env.DEMO_MODE = 'true';
+    process.env.RAZORPAY_MODE = 'demo';
+
+    const createdOrderIds: string[] = [];
+    const firstItem = db.menuItems.find((m) => m.inStock && !m.isDeleted)!;
+    const firstTimePhone = '9876502233';
+    delete db.customers[firstTimePhone];
+
+    const placeOrder = async (paymentMethod: 'COD' | 'RAZORPAY', phone: string) => {
+      let statusCode = 200;
+      let jsonBody: any = null;
+      await ordersHandler(
+        {
+          method: 'POST',
+          originalUrl: '/api/orders',
+          url: '/api/orders',
+          headers: { 'x-forwarded-for': '127.0.70.20' },
+          socket: { remoteAddress: '127.0.70.20' },
+          body: {
+            customerName: 'Toggle Test Guest',
+            customerPhone: phone,
+            deliveryAddress: '101 Switch Test Lane, Mumbai',
+            deliveryPincode: '400050',
+            deliveryLat: db.deliveryZone.shopLat,
+            deliveryLng: db.deliveryZone.shopLng,
+            paymentMethod,
+            items: [{ menuItemId: firstItem.id, quantity: 2, addonIds: [] }],
+          },
+        } as any,
+        {
+          setHeader: () => ({}),
+          status: (c: number) => {
+            statusCode = c;
+            return { json: (b: any) => (jsonBody = b) };
+          },
+          json: (b: any) => {
+            jsonBody = b;
+          },
+          end: () => {},
+        } as any
+      );
+      return { statusCode, jsonBody };
+    };
+
+    try {
+      db.settings.isOpen = true;
+      db.settings.autoScheduleEnabled = false;
+      db.settings.codEnabled = true;
+      db.settings.onlinePaymentsEnabled = false;
+      db.settings.onlineOnlyFirstOrder = true;
+      db.settings.requirePhoneOtpForCod = false;
+      db.deliveryZone.zoneEnabled = false;
+      clearHomeCache();
+
+      // GET /api/home reports onlinePaymentEnabled: false
+      let homeStatus = 200;
+      let homeBody: any = null;
+      await homeHandler(
+        {
+          method: 'GET',
+          originalUrl: '/api/home',
+          url: '/api/home',
+          headers: { 'x-forwarded-for': '127.0.70.21' },
+          socket: { remoteAddress: '127.0.70.21' },
+        } as any,
+        {
+          setHeader: () => ({}),
+          status: (c: number) => {
+            homeStatus = c;
+            return { json: (b: any) => (homeBody = b) };
+          },
+          json: (b: any) => {
+            homeBody = b;
+          },
+          end: () => {},
+        } as any
+      );
+      expect(homeStatus).toBe(200);
+      expect(homeBody.onlinePaymentEnabled).toBe(false);
+
+      // Direct RAZORPAY order is rejected with 400 and expected message
+      const rzpOrderRes = await placeOrder('RAZORPAY', firstTimePhone);
+      expect(rzpOrderRes.statusCode).toBe(400);
+      expect(rzpOrderRes.jsonBody.error).toBe(
+        'Online payment is not available right now. Please choose Cash on Delivery.'
+      );
+
+      // First-time customer can still place COD order even though onlineOnlyFirstOrder is true
+      const billCheck = calculateAuthoritativeBill({
+        items: [{ menuItemId: firstItem.id, quantity: 2 }],
+        lat: db.deliveryZone.shopLat,
+        lng: db.deliveryZone.shopLng,
+        customerPhone: firstTimePhone,
+      });
+      expect(billCheck.codAllowed).toBe(true);
+
+      const codRes = await placeOrder('COD', firstTimePhone);
+      expect(codRes.statusCode).toBe(201);
+      expect(codRes.jsonBody.order.paymentMethod).toBe('COD');
+      createdOrderIds.push(codRes.jsonBody.order.id);
+    } finally {
+      db.settings = prevSettings;
+      db.deliveryZone.zoneEnabled = prevZone;
+      if (prevDemoMode === undefined) delete process.env.DEMO_MODE;
+      else process.env.DEMO_MODE = prevDemoMode;
+      if (prevRzpMode === undefined) delete process.env.RAZORPAY_MODE;
+      else process.env.RAZORPAY_MODE = prevRzpMode;
+      delete db.customers[firstTimePhone];
+      clearHomeCache();
+      const rtdb = getRtdb();
+      await rtdb.ref('settings').set(db.settings);
+      await rtdb.ref(`customers/${firstTimePhone}`).remove();
+      for (const id of createdOrderIds) {
+        const ord = db.orders.find((o) => o.id === id);
+        db.orders = db.orders.filter((o) => o.id !== id);
+        await rtdb.ref(`orders/${id}`).remove();
+        await rtdb.ref(`adminOrders/${id}`).remove();
+        if (ord?.trackingToken) await rtdb.ref(`tracking/${ord.trackingToken}`).remove();
+      }
+    }
+  });
+
+  it('50. PUT /api/admin/settings rejects turning off both COD and online payments (400), audits toggle changes, and lets existing payments finish while blocking new gateway orders', async () => {
+    await ensureFirebaseSeeded();
+    const prevSettings = { ...db.settings };
+    const prevDemoMode = process.env.DEMO_MODE;
+    const prevRzpMode = process.env.RAZORPAY_MODE;
+    process.env.DEMO_MODE = 'true';
+    process.env.RAZORPAY_MODE = 'demo';
+
+    const inFlightId = `ord_inflight_${Date.now()}`;
+    const rzpOrderId = `order_inflight_${Date.now()}`;
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: any, init?: any) => {
+      const url = typeof input === 'string' ? input : input?.url || '';
+      if (url.includes('api.razorpay.com/v1/payments/')) {
+        const payId = url.split('/').pop();
+        return {
+          ok: true,
+          json: async () => ({
+            id: payId,
+            order_id: rzpOrderId,
+            status: 'captured',
+            currency: 'INR',
+            amount: 42000,
+          }),
+        } as any;
+      }
+      return origFetch(input, init);
+    }) as any;
+
+    const owner = db.adminUsers.find((u) => u.role === 'owner')!;
+    const token = signJwt(
+      {
+        sub: owner.id,
+        email: owner.email,
+        role: owner.role,
+        name: owner.name,
+        tv: owner.tokenVersion,
+        sid: db.adminSessions[0]?.id || 'sess_seed',
+        type: 'access',
+      },
+      ACCESS_TTL_SEC
+    );
+
+    const putSettings = async (settingsPatch: Record<string, unknown>) => {
+      let statusCode = 200;
+      let jsonBody: any = null;
+      await adminHandler(
+        {
+          method: 'PUT',
+          originalUrl: '/api/admin/settings',
+          url: '/api/admin/settings',
+          headers: {
+            authorization: `Bearer ${token}`,
+            'x-forwarded-for': '127.0.70.30',
+          },
+          socket: { remoteAddress: '127.0.70.30' },
+          body: { settings: settingsPatch },
+        } as any,
+        {
+          setHeader: () => ({}),
+          status: (c: number) => {
+            statusCode = c;
+            return { json: (b: any) => (jsonBody = b) };
+          },
+          json: (b: any) => {
+            jsonBody = b;
+          },
+          end: () => {},
+        } as any
+      );
+      return { statusCode, jsonBody };
+    };
+
+    try {
+      // 1) Turning both off in a single patch is rejected with 400
+      const bothOffRes = await putSettings({ codEnabled: false, onlinePaymentsEnabled: false });
+      expect(bothOffRes.statusCode).toBe(400);
+      expect(bothOffRes.jsonBody.error).toBe('At least one payment method must stay on.');
+
+      // 2) Turning only onlinePaymentsEnabled off succeeds and logs audit
+      const offRes = await putSettings({ onlinePaymentsEnabled: false });
+      expect(offRes.statusCode).toBe(200);
+      expect(offRes.jsonBody.settings.onlinePaymentsEnabled).toBe(false);
+      expect(db.auditLogs.some((a) => a.details === 'Online payments turned off')).toBe(true);
+
+      // 3) Turning COD off while onlinePaymentsEnabled is already false is rejected with 400
+      const codOffNext = await putSettings({ codEnabled: false });
+      expect(codOffNext.statusCode).toBe(400);
+      expect(codOffNext.jsonBody.error).toBe('At least one payment method must stay on.');
+
+      // 4) Existing in-flight payment can still verify, while retry with forceNew (new gateway order) is blocked
+      await seedTestOrderAndPayment({
+        orderId: inFlightId,
+        orderNumber: 'AAN-9750',
+        razorpayOrderId: rzpOrderId,
+        grandTotal: 420,
+        paymentStatus: 'PENDING',
+        status: 'PLACED',
+      });
+
+      // Block creating a NEW gateway order via retry?forceNew
+      let retryCode = 200;
+      let retryBody: any = null;
+      await paymentsHandler(
+        {
+          method: 'POST',
+          originalUrl: '/api/payments/retry',
+          url: '/api/payments/retry',
+          headers: { 'content-type': 'application/json' },
+          body: { orderId: inFlightId, forceNew: true },
+          socket: { remoteAddress: '127.0.70.30' },
+        } as any,
+        {
+          setHeader: () => ({}),
+          status: (c: number) => {
+            retryCode = c;
+            return { json: (b: any) => (retryBody = b) };
+          },
+          json: (b: any) => {
+            retryBody = b;
+          },
+          end: () => {},
+        } as any
+      );
+      expect(retryCode).toBe(400);
+      expect(retryBody.error).toBe(
+        'Online payment is not available right now. Please choose Cash on Delivery.'
+      );
+
+      // Existing payment verification must still succeed
+      const cfg = getRazorpayConfig();
+      const payId = `pay_inflight_${Date.now()}`;
+      const sig = crypto
+        .createHmac('sha256', cfg.keySecret)
+        .update(`${rzpOrderId}|${payId}`)
+        .digest('hex');
+      let verifyCode = 200;
+      let verifyBody: any = null;
+      await paymentsHandler(
+        {
+          method: 'POST',
+          originalUrl: '/api/payments/verify',
+          url: '/api/payments/verify',
+          headers: { 'content-type': 'application/json' },
+          body: {
+            razorpayOrderId: rzpOrderId,
+            razorpayPaymentId: payId,
+            razorpaySignature: sig,
+          },
+          socket: { remoteAddress: '127.0.70.30' },
+        } as any,
+        {
+          setHeader: () => ({}),
+          status: (c: number) => {
+            verifyCode = c;
+            return { json: (b: any) => (verifyBody = b) };
+          },
+          json: (b: any) => {
+            verifyBody = b;
+          },
+          end: () => {},
+        } as any
+      );
+      expect(verifyCode).toBe(200);
+      expect(verifyBody.order.paymentStatus).toBe('PAID');
+
+      // 5) Turning onlinePaymentsEnabled back on succeeds and logs audit
+      const onRes = await putSettings({ onlinePaymentsEnabled: true });
+      expect(onRes.statusCode).toBe(200);
+      expect(onRes.jsonBody.settings.onlinePaymentsEnabled).toBe(true);
+      expect(db.auditLogs.some((a) => a.details === 'Online payments turned on')).toBe(true);
+    } finally {
+      globalThis.fetch = origFetch;
+      db.settings = prevSettings;
+      if (prevDemoMode === undefined) delete process.env.DEMO_MODE;
+      else process.env.DEMO_MODE = prevDemoMode;
+      if (prevRzpMode === undefined) delete process.env.RAZORPAY_MODE;
+      else process.env.RAZORPAY_MODE = prevRzpMode;
+      clearHomeCache();
+      const rtdb = getRtdb();
+      db.orders = db.orders.filter((o) => o.id !== inFlightId);
+      db.payments = db.payments.filter((p) => p.orderId !== inFlightId);
+      await rtdb.ref(`orders/${inFlightId}`).remove();
+      await rtdb.ref(`adminOrders/${inFlightId}`).remove();
+      await rtdb.ref(`payments/payrec_${inFlightId}`).remove();
+      await rtdb.ref('settings').set(db.settings);
+      await rtdb.ref('publicStatus').set(buildPublicShopStatus(db.settings));
     }
   });
 });

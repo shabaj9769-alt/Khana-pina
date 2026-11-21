@@ -277,6 +277,12 @@ export default async function handler(req: Request, res: Response) {
 
       let rzpOrderId = order.razorpayOrderId;
       if (!rzpOrderId || forceNew) {
+        if (db.settings.onlinePaymentsEnabled === false) {
+          res.status(400).json({
+            error: 'Online payment is not available right now. Please choose Cash on Delivery.',
+          });
+          return;
+        }
         if (isRazorpayConfigured()) {
           const gatewayOrder = await createRazorpayGatewayOrder({
             amountPaise,

@@ -411,6 +411,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const knownOrderIdsRef = useRef<Set<string>>(new Set());
   const [broadcastProviderConfigured, setBroadcastProviderConfigured] = useState(false);
   const [razorpayConfigured, setRazorpayConfigured] = useState<boolean>(false);
+  const [isSavingOnlinePayments, setIsSavingOnlinePayments] = useState<boolean>(false);
   const [broadcastMessage, setBroadcastMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
@@ -1541,6 +1542,54 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       showToast('Saved');
     } catch (err) {
       showToast(err instanceof Error && err.message ? err.message : 'Network error while saving');
+    }
+  };
+
+  // Toggle Online Payments (partial patch with optimistic update & revert on error)
+  const handleToggleOnlinePayments = async () => {
+    if (!shopSettings || !razorpayConfigured || isSavingOnlinePayments) return;
+    const prevEnabled = shopSettings.onlinePaymentsEnabled !== false;
+    const nextEnabled = !prevEnabled;
+    setIsSavingOnlinePayments(true);
+    setShopSettings((prev) =>
+      prev ? { ...prev, onlinePaymentsEnabled: nextEnabled } : prev
+    );
+    try {
+      const res = await adminFetch('/api/admin/settings', {
+        method: 'PUT',
+        body: JSON.stringify({
+          settings: { onlinePaymentsEnabled: nextEnabled },
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        setShopSettings((prev) =>
+          prev ? { ...prev, onlinePaymentsEnabled: prevEnabled } : prev
+        );
+        showToast(err.error || `Could not save (HTTP ${res.status})`);
+        return;
+      }
+      const data = await res.json().catch(() => ({}));
+      const savedEnabled =
+        data.settings?.onlinePaymentsEnabled !== undefined
+          ? data.settings.onlinePaymentsEnabled !== false
+          : nextEnabled;
+      setShopSettings((prev) =>
+        prev ? { ...prev, onlinePaymentsEnabled: savedEnabled } : prev
+      );
+      triggerStoreRefresh();
+      showToast(
+        savedEnabled
+          ? 'Online payments turned on.'
+          : 'Online payments turned off. Customers can pay with Cash on Delivery only.'
+      );
+    } catch (err) {
+      setShopSettings((prev) =>
+        prev ? { ...prev, onlinePaymentsEnabled: prevEnabled } : prev
+      );
+      showToast(err instanceof Error && err.message ? err.message : 'Network error while saving');
+    } finally {
+      setIsSavingOnlinePayments(false);
     }
   };
 
@@ -6636,12 +6685,14 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       </div>
                       <span
                         className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${
-                          razorpayConfigured
+                          razorpayConfigured && shopSettings?.onlinePaymentsEnabled !== false
                             ? 'bg-emerald-500/15 text-emerald-600'
                             : 'bg-amber-500/15 text-amber-600'
                         }`}
                       >
-                        {razorpayConfigured ? 'Online Payments Active' : 'Cash on Delivery Only'}
+                        {razorpayConfigured && shopSettings?.onlinePaymentsEnabled !== false
+                          ? 'Online Payments Active'
+                          : 'Cash on Delivery Only'}
                       </span>
                     </div>
 
@@ -7648,45 +7699,117 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   </button>
 
                   {/* Payment Options Status Card */}
-                  <div className="pt-3 border-t border-border space-y-3">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div>
-                        <h4 className="text-xs font-bold text-text">
-                          Customer Payment Options
-                        </h4>
-                        <p className="text-[11px] text-muted">
-                          Ways customers can pay when placing an order
-                        </p>
-                      </div>
-                      <span
-                        className={`px-2.5 py-1 rounded-full text-[11px] font-bold ${
-                          razorpayConfigured
-                            ? 'bg-emerald-500/15 text-emerald-600'
-                            : 'bg-amber-500/15 text-amber-600'
-                        }`}
-                      >
-                        {razorpayConfigured ? 'ONLINE PAYMENTS ON' : 'CASH ON DELIVERY ONLY'}
-                      </span>
-                    </div>
+                  {(() => {
+                    const onlinePaymentsSwitchOn = shopSettings.onlinePaymentsEnabled !== false;
+                    const effectiveOnlineOn = razorpayConfigured && onlinePaymentsSwitchOn;
+                    const statusBadgeLabel = !razorpayConfigured
+                      ? 'CASH ON DELIVERY ONLY'
+                      : onlinePaymentsSwitchOn
+                      ? 'ONLINE PAYMENTS ON'
+                      : 'ONLINE PAYMENTS OFF · COD ONLY';
+                    return (
+                      <div className="pt-3 border-t border-border space-y-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div>
+                            <h4 className="text-xs font-bold text-text">
+                              Customer Payment Options
+                            </h4>
+                            <p className="text-[11px] text-muted">
+                              Ways customers can pay when placing an order
+                            </p>
+                          </div>
+                          <span
+                            className={`px-2.5 py-1 rounded-full text-[11px] font-bold ${
+                              effectiveOnlineOn
+                                ? 'bg-emerald-500/15 text-emerald-600'
+                                : 'bg-amber-500/15 text-amber-600'
+                            }`}
+                          >
+                            {statusBadgeLabel}
+                          </span>
+                        </div>
 
-                    <div className="p-3 rounded-xl border border-border bg-bg space-y-2 text-xs">
-                      <div className="flex flex-wrap items-center justify-between gap-1">
-                        <span className="font-semibold text-text">Online Payments (UPI / Cards):</span>
-                        <span className={`font-bold ${razorpayConfigured ? 'text-emerald-600' : 'text-muted'}`}>
-                          {razorpayConfigured ? 'Active' : 'Not Set Up'}
-                        </span>
+                        <div className="p-3 rounded-xl border border-border bg-bg space-y-2.5 text-xs">
+                          <div className="flex flex-wrap items-center justify-between gap-1">
+                            <span className="font-semibold text-text">Online Payments (UPI / Cards):</span>
+                            <span
+                              className={`font-bold ${
+                                !razorpayConfigured
+                                  ? 'text-muted'
+                                  : onlinePaymentsSwitchOn
+                                  ? 'text-emerald-600'
+                                  : 'text-amber-600'
+                              }`}
+                            >
+                              {!razorpayConfigured
+                                ? 'Not Set Up'
+                                : onlinePaymentsSwitchOn
+                                ? 'Active'
+                                : 'Off'}
+                            </span>
+                          </div>
+
+                          <div className="flex items-center justify-between gap-3 pt-1 border-t border-border/70 min-h-[44px]">
+                            <label
+                              htmlFor="acceptOnlinePaymentsToggle"
+                              className={`font-semibold text-text select-none ${
+                                razorpayConfigured ? 'cursor-pointer' : 'opacity-60 cursor-not-allowed'
+                              }`}
+                            >
+                              Accept online payments (UPI / Cards)
+                            </label>
+                            <button
+                              id="acceptOnlinePaymentsToggle"
+                              type="button"
+                              role="switch"
+                              aria-checked={razorpayConfigured ? onlinePaymentsSwitchOn : false}
+                              aria-label="Accept online payments (UPI / Cards)"
+                              disabled={!razorpayConfigured || isSavingOnlinePayments}
+                              onClick={handleToggleOnlinePayments}
+                              className={`min-h-[44px] min-w-[44px] px-3.5 rounded-full border text-xs font-bold inline-flex items-center justify-center gap-1.5 transition-colors shrink-0 ${
+                                !razorpayConfigured
+                                  ? 'bg-surface border-border text-muted opacity-60 cursor-not-allowed'
+                                  : onlinePaymentsSwitchOn
+                                  ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border-emerald-500/30 cursor-pointer'
+                                  : 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/30 cursor-pointer'
+                              } ${isSavingOnlinePayments ? 'opacity-70' : ''}`}
+                            >
+                              <span
+                                className={`w-2 h-2 rounded-full shrink-0 ${
+                                  !razorpayConfigured
+                                    ? 'bg-muted'
+                                    : onlinePaymentsSwitchOn
+                                    ? 'bg-emerald-500'
+                                    : 'bg-amber-500'
+                                }`}
+                              />
+                              <span>
+                                {!razorpayConfigured
+                                  ? 'Off'
+                                  : onlinePaymentsSwitchOn
+                                  ? 'On'
+                                  : 'Off'}
+                              </span>
+                            </button>
+                          </div>
+
+                          {!razorpayConfigured ? (
+                            <p className="text-muted text-[11px] leading-relaxed">
+                              Online payments need Razorpay keys on the server.
+                            </p>
+                          ) : !onlinePaymentsSwitchOn ? (
+                            <p className="text-muted text-[11px] leading-relaxed">
+                              Online payments are turned off. Customers see Cash on Delivery only.
+                            </p>
+                          ) : (
+                            <p className="text-muted text-[11px] leading-relaxed">
+                              Online payments (UPI &amp; cards) are active for customer orders.
+                            </p>
+                          )}
+                        </div>
                       </div>
-                      {!razorpayConfigured ? (
-                        <p className="text-muted text-[11px] leading-relaxed">
-                          Online payments are not set up yet. Your menu safely accepts Cash on Delivery orders.
-                        </p>
-                      ) : (
-                        <p className="text-muted text-[11px] leading-relaxed">
-                          Online payments (UPI &amp; cards) are active for customer orders.
-                        </p>
-                      )}
-                    </div>
-                  </div>
+                    );
+                  })()}
 
                   {/* Demo Data Cleanup Card */}
                   <div className="pt-3 border-t border-border space-y-2.5">
