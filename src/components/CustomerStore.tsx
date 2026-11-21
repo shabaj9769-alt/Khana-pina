@@ -2157,6 +2157,19 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
   const { settings, deliveryZone, banners, categories, sections, coupons } = homeData;
   const totalCartItems = cart.reduce((sum, item) => sum + item.quantity, 0);
   const totalCartAmount = cart.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
+  const freeDeliveryAbove = Math.max(0, Math.floor(Number(settings.freeDeliveryAbove) || 0));
+  const defaultBannerSubtitle =
+    freeDeliveryAbove > 0
+      ? `30-min delivery · Free above ₹${freeDeliveryAbove}`
+      : '30-min delivery';
+  const effectiveItemTotalAfterDiscount = Math.max(
+    0,
+    (billPreview?.itemTotal ?? totalCartAmount) - (billPreview?.discountAmount ?? 0)
+  );
+  const isFreeDeliveryApplied =
+    freeDeliveryAbove > 0 &&
+    effectiveItemTotalAfterDiscount >= freeDeliveryAbove &&
+    (billPreview === null || billPreview.deliveryFee === 0);
 
   // Authentic FSSAI Veg (green #1BA672 dot in square) & Non-Veg (red #E23744 dot in square) mark
   
@@ -3629,8 +3642,15 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                       Delivery fee
                       {billPreview && billPreview.withinZone ? ` (${billPreview.distanceKm} km)` : ''}
                     </span>
-                    <span className="tabular-nums font-semibold text-text">
-                      ₹{billPreview?.deliveryFee ?? 0}
+                    <span className="tabular-nums font-semibold text-text inline-flex items-center gap-1.5">
+                      {isFreeDeliveryApplied ? (
+                        <>
+                          <span className="text-accent font-bold">Free</span>
+                          <span>₹0</span>
+                        </>
+                      ) : (
+                        <>₹{billPreview?.deliveryFee ?? 0}</>
+                      )}
                     </span>
                   </div>
                   {gstEnabled && (
@@ -4203,7 +4223,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                           {
                             id: 'fallback_hero',
                             title: 'Slow-Cooked Awadhi Handis, Delivered Seal-Intact',
-                            subtitle: '30-min delivery · Free above ₹499',
+                            subtitle: defaultBannerSubtitle,
                             ctaText: 'Order now',
                             imageUrl:
                               '/assets/images/hero_artisanal_feast_1793975537331.webp',
@@ -4243,7 +4263,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                             </h1>
 
                             <p className="text-sm font-medium text-white/95 line-clamp-1">
-                              {banner.subtitle || '30-min delivery · Free above ₹499'}
+                              {banner.subtitle || defaultBannerSubtitle}
                             </p>
 
                             <div className="pt-1 flex items-center justify-between gap-2">
@@ -4667,12 +4687,14 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                     </div>
 
                     {/* Chip 2: Free Delivery Threshold */}
-                    <div className="min-h-[42px] px-3.5 rounded-2xl border border-border  bg-surface flex items-center gap-2 shrink-0 whitespace-nowrap">
-                      <Truck className="w-4 h-4 text-primary shrink-0" />
-                      <span className="text-sm font-bold text-text">
-                        Free delivery above ₹499
-                      </span>
-                    </div>
+                    {freeDeliveryAbove > 0 && (
+                      <div className="min-h-[42px] px-3.5 rounded-2xl border border-border  bg-surface flex items-center gap-2 shrink-0 whitespace-nowrap">
+                        <Truck className="w-4 h-4 text-primary shrink-0" />
+                        <span className="text-sm font-bold text-text">
+                          Free delivery above ₹{freeDeliveryAbove}
+                        </span>
+                      </div>
+                    )}
 
                     {/* Chip 3: Coupon Code(s) */}
                     {primaryCoupon ? (
@@ -5263,7 +5285,9 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                 </span>
                 {billPreview && billPreview.withinZone && (
                   <span className="text-[13px] font-semibold text-white/90 truncate hidden sm:inline">
-                    (+₹{billPreview.deliveryFee} delivery)
+                    {isFreeDeliveryApplied
+                      ? '(Free delivery)'
+                      : `(+₹${billPreview.deliveryFee} delivery)`}
                   </span>
                 )}
               </div>

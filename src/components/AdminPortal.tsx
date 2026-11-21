@@ -884,6 +884,10 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         data.settings
           ? {
               ...data.settings,
+              freeDeliveryAbove: Math.max(
+                0,
+                Math.floor(Number(data.settings.freeDeliveryAbove ?? 0) || 0)
+              ),
               gstEnabled:
                 data.settings.gstEnabled !== undefined
                   ? Boolean(data.settings.gstEnabled)
@@ -1455,6 +1459,10 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         data.settings
           ? {
               ...data.settings,
+              freeDeliveryAbove: Math.max(
+                0,
+                Math.floor(Number(data.settings.freeDeliveryAbove ?? 0) || 0)
+              ),
               gstEnabled:
                 data.settings.gstEnabled !== undefined
                   ? Boolean(data.settings.gstEnabled)
@@ -6219,8 +6227,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                     </div>
                   </div>
 
-                  {/* Minimum Order, Delivery Fee & GST */}
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  {/* Minimum Order, Delivery Fee, Free Delivery Above & GST */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                     <div>
                       <label className="block text-xs font-semibold text-muted mb-1">
                         Minimum Order (₹)
@@ -6250,6 +6258,32 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         className="w-full min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs"
                       />
                     </div>
+                    <div>
+                      <label
+                        htmlFor="free-delivery-above-input"
+                        className="block text-xs font-semibold text-muted mb-1"
+                      >
+                        Free delivery above (₹)
+                      </label>
+                      <input
+                        id="free-delivery-above-input"
+                        type="number"
+                        min={0}
+                        max={100000}
+                        step={1}
+                        value={shopSettings.freeDeliveryAbove ?? 0}
+                        onChange={(e) =>
+                          setShopSettings({
+                            ...shopSettings,
+                            freeDeliveryAbove: e.target.value === '' ? 0 : Number(e.target.value),
+                          })
+                        }
+                        className="w-full min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs"
+                      />
+                      <p className="text-[11px] text-muted mt-1">
+                        Set 0 to turn off free delivery
+                      </p>
+                    </div>
                     {renderGstSettingsControl('gstEnabledControl1')}
                   </div>
 
@@ -6278,6 +6312,10 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         {
                           cityArea: (shopSettings.cityArea || '').trim(),
                           minOrderAmount: Math.max(0, Number(shopSettings.minOrderAmount) || 0),
+                          freeDeliveryAbove: Math.max(
+                            0,
+                            Math.min(100000, Math.round(Number(shopSettings.freeDeliveryAbove ?? 0) || 0))
+                          ),
                           gstEnabled: shopSettings.gstEnabled ?? (shopSettings.gstPercent > 0),
                           gstPercent: Math.max(0, Math.min(28, Number(shopSettings.gstPercent) || 0)),
                           deliverySlabs: [

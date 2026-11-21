@@ -247,6 +247,7 @@ export function getInitialDatabaseState(options?: { forSeeding?: boolean }): Dat
       manualOverrideOpen: null,
       manualOverrideDate: null,
       minOrderAmount: 199,
+      freeDeliveryAbove: 0,
       gstEnabled: false,
       gstPercent: 5,
       codEnabled: true,
@@ -1168,6 +1169,7 @@ export function buildPublicShopStatus(
     openTime,
     deliveryStartTime,
     closeTime,
+    freeDeliveryAbove: Math.max(0, Math.floor(Number(settings.freeDeliveryAbove ?? 0) || 0)),
     scheduleMode: settings.autoScheduleEnabled && !hasManualOverrideToday ? 'AUTO' : 'MANUAL',
     ...(settings.cityArea ? { cityArea: settings.cityArea } : {}),
     ...(settings.theme ? { theme: settings.theme } : {}),
@@ -1718,9 +1720,14 @@ function applySettingsAndZoneToDb(rawSettings: any, rawDeliveryZone: any): void 
       rawSettings.gstEnabled !== undefined
         ? Boolean(rawSettings.gstEnabled)
         : normalizedGstPercent > 0;
+    const normalizedFreeDeliveryAbove =
+      rawSettings.freeDeliveryAbove !== undefined && rawSettings.freeDeliveryAbove !== null
+        ? Math.max(0, Math.min(100000, Math.floor(Number(rawSettings.freeDeliveryAbove) || 0)))
+        : 0;
     db.settings = {
       ...db.settings,
       ...rawSettings,
+      freeDeliveryAbove: normalizedFreeDeliveryAbove,
       gstEnabled: normalizedGstEnabled,
       autoScheduleEnabled: Boolean(rawSettings.autoScheduleEnabled),
       openTime: rawSettings.openTime || db.settings.openTime || '11:00',
@@ -3459,6 +3466,13 @@ export function calculateAuthoritativeBill(params: {
   }
 
   const taxableAmount = Math.max(0, itemTotal - discountAmount);
+  const freeDeliveryAbove = Math.max(
+    0,
+    Math.floor(Number(db.settings.freeDeliveryAbove ?? 0) || 0)
+  );
+  if (freeDeliveryAbove > 0 && taxableAmount >= freeDeliveryAbove) {
+    deliveryFee = 0;
+  }
   const gstEnabled = db.settings.gstEnabled !== undefined ? db.settings.gstEnabled : (db.settings.gstPercent > 0);
   const gstAmount = gstEnabled ? Math.round((taxableAmount * db.settings.gstPercent) / 100) : 0;
   const actualGstPercent = gstEnabled ? db.settings.gstPercent : 0;

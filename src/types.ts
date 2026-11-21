@@ -153,6 +153,7 @@ export interface ShopSettings {
   allowPreOrdersWhenClosed?: boolean;
   holidaysNote: string;
   minOrderAmount: number;
+  freeDeliveryAbove?: number;
   gstEnabled: boolean;
   gstPercent: number;
   codEnabled: boolean;
@@ -519,6 +520,7 @@ export interface PublicShopStatus {
   openTime?: string;
   deliveryStartTime?: string;
   closeTime?: string;
+  freeDeliveryAbove?: number;
   scheduleMode?: 'AUTO' | 'MANUAL';
   cityArea?: string;
   theme?: StorefrontThemeConfig;

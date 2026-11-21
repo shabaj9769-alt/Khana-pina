@@ -3180,7 +3180,202 @@ describe('Khana Pina Core & Bypass-Proof Razorpay Suite', () => {
       await getRtdb().ref('publicStatus').set(buildPublicShopStatus(db.settings));
     }
   });
+
+  it('46. freeDeliveryAbove threshold waives deliveryFee cleanly across preview, coupons, and legacy settings', async () => {
+    await ensureFirebaseSeeded();
+    const prevSettings = {
+      ...db.settings,
+      deliverySlabs: db.settings.deliverySlabs.map((s) => ({ ...s })),
+    };
+    const prevCoupons = [...db.coupons];
+    const owner = db.adminUsers.find((u) => u.role === 'owner')!;
+    const token = signJwt(
+      {
+        sub: owner.id,
+        email: owner.email,
+        role: owner.role,
+        name: owner.name,
+        tv: owner.tokenVersion,
+        sid: db.adminSessions[0]?.id || 'sess_seed',
+        type: 'access',
+      },
+      ACCESS_TTL_SEC
+    );
+    const firstItem = db.menuItems.find((m) => m.inStock)!;
+    const testCouponCode = `FD_TEST_${Date.now()}`;
+
+    const callPreview = async (items: Array<{ menuItemId: string; quantity: number }>, couponCode?: string | null) => {
+      let statusCode = 200;
+      let jsonBody: any = null;
+      await ordersHandler(
+        {
+          method: 'POST',
+          originalUrl: '/api/checkout/preview',
+          url: '/api/checkout/preview',
+          headers: { 'x-forwarded-for': '127.0.50.10' },
+          socket: { remoteAddress: '127.0.50.10' },
+          body: {
+            items,
+            lat: db.deliveryZone.shopLat,
+            lng: db.deliveryZone.shopLng,
+            couponCode: couponCode ?? null,
+            customerPhone: '9876543210',
+          },
+        } as any,
+        {
+          setHeader: () => ({}),
+          status: (c: number) => {
+            statusCode = c;
+            return { json: (b: any) => (jsonBody = b) };
+          },
+          json: (b: any) => {
+            jsonBody = b;
+          },
+          end: () => {},
+        } as any
+      );
+      return { statusCode, jsonBody };
+    };
+
+    try {
+      db.settings.deliverySlabs = [{ maxKm: 10, fee: 35 }];
+      const baseQuote = calculateAuthoritativeBill({
+        items: [{ menuItemId: firstItem.id, quantity: 1 }],
+        lat: db.deliveryZone.shopLat,
+        lng: db.deliveryZone.shopLng,
+      });
+      const unitPrice = baseQuote.itemTotal;
+      expect(unitPrice).toBeGreaterThan(0);
+
+      // 1) Threshold 0 and missing/legacy undefined -> delivery fee charged as before
+      db.settings.freeDeliveryAbove = 0;
+      const disabledQuote = calculateAuthoritativeBill({
+        items: [{ menuItemId: firstItem.id, quantity: 3 }],
+        lat: db.deliveryZone.shopLat,
+        lng: db.deliveryZone.shopLng,
+      });
+      expect(disabledQuote.deliveryFee).toBe(35);
+      expect(buildPublicShopStatus(db.settings).freeDeliveryAbove).toBe(0);
+
+      delete db.settings.freeDeliveryAbove;
+      const legacyQuote = calculateAuthoritativeBill({
+        items: [{ menuItemId: firstItem.id, quantity: 3 }],
+        lat: db.deliveryZone.shopLat,
+        lng: db.deliveryZone.shopLng,
+      });
+      expect(legacyQuote.deliveryFee).toBe(35);
+      expect(buildPublicShopStatus(db.settings).freeDeliveryAbove).toBe(0);
+
+      // Set threshold to exact price of 2 units
+      const threshold = unitPrice * 2;
+      db.settings.freeDeliveryAbove = threshold;
+
+      // 2) Item total below threshold -> delivery fee charged
+      const belowQuote = calculateAuthoritativeBill({
+        items: [{ menuItemId: firstItem.id, quantity: 1 }],
+        lat: db.deliveryZone.shopLat,
+        lng: db.deliveryZone.shopLng,
+      });
+      expect(belowQuote.itemTotal).toBe(unitPrice);
+      expect(belowQuote.deliveryFee).toBe(35);
+
+      // 3) Item total equal to or above threshold -> deliveryFee is 0 (bill + /api/checkout/preview match)
+      const equalQuote = calculateAuthoritativeBill({
+        items: [{ menuItemId: firstItem.id, quantity: 2 }],
+        lat: db.deliveryZone.shopLat,
+        lng: db.deliveryZone.shopLng,
+      });
+      expect(equalQuote.itemTotal).toBe(threshold);
+      expect(equalQuote.deliveryFee).toBe(0);
+
+      const abovePreview = await callPreview([{ menuItemId: firstItem.id, quantity: 3 }]);
+      expect(abovePreview.statusCode).toBe(200);
+      expect(abovePreview.jsonBody.deliveryFee).toBe(0);
+
+      // 4) Coupon discount that brings total after discount below threshold -> delivery fee charged
+      const testCoupon = {
+        code: testCouponCode,
+        description: 'Flat ₹50 off',
+        discountType: 'FLAT' as const,
+        discountValue: 50,
+        minOrderAmount: 0,
+        usageLimitPerPhone: 5,
+        firstOrderOnly: false,
+        expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+        isActive: true,
+      };
+      db.coupons.push(testCoupon);
+      await getRtdb().ref(`coupons/${testCouponCode}`).set(testCoupon);
+      const couponBelowQuote = calculateAuthoritativeBill({
+        items: [{ menuItemId: firstItem.id, quantity: 2 }],
+        lat: db.deliveryZone.shopLat,
+        lng: db.deliveryZone.shopLng,
+        couponCode: testCouponCode,
+        customerPhone: '9876543210',
+      });
+      expect(couponBelowQuote.itemTotal).toBe(threshold);
+      expect(couponBelowQuote.discountAmount).toBe(50);
+      expect(couponBelowQuote.deliveryFee).toBe(35);
+
+      const couponPreview = await callPreview(
+        [{ menuItemId: firstItem.id, quantity: 2 }],
+        testCouponCode
+      );
+      expect(couponPreview.statusCode).toBe(200);
+      expect(couponPreview.jsonBody.discountAmount).toBe(50);
+      expect(couponPreview.jsonBody.deliveryFee).toBe(35);
+
+      // 5) Admin settings endpoint validates integer 0..100000 and updates public status
+      const putSettings = async (settingsPatch: Record<string, unknown>) => {
+        let statusCode = 200;
+        let jsonBody: any = null;
+        await adminHandler(
+          {
+            method: 'PUT',
+            originalUrl: '/api/admin/settings',
+            url: '/api/admin/settings',
+            headers: {
+              authorization: `Bearer ${token}`,
+              'x-forwarded-for': '127.0.50.11',
+            },
+            socket: { remoteAddress: '127.0.50.11' },
+            body: { settings: settingsPatch },
+          } as any,
+          {
+            setHeader: () => ({}),
+            status: (c: number) => {
+              statusCode = c;
+              return { json: (b: any) => (jsonBody = b) };
+            },
+            json: (b: any) => {
+              jsonBody = b;
+            },
+            end: () => {},
+          } as any
+        );
+        return { statusCode, jsonBody };
+      };
+
+      const invalidNeg = await putSettings({ freeDeliveryAbove: -1 });
+      expect(invalidNeg.statusCode).toBe(400);
+      const invalidHigh = await putSettings({ freeDeliveryAbove: 100001 });
+      expect(invalidHigh.statusCode).toBe(400);
+
+      const validSave = await putSettings({ freeDeliveryAbove: 499 });
+      expect(validSave.statusCode).toBe(200);
+      expect(validSave.jsonBody.settings.freeDeliveryAbove).toBe(499);
+      expect(buildPublicShopStatus(db.settings).freeDeliveryAbove).toBe(499);
+    } finally {
+      db.settings = prevSettings;
+      db.coupons = prevCoupons;
+      clearHomeCache();
+      await getRtdb().ref(`coupons/${testCouponCode}`).remove();
+      await getRtdb().ref('settings').set(db.settings);
+      await getRtdb().ref('publicStatus').set(buildPublicShopStatus(db.settings));
+    }
+  });
 });
+
 
 
 

@@ -192,6 +192,7 @@ const ShopSettingsUpdateSchema = z
     manualOverrideOpen: z.boolean().nullable().optional(),
     manualOverrideDate: z.string().nullable().optional(),
     minOrderAmount: z.number().min(0).max(10000).optional(),
+    freeDeliveryAbove: z.number().int().min(0).max(100000).optional(),
     gstPercent: z.number().min(0).max(28).optional(),
     codEnabled: z.boolean().optional(),
     codMaxAmount: z.number().min(0).max(50000).optional(),
@@ -980,6 +981,7 @@ export default async function handler(req: Request, res: Response) {
       const rzpCfg = getRazorpayConfig();
       const effectiveSettings = {
         ...db.settings,
+        freeDeliveryAbove: Math.max(0, Math.floor(Number(db.settings.freeDeliveryAbove ?? 0) || 0)),
         isOpen: computeEffectiveShopOpen(db.settings),
         opensAtText: db.settings.autoScheduleEnabled
           ? formatTime24To12(db.settings.openTime || '11:00')
