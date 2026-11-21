@@ -91,6 +91,44 @@ function getNormalizedPath(req: Request): string {
   return raw.replace(/\/+$/, '') || '/api/orders';
 }
 
+const LOCATION_TOKEN_RATE_WINDOW_MS = 15 * 60 * 1000;
+const LOCATION_TOKEN_RATE_MAX = 60;
+const LOCATION_TOKEN_CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
+
+const locationTokenRateBuckets = new Map<string, { count: number; resetAt: number }>();
+let lastLocationTokenRateCleanupAt = 0;
+
+function checkInMemoryLocationTokenRateLimit(ip: string): boolean {
+  const now = Date.now();
+  if (
+    now - lastLocationTokenRateCleanupAt >= LOCATION_TOKEN_CLEANUP_INTERVAL_MS ||
+    locationTokenRateBuckets.size > 1000
+  ) {
+    for (const [key, entry] of locationTokenRateBuckets.entries()) {
+      if (entry.resetAt <= now) {
+        locationTokenRateBuckets.delete(key);
+      }
+    }
+    lastLocationTokenRateCleanupAt = now;
+  }
+
+  const existing = locationTokenRateBuckets.get(ip);
+  if (!existing || existing.resetAt <= now) {
+    locationTokenRateBuckets.set(ip, {
+      count: 1,
+      resetAt: now + LOCATION_TOKEN_RATE_WINDOW_MS,
+    });
+    return true;
+  }
+
+  if (existing.count >= LOCATION_TOKEN_RATE_MAX) {
+    return false;
+  }
+
+  existing.count += 1;
+  return true;
+}
+
 async function sendCodOtpViaProvider(
   cleanPhone: string,
   otp: string
@@ -177,9 +215,38 @@ export default async function handler(req: Request, res: Response) {
   if (applyCorsAndSecurityHeaders(req, res)) return;
 
   try {
-    await ensureFirebaseSeeded();
     const path = getNormalizedPath(req);
     const clientIp = getClientIp(req);
+
+    // POST /api/guest/location-token (pure HMAC operation, no Firebase DB dependency)
+    if (req.method === 'POST' && path.endsWith('/guest/location-token')) {
+      const allowed = checkInMemoryLocationTokenRateLimit(clientIp);
+      if (!allowed) {
+        res.status(429).json({
+          error: 'Too many location verification requests from this IP, please wait 15 minutes.',
+        });
+        return;
+      }
+
+      const rawLat = req.body?.lat;
+      const rawLng = req.body?.lng;
+      const lat = typeof rawLat === 'number' ? rawLat : Number.NaN;
+      const lng = typeof rawLng === 'number' ? rawLng : Number.NaN;
+
+      if (!isValidDeliveryCoordinate(lat, lng)) {
+        res.status(400).json({
+          error: 'Valid GPS coordinates are required.',
+          code: 'LOCATION_TOKEN_INVALID',
+        });
+        return;
+      }
+
+      const signed = signGuestLocationToken(lat, lng);
+      res.json(signed);
+      return;
+    }
+
+    await ensureFirebaseSeeded();
 
     // 1. POST /api/checkout/preview
     if (req.method === 'POST' && path.endsWith('/checkout/preview')) {
@@ -292,34 +359,6 @@ export default async function handler(req: Request, res: Response) {
       record.verifiedToken = verifiedToken;
       await saveCodOtpSession(record);
       res.json({ verifiedToken });
-      return;
-    }
-
-    // 3b. POST /api/guest/location-token
-    if (req.method === 'POST' && path.endsWith('/guest/location-token')) {
-      const allowed = await checkFirebaseRateLimit('location_token', clientIp, 60, 15 * 60 * 1000);
-      if (!allowed) {
-        res.status(429).json({
-          error: 'Too many location verification requests from this IP, please wait 15 minutes.',
-        });
-        return;
-      }
-
-      const rawLat = req.body?.lat;
-      const rawLng = req.body?.lng;
-      const lat = typeof rawLat === 'number' ? rawLat : Number.NaN;
-      const lng = typeof rawLng === 'number' ? rawLng : Number.NaN;
-
-      if (!isValidDeliveryCoordinate(lat, lng)) {
-        res.status(400).json({
-          error: 'Valid GPS coordinates are required.',
-          code: 'LOCATION_TOKEN_INVALID',
-        });
-        return;
-      }
-
-      const signed = signGuestLocationToken(lat, lng);
-      res.json(signed);
       return;
     }
 

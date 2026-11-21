@@ -1209,6 +1209,47 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
   gpsLoadingRef.current = gpsLoading;
   const gpsAutoRetriedRef = useRef(false);
 
+  const fetchLocationToken = async (
+    lat: number,
+    lng: number
+  ): Promise<
+    { token: string; issuedAt?: number; expiresAt?: number } | { rateLimited: true } | null
+  > => {
+    const MAX_ATTEMPTS = 2;
+    const TIMEOUT_MS = 10_000;
+    const RETRY_DELAY_MS = 600;
+
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
+      const ctrl = new AbortController();
+      const tid = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+      try {
+        const res = await fetch('/api/guest/location-token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ lat, lng }),
+          signal: ctrl.signal,
+        });
+        if (res.status === 429) {
+          return { rateLimited: true };
+        }
+        const data = await res.json().catch(() => null);
+        if (res.ok && data?.token) {
+          return data;
+        }
+      } catch {
+        // Silent retry on timeout or transient network error
+      } finally {
+        clearTimeout(tid);
+      }
+
+      if (attempt < MAX_ATTEMPTS) {
+        await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+      }
+    }
+
+    return null;
+  };
+
   const handleUseCurrentGps = async () => {
     setGpsError(null);
     if (!navigator.geolocation) {
@@ -1243,44 +1284,28 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
       async (pos) => {
         const lat = Number(pos.coords.latitude.toFixed(4));
         const lng = Number(pos.coords.longitude.toFixed(4));
-        try {
-          const tokCtrl = new AbortController();
-          const tokTid = setTimeout(() => tokCtrl.abort(), 5000);
-          const tokRes = await fetch('/api/guest/location-token', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ lat, lng }),
-            signal: tokCtrl.signal,
-          });
-          clearTimeout(tokTid);
-          const tokData = await tokRes.json().catch(() => null);
-          if (!tokRes.ok || !tokData?.token) {
-            if (!hasValidFreshPinRef.current) {
-              setLocationPinned(false);
-              setGuestLocationToken('');
-              setGuestLocationAt(undefined);
-            }
-            setGpsError('Network error. Please try again.');
-            setGpsLoading(false);
-            return;
-          }
-          setGuestLat(lat);
-          setGuestLng(lng);
-          setGuestLocationToken(tokData.token);
-          setGuestLocationAt(typeof tokData.issuedAt === 'number' ? tokData.issuedAt : Date.now());
-          setLocationPinned(true);
-          setGpsError(null);
-          setGpsHelpOpen(false);
-        } catch {
+        const tokResult = await fetchLocationToken(lat, lng);
+        if (!tokResult || 'rateLimited' in tokResult) {
           if (!hasValidFreshPinRef.current) {
             setLocationPinned(false);
             setGuestLocationToken('');
             setGuestLocationAt(undefined);
           }
-          setGpsError('Network error. Please try again.');
+          setGpsError(
+            tokResult && 'rateLimited' in tokResult
+              ? 'Too many attempts. Please wait a few minutes and try again.'
+              : 'Network error. Please try again.'
+          );
           setGpsLoading(false);
           return;
         }
+        setGuestLat(lat);
+        setGuestLng(lng);
+        setGuestLocationToken(tokResult.token);
+        setGuestLocationAt(typeof tokResult.issuedAt === 'number' ? tokResult.issuedAt : Date.now());
+        setLocationPinned(true);
+        setGpsError(null);
+        setGpsHelpOpen(false);
 
         try {
           const ctrl = new AbortController();
