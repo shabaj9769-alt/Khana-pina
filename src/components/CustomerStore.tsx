@@ -2170,6 +2170,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
     freeDeliveryAbove > 0 &&
     effectiveItemTotalAfterDiscount >= freeDeliveryAbove &&
     (billPreview === null || billPreview.deliveryFee === 0);
+  const shopHoursText = `Mon–Sun · ${formatHhmmTo12(settings.openTime || '11:00')} – ${formatHhmmTo12(settings.closeTime || '23:30')}`;
 
   // Authentic FSSAI Veg (green #1BA672 dot in square) & Non-Veg (red #E23744 dot in square) mark
   
@@ -4776,10 +4777,10 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                       }`}
                     >
                       <CalendarClock className="w-4 h-4 text-accent shrink-0" />
-                      <span className="text-sm font-bold text-text">
+                      <span className="text-sm font-bold text-text whitespace-nowrap">
                         Schedule order
                       </span>
-                      <span className="text-xs text-muted">
+                      <span className="text-xs text-muted whitespace-nowrap">
                         · {settings.weeklyTimings}
                       </span>
                     </button>
@@ -5902,7 +5903,7 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
                   </p>
                   <p>
                     <strong className="text-text">Operating Hours:</strong>{' '}
-                    {settings.aboutPage?.openingHours || settings.weeklyTimings}
+                    {settings.aboutPage?.openingHours?.trim() || shopHoursText}
                   </p>
                   {settings.fssaiNumber?.trim() && (
                     <p className="text-[13px] tabular-nums">

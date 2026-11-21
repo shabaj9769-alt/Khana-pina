@@ -14,6 +14,7 @@ import {
   ensureHomeDataLoaded,
   formatTime24To12,
   getHomeCache,
+  resolvePublicWeeklyTimings,
   runScheduledShopAndArchiveCheck,
   setHomeCache,
 } from './_lib/store.ts';
@@ -45,8 +46,12 @@ export default async function handler(req: Request, res: Response) {
               ? formatTime24To12(db.settings.openTime || '11:00')
               : db.settings.opensAtText || '11:00 AM',
             deliveryStartTime:
-              db.settings.deliveryStartTime || cachedObj.settings.deliveryStartTime || '11:00',
+              (db.settings.deliveryStartTime || '').trim() ||
+              (db.settings.openTime || '').trim() ||
+              cachedObj.settings.deliveryStartTime ||
+              '11:00',
             closeTime: db.settings.closeTime || cachedObj.settings.closeTime || '23:30',
+            weeklyTimings: resolvePublicWeeklyTimings(db.settings),
           }
         : cachedObj?.settings;
       res.setHeader('Cache-Control', 'no-store, max-age=0, s-maxage=0');
@@ -122,8 +127,12 @@ export default async function handler(req: Request, res: Response) {
       opensAtText: db.settings.autoScheduleEnabled
         ? formatTime24To12(db.settings.openTime || '11:00')
         : db.settings.opensAtText || '11:00 AM',
-      deliveryStartTime: db.settings.deliveryStartTime || '11:00',
+      deliveryStartTime:
+        (db.settings.deliveryStartTime || '').trim() ||
+        (db.settings.openTime || '').trim() ||
+        '11:00',
       closeTime: db.settings.closeTime || '23:30',
+      weeklyTimings: resolvePublicWeeklyTimings(db.settings),
       gstEnabled:
         db.settings.gstEnabled !== undefined
           ? db.settings.gstEnabled

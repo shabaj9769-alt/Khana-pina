@@ -3374,7 +3374,89 @@ describe('Khana Pina Core & Bypass-Proof Razorpay Suite', () => {
       await getRtdb().ref('publicStatus').set(buildPublicShopStatus(db.settings));
     }
   });
+
+  it('47. Public weeklyTimings derives delivery hours from deliveryStartTime (fallback openTime) and closeTime unless custom', async () => {
+    await ensureFirebaseSeeded();
+    const prevSettings = { ...db.settings };
+
+    const getHome = async () => {
+      let statusCode = 200;
+      let jsonBody: any = null;
+      await homeHandler(
+        {
+          method: 'GET',
+          originalUrl: '/api/home',
+          url: '/api/home',
+          headers: { 'x-forwarded-for': '127.0.60.10' },
+          socket: { remoteAddress: '127.0.60.10' },
+        } as any,
+        {
+          setHeader: () => ({}),
+          status: (c: number) => {
+            statusCode = c;
+            return { json: (b: any) => (jsonBody = b) };
+          },
+          json: (b: any) => {
+            jsonBody = b;
+          },
+          end: () => {},
+        } as any
+      );
+      return { statusCode, jsonBody };
+    };
+
+    try {
+      // 1) deliveryStartTime 12:00 and closeTime 23:30 with default stored weeklyTimings
+      db.settings.openTime = '11:00';
+      db.settings.deliveryStartTime = '12:00';
+      db.settings.closeTime = '23:30';
+      db.settings.weeklyTimings = 'Mon–Sun · 11:00 AM – 11:30 PM';
+      clearHomeCache();
+
+      expect(buildPublicShopStatus(db.settings).weeklyTimings).toBe(
+        'Mon–Sun · 12:00 PM – 11:30 PM'
+      );
+      const home1 = await getHome();
+      expect(home1.statusCode).toBe(200);
+      expect(home1.jsonBody.settings.weeklyTimings).toBe('Mon–Sun · 12:00 PM – 11:30 PM');
+
+      // 2) deliveryStartTime missing -> falls back to openTime
+      delete db.settings.deliveryStartTime;
+      db.settings.openTime = '10:30';
+      db.settings.closeTime = '22:00';
+      db.settings.weeklyTimings = 'Mon–Sun · 11:00 AM – 11:30 PM';
+      clearHomeCache();
+
+      expect(buildPublicShopStatus(db.settings).weeklyTimings).toBe(
+        'Mon–Sun · 10:30 AM – 10:00 PM'
+      );
+      const home2 = await getHome();
+      expect(home2.statusCode).toBe(200);
+      expect(home2.jsonBody.settings.weeklyTimings).toBe('Mon–Sun · 10:30 AM – 10:00 PM');
+
+      // 3) Custom stored weeklyTimings text (not the old default) is returned unchanged
+      db.settings.deliveryStartTime = '12:00';
+      db.settings.closeTime = '23:30';
+      db.settings.weeklyTimings = 'Tue–Sun · 12:30 PM – 11:00 PM (Closed Mon)';
+      clearHomeCache();
+
+      expect(buildPublicShopStatus(db.settings).weeklyTimings).toBe(
+        'Tue–Sun · 12:30 PM – 11:00 PM (Closed Mon)'
+      );
+      const home3 = await getHome();
+      expect(home3.statusCode).toBe(200);
+      expect(home3.jsonBody.settings.weeklyTimings).toBe(
+        'Tue–Sun · 12:30 PM – 11:00 PM (Closed Mon)'
+      );
+    } finally {
+      db.settings = prevSettings;
+      clearHomeCache();
+      await getRtdb().ref('settings').set(db.settings);
+      await getRtdb().ref('publicStatus').set(buildPublicShopStatus(db.settings));
+    }
+  });
 });
+
 
 
 

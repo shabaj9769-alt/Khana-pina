@@ -1141,6 +1141,21 @@ export function computeEffectiveShopOpen(
   return inEveningSlot || inAfterMidnightSlot;
 }
 
+export const DEFAULT_WEEKLY_TIMINGS_TEXT = 'Mon–Sun · 11:00 AM – 11:30 PM';
+
+export function resolvePublicWeeklyTimings(
+  settings: Pick<ShopSettings, 'weeklyTimings' | 'deliveryStartTime' | 'openTime' | 'closeTime'>
+): string {
+  const stored = (settings.weeklyTimings || '').trim();
+  if (stored && stored !== DEFAULT_WEEKLY_TIMINGS_TEXT) {
+    return stored;
+  }
+  const effectiveStart =
+    (settings.deliveryStartTime || '').trim() || (settings.openTime || '').trim() || '11:00';
+  const effectiveClose = (settings.closeTime || '').trim() || '23:30';
+  return `Mon–Sun · ${formatTime24To12(effectiveStart)} – ${formatTime24To12(effectiveClose)}`;
+}
+
 export function buildPublicShopStatus(
   settings: ShopSettings,
   now: Date = new Date()
@@ -1152,17 +1167,19 @@ export function buildPublicShopStatus(
     settings.manualOverrideDate === todayKeyIST;
   const effectiveOpen = computeEffectiveShopOpen(settings, now);
   const openTime = settings.openTime || '11:00';
-  const deliveryStartTime = settings.deliveryStartTime || '11:00';
+  const deliveryStartTime = (settings.deliveryStartTime || '').trim() || openTime;
   const closeTime = settings.closeTime || '23:30';
   const opensAtText = settings.autoScheduleEnabled
     ? formatTime24To12(openTime)
     : settings.opensAtText || '11:00 AM';
+  const weeklyTimings = resolvePublicWeeklyTimings(settings);
 
   return {
     shopName: settings.shopName,
     isOpen: effectiveOpen,
     busyMode: settings.busyMode,
     opensAtText,
+    weeklyTimings,
     holidaysNote: settings.holidaysNote || '',
     allowPreOrdersWhenClosed: settings.allowPreOrdersWhenClosed !== false,
     autoScheduleEnabled: Boolean(settings.autoScheduleEnabled),
@@ -1732,7 +1749,10 @@ function applySettingsAndZoneToDb(rawSettings: any, rawDeliveryZone: any): void 
       autoScheduleEnabled: Boolean(rawSettings.autoScheduleEnabled),
       openTime: rawSettings.openTime || db.settings.openTime || '11:00',
       deliveryStartTime:
-        rawSettings.deliveryStartTime || db.settings.deliveryStartTime || '11:00',
+        rawSettings.deliveryStartTime ||
+        rawSettings.openTime ||
+        db.settings.deliveryStartTime ||
+        '11:00',
       closeTime: rawSettings.closeTime || db.settings.closeTime || '23:30',
       closedDays: recordToArray<number>(rawSettings.closedDays)
         .map((d) => Number(d))

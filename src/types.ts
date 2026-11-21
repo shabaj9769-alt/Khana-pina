@@ -514,6 +514,7 @@ export interface PublicShopStatus {
   isOpen: boolean;
   busyMode: boolean;
   opensAtText: string;
+  weeklyTimings?: string;
   holidaysNote: string;
   allowPreOrdersWhenClosed: boolean;
   autoScheduleEnabled?: boolean;
