@@ -522,6 +522,12 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const [newSectionSubtitle, setNewSectionSubtitle] = useState('');
   const [newSectionMaxItems, setNewSectionMaxItems] = useState(6);
   const [sectionItemSearch, setSectionItemSearch] = useState<Record<string, string>>({});
+  const [editingSectionId, setEditingSectionId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState<{ title: string; subtitle: string }>({
+    title: '',
+    subtitle: '',
+  });
+  const [isSavingSectionEdit, setIsSavingSectionEdit] = useState(false);
 
   // Banner Manager State
   const [newBannerTitle, setNewBannerTitle] = useState('');
@@ -4470,41 +4476,152 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                               key={sec.id}
                               className="rounded-xl border border-border p-3.5 space-y-3 bg-bg min-w-0"
                             >
-                              <div className="flex flex-wrap items-center justify-between gap-2 min-w-0">
-                                <div className="min-w-0 flex-1">
-                                  <h4 className="font-bold text-sm text-text break-words">{sec.title}</h4>
-                                  <p className="text-xs text-muted break-words">
-                                    {sec.subtitle} • {(sec.itemIds || []).length} / {sec.maxItems}{' '}
-                                    dishes
-                                  </p>
+                              {editingSectionId === sec.id ? (
+                                <div className="space-y-2">
+                                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                    <input
+                                      type="text"
+                                      value={editDraft.title}
+                                      onChange={(e) =>
+                                        setEditDraft((prev) => ({
+                                          ...prev,
+                                          title: e.target.value,
+                                        }))
+                                      }
+                                      placeholder="Section Title (e.g. Chef's Specials)"
+                                      aria-label="Section Title"
+                                      className="min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs w-full"
+                                      autoFocus
+                                    />
+                                    <input
+                                      type="text"
+                                      value={editDraft.subtitle}
+                                      onChange={(e) =>
+                                        setEditDraft((prev) => ({
+                                          ...prev,
+                                          subtitle: e.target.value,
+                                        }))
+                                      }
+                                      placeholder="Subtitle"
+                                      aria-label="Section Subtitle"
+                                      className="min-h-[40px] px-3 rounded-xl border border-border bg-bg text-xs w-full"
+                                    />
+                                  </div>
+                                  <div className="flex flex-wrap items-center justify-between gap-2">
+                                    <p className="text-xs text-muted">
+                                      {(sec.itemIds || []).length} / {sec.maxItems} dishes
+                                    </p>
+                                    <div className="flex items-center gap-2">
+                                      <button
+                                        type="button"
+                                        onClick={async () => {
+                                          const trimmedTitle = editDraft.title.trim();
+                                          if (!trimmedTitle) {
+                                            showToast('Section title is required');
+                                            return;
+                                          }
+                                          const trimmedSubtitle = editDraft.subtitle.trim();
+                                          const updated = homeSections.map((s) =>
+                                            s.id === sec.id
+                                              ? {
+                                                  ...s,
+                                                  title: trimmedTitle,
+                                                  subtitle: trimmedSubtitle,
+                                                }
+                                              : s
+                                          );
+                                          setIsSavingSectionEdit(true);
+                                          try {
+                                            const ok = await handleUpdateHomeManager(
+                                              updated,
+                                              undefined
+                                            );
+                                            if (ok) {
+                                              setEditingSectionId(null);
+                                              setEditDraft({ title: '', subtitle: '' });
+                                            }
+                                          } finally {
+                                            setIsSavingSectionEdit(false);
+                                          }
+                                        }}
+                                        disabled={isSavingSectionEdit}
+                                        className="min-h-[44px] sm:min-h-[36px] px-4 rounded-xl bg-primary text-primary-contrast text-xs font-bold cursor-pointer disabled:opacity-60"
+                                      >
+                                        {isSavingSectionEdit ? 'Saving...' : 'Save'}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setEditingSectionId(null);
+                                          setEditDraft({ title: '', subtitle: '' });
+                                        }}
+                                        disabled={isSavingSectionEdit}
+                                        className="min-h-[44px] sm:min-h-[36px] px-4 rounded-xl border border-border bg-surface text-text text-xs font-bold cursor-pointer disabled:opacity-60"
+                                      >
+                                        Cancel
+                                      </button>
+                                    </div>
+                                  </div>
                                 </div>
-                                <div className="flex items-center gap-2 shrink-0">
-                                  <button
-                                    onClick={() => {
-                                      const updated = homeSections.map((s) =>
-                                        s.id === sec.id ? { ...s, isVisible: !s.isVisible } : s
-                                      );
-                                      handleUpdateHomeManager(updated, undefined);
-                                    }}
-                                    className={`px-3 py-1 rounded-lg text-xs font-bold cursor-pointer ${
-                                      sec.isVisible
-                                        ? 'bg-emerald-500/15 text-emerald-600'
-                                        : 'bg-surface text-muted'
-                                    }`}
-                                  >
-                                    {sec.isVisible ? 'Visible' : 'Hidden'}
-                                  </button>
-                                  <button
-                                    onClick={() => {
-                                      const updated = homeSections.filter((s) => s.id !== sec.id);
-                                      handleUpdateHomeManager(updated, undefined);
-                                    }}
-                                    className="p-1.5 rounded-lg text-red-600 hover:bg-red-500/10 cursor-pointer"
-                                  >
-                                    <Trash2 className="w-4 h-4" />
-                                  </button>
+                              ) : (
+                                <div className="flex flex-wrap items-center justify-between gap-2 min-w-0">
+                                  <div className="min-w-0 flex-1">
+                                    <h4 className="font-bold text-sm text-text break-words">
+                                      {sec.title}
+                                    </h4>
+                                    <p className="text-xs text-muted break-words">
+                                      {sec.subtitle ? `${sec.subtitle} • ` : ''}
+                                      {(sec.itemIds || []).length} / {sec.maxItems} dishes
+                                    </p>
+                                  </div>
+                                  <div className="flex items-center gap-2 shrink-0">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setEditingSectionId(sec.id);
+                                        setEditDraft({
+                                          title: sec.title || '',
+                                          subtitle: sec.subtitle || '',
+                                        });
+                                      }}
+                                      aria-label={`Edit ${sec.title}`}
+                                      title="Edit section"
+                                      className="min-h-[44px] min-w-[44px] sm:min-h-0 sm:min-w-0 px-3 py-1 rounded-lg border border-border bg-surface text-text hover:border-primary/40 text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer"
+                                    >
+                                      <Edit3 className="w-3.5 h-3.5" />
+                                      <span>Edit</span>
+                                    </button>
+                                    <button
+                                      onClick={() => {
+                                        const updated = homeSections.map((s) =>
+                                          s.id === sec.id ? { ...s, isVisible: !s.isVisible } : s
+                                        );
+                                        handleUpdateHomeManager(updated, undefined);
+                                      }}
+                                      className={`px-3 py-1 rounded-lg text-xs font-bold cursor-pointer ${
+                                        sec.isVisible
+                                          ? 'bg-emerald-500/15 text-emerald-600'
+                                          : 'bg-surface text-muted'
+                                      }`}
+                                    >
+                                      {sec.isVisible ? 'Visible' : 'Hidden'}
+                                    </button>
+                                    <button
+                                      onClick={() => {
+                                        if (editingSectionId === sec.id) {
+                                          setEditingSectionId(null);
+                                          setEditDraft({ title: '', subtitle: '' });
+                                        }
+                                        const updated = homeSections.filter((s) => s.id !== sec.id);
+                                        handleUpdateHomeManager(updated, undefined);
+                                      }}
+                                      className="p-1.5 rounded-lg text-red-600 hover:bg-red-500/10 cursor-pointer"
+                                    >
+                                      <Trash2 className="w-4 h-4" />
+                                    </button>
+                                  </div>
                                 </div>
-                              </div>
+                              )}
 
                               <input
                                 type="text"
