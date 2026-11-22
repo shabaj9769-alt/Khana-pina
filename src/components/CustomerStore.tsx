@@ -5603,7 +5603,6 @@ export const CustomerStore: React.FC<CustomerStoreProps> = ({
 
               <div className="flex items-center gap-2 text-[13px] font-semibold text-muted">
                 {renderDietMark(customizingItem.isVeg)}
-                <span>Ready in {customizingItem.prepTimeMins} mins</span>
               </div>
 
               <h3 className="font-display text-[20px] font-extrabold text-text leading-snug break-words whitespace-normal">
